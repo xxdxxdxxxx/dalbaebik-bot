@@ -433,14 +433,14 @@ def member_role_ids(member: discord.Member) -> set[int]:
     ids: set[int] = set()
     try:
         ids.update(int(r.id) for r in member.roles)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"member_role_ids: {e}", "err")
     raw = getattr(member, "_roles", None)
     if raw is not None:
         try:
             ids.update(int(x) for x in raw)
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"member_role_ids raw: {e}", "err")
     if member.guild is not None:
         ids.add(int(member.guild.default_role.id))
     return ids
@@ -2165,7 +2165,8 @@ async def get_log_channel(data: dict[str, Any] | None = None) -> discord.TextCha
     if ch is None:
         try:
             ch = await bot.fetch_channel(log_id)
-        except Exception:
+        except Exception as e:
+            log(f"log_channel fetch: {e}", "err")
             return None
     if isinstance(ch, discord.TextChannel):
         return ch

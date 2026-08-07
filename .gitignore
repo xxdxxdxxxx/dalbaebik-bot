@@ -5,7 +5,9 @@
 players.json
 players.json.bak
 players.json.tmp
+players.json.preview_bak
 *.json.tmp
+*.preview_bak
 
 # python
 __pycache__/
