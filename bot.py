@@ -285,6 +285,8 @@ def default_db() -> dict[str, Any]:
         "session_date": None,       # YYYY-MM-DD день текущей/последней сессии
         "grenade_date": None,       # дата для подписи под ГРАНАТЫ
         "grenade_history": {},
+        # discord_id str -> накопленные секунды речи (voice_scan) за сессию
+        "voice_speak_seconds": {},
         # step_id пропущенных mid-этапов (заполнены forward-copy, дельта 0)
         "skipped_grenade_steps": [],
         "last_grenade_step": None,
@@ -2065,28 +2067,37 @@ def format_grenades_embed(data: dict[str, Any]) -> discord.Embed:
 
     nick_w = 14
     cw = 5
+    tcw = 6  # ширина колонки ВРЕМЯ (мм:сс)
     col_gap = "  "  # между I / II / III / IV
     tot_gap = "     "  # перед ИТОГ побольше
+    time_gap = "  "  # перед ВРЕМЯ
 
-    def _cols(*cells: str, with_total: str | None = None) -> str:
+    def _cols(*cells: str, with_total: str | None = None, with_time: str | None = None) -> str:
         mid = col_gap.join(cells)
-        if with_total is None:
-            return mid
-        return mid + tot_gap + with_total
+        if with_total is not None:
+            mid = mid + tot_gap + with_total
+        if with_time is not None:
+            mid = mid + time_gap + with_time
+        return mid
 
     h_i = f"{'I':>{cw}}"
     h_ii = f"{'II':>{cw}}"
     h_iii = f"{'III':>{cw}}"
     h_iv = f"{'IV':>{cw}}"
     h_tot = f"{'ИТОГ':>{cw}}"
+    h_time = f"{'ВРЕМЯ':>{tcw}}"
     dash = "─" * cw
+    dash_t = "─" * tcw
+
+    voice_secs = voice_seconds_by_nick(data)
+    show_time = bool(voice_secs)
 
     if four:
-        hdr = f"`{'Ник':<{nick_w}} {_cols(h_i, h_ii, h_iii, h_iv, with_total=h_tot)}`"
-        sep = f"`{'─' * nick_w} {_cols(dash, dash, dash, dash, with_total=dash)}`"
+        hdr = f"`{'Ник':<{nick_w}} {_cols(h_i, h_ii, h_iii, h_iv, with_total=h_tot, with_time=h_time if show_time else None)}`"
+        sep = f"`{'─' * nick_w} {_cols(dash, dash, dash, dash, with_total=dash, with_time=dash_t if show_time else None)}`"
     else:
-        hdr = f"`{'Ник':<{nick_w}} {_cols(h_i, h_ii, h_iii, with_total=h_tot)}`"
-        sep = f"`{'─' * nick_w} {_cols(dash, dash, dash, with_total=dash)}`"
+        hdr = f"`{'Ник':<{nick_w}} {_cols(h_i, h_ii, h_iii, with_total=h_tot, with_time=h_time if show_time else None)}`"
+        sep = f"`{'─' * nick_w} {_cols(dash, dash, dash, with_total=dash, with_time=dash_t if show_time else None)}`"
 
     body: list[str] = [hdr, sep]
     last_sq: Any = object()
@@ -2102,15 +2113,16 @@ def format_grenades_embed(data: dict[str, Any]) -> discord.Embed:
 
         e1, e2, e3, e4, total = _grenade_row_stats(history, gnick, four_stages=four)
         nick_show = pad_nick(gnick, nick_w)
+        time_cell = cell(fmt_voice_mmss(voice_secs.get(gnick.lower())), tcw) if show_time else None
         if four:
             row = (
                 f"`{nick_show} "
-                f"{_cols(cell(e1, cw), cell(e2, cw), cell(e3, cw), cell(e4, cw), with_total=cell(total, cw))}`"
+                f"{_cols(cell(e1, cw), cell(e2, cw), cell(e3, cw), cell(e4, cw), with_total=cell(total, cw), with_time=time_cell)}`"
             )
         else:
             row = (
                 f"`{nick_show} "
-                f"{_cols(cell(e1, cw), cell(e2, cw), cell(e3, cw), with_total=cell(total, cw))}`"
+                f"{_cols(cell(e1, cw), cell(e2, cw), cell(e3, cw), with_total=cell(total, cw), with_time=time_cell)}`"
             )
         body.append(row)
 
@@ -2235,6 +2247,7 @@ async def ensure_session_reset(
     data["kv_session_active"] = True
     data["skipped_grenade_steps"] = []
     data["absent_dm_sent"] = []  # снова можно пингануть неявившимся
+    data["voice_speak_seconds"] = {}  # новая сессия — сбрасываем время речи
     # карты предыдущего дня не тащим; на новый день — чисто
     prev_maps = data.get("kv_maps") or {}
     if not isinstance(prev_maps, dict) or prev_maps.get("date") != today:
@@ -2462,6 +2475,7 @@ _voice_scan: dict[str, Any] = {
     "task": None,      # asyncio.Task — цикл опроса get_speaking()
     "totals": {},       # discord_id str -> накопленные секунды
     "last_loud": {},    # discord_id str -> monotonic-время последнего громкого PCM-пакета
+    "eligible_ids": set(),  # discord_id str -> кого считаем (отряды 1-6 + Чемпионы)
     "started_at": None,
 }
 _voice_loud_lock = threading.Lock()
@@ -2579,19 +2593,44 @@ def _pick_busiest_voice_channel(
     return best if best_n > 0 else None
 
 
+def _persist_voice_totals() -> None:
+    """Сбросить накопленные секунды в players.json (voice_speak_seconds),
+    чтобы рестарт бота/разрыв связи не терял данные скана за сессию."""
+    try:
+        data = load_db()
+        stored = data.setdefault("voice_speak_seconds", {})
+        for key, secs in _voice_scan.get("totals", {}).items():
+            stored[key] = round(secs, 1)
+        save_db(data)
+    except Exception as e:
+        log(f"voice_scan persist: {e}", "err")
+
+
 async def _voice_scan_poll_loop() -> None:
     """Каждую VOICE_SCAN_POLL_SECONDS секунд — кто говорит, копим секунды.
 
     Опрос вместо event-хука: sink-события speaking_start/stop у voice_recv
     синхронные и sink-only (доп. сложность с потоками), а get_speaking()
     можно безопасно опрашивать из обычного asyncio-таска.
+
+    Переживает разрывы голосового соединения: discord.py сам делает
+    reconnect (тот же VoiceClient), поэтому просто ждём, пока vc.is_connected()
+    снова станет True, не прерывая скан и не теряя накопленное.
     """
     vc = _voice_scan.get("vc")
+    save_counter = 0
     try:
-        while _voice_scan.get("active") and vc is not None and vc.is_connected():
+        while _voice_scan.get("active") and vc is not None:
+            if not vc.is_connected():
+                # временный разрыв — discord.py переподключается сам, просто ждём
+                await asyncio.sleep(VOICE_SCAN_POLL_SECONDS)
+                continue
             now = time.monotonic()
             for member in list(vc.channel.members):
                 if member.bot:
+                    continue
+                key = str(member.id)
+                if key not in _voice_scan.get("eligible_ids", set()):
                     continue
                 try:
                     discord_flag = vc.get_speaking(member)
@@ -2599,7 +2638,6 @@ async def _voice_scan_poll_loop() -> None:
                     discord_flag = None
                 if not discord_flag:
                     continue
-                key = str(member.id)
                 with _voice_loud_lock:
                     last_loud = _voice_scan["last_loud"].get(key)
                 # считаем только если и Discord показал зелёную обводку,
@@ -2609,15 +2647,33 @@ async def _voice_scan_poll_loop() -> None:
                     _voice_scan["totals"][key] = (
                         _voice_scan["totals"].get(key, 0.0) + VOICE_SCAN_POLL_SECONDS
                     )
+            save_counter += 1
+            if save_counter >= 15:  # persist раз в ~15 сек — не на каждый тик
+                save_counter = 0
+                _persist_voice_totals()
             await asyncio.sleep(VOICE_SCAN_POLL_SECONDS)
     except asyncio.CancelledError:
         pass
     except Exception as e:
         log(f"voice_scan poll: {e}", "err")
+    finally:
+        _persist_voice_totals()
+
+
+def _scan_roster_ids(data: dict[str, Any] | None = None) -> set[str]:
+    """discord_id str тех, кого сканим по параметрам грен (отряды 1-6 + Чемпионы)."""
+    if data is None:
+        data = load_db()
+    out: set[str] = set()
+    for did, p in (data.get("players") or {}).items():
+        if is_scan_roster_player(p):
+            out.add(str(did))
+    return out
 
 
 async def start_voice_scan(guild: discord.Guild) -> tuple[bool, str]:
-    """Подключиться к самому населённому настроенному войсу и начать скан speaking."""
+    """Подключиться к самому населённому настроенному войсу и начать скан speaking
+    только у тех, кто подходит под параметры скана гранат (отряды 1-6 + Чемпионы)."""
     if not VOICE_RECV_AVAILABLE:
         return False, "Библиотека `discord-ext-voice-recv` не установлена на сервере бота."
     if voice_scan_is_active():
@@ -2647,10 +2703,14 @@ async def start_voice_scan(guild: discord.Guild) -> tuple[bool, str]:
             pass
         return False, f"Не удалось начать приём: {e}"
 
+    data = load_db()
+    existing = {str(k): float(v) for k, v in (data.get("voice_speak_seconds") or {}).items()}
+
     _voice_scan["active"] = True
     _voice_scan["vc"] = vc
     _voice_scan["channel_id"] = ch.id
-    _voice_scan["totals"] = {}
+    _voice_scan["eligible_ids"] = _scan_roster_ids(data)
+    _voice_scan["totals"] = existing  # продолжаем сессию, если рестартовали mid-KV
     with _voice_loud_lock:
         _voice_scan["last_loud"] = {}
     _voice_scan["started_at"] = time.monotonic()
@@ -2683,10 +2743,12 @@ async def stop_voice_scan() -> dict[str, float]:
         except Exception as e:
             log(f"voice_scan disconnect: {e}", "err")
 
+    _persist_voice_totals()
     _voice_scan["vc"] = None
     _voice_scan["channel_id"] = None
     _voice_scan["task"] = None
     _voice_scan["totals"] = {}
+    _voice_scan["eligible_ids"] = set()
     with _voice_loud_lock:
         _voice_scan["last_loud"] = {}
     _voice_scan["started_at"] = None
@@ -2711,6 +2773,26 @@ def format_voice_scan_report(totals: dict[str, float], data: dict[str, Any] | No
         m, s = divmod(int(secs), 60)
         lines.append(f"· **{name}** — `{m:02d}:{s:02d}`")
     return "\n".join(lines)
+
+
+def voice_seconds_by_nick(data: dict[str, Any]) -> dict[str, float]:
+    """game_nick (lower) -> накопленные секунды речи за сессию, из players.json."""
+    stored = data.get("voice_speak_seconds") or {}
+    players = data.get("players") or {}
+    out: dict[str, float] = {}
+    for did, secs in stored.items():
+        p = players.get(str(did))
+        gn = (p.get("game_nick") or "").strip().lower() if p else ""
+        if gn:
+            out[gn] = float(secs)
+    return out
+
+
+def fmt_voice_mmss(secs: float | None) -> str:
+    if not secs:
+        return "-"
+    m, s = divmod(int(secs), 60)
+    return f"{m:02d}:{s:02d}"
 
 
 def _step_already_done(last: str | None, step_name: str) -> bool:
@@ -4032,7 +4114,8 @@ async def cmd_help(interaction: discord.Interaction):
         "· скан грен: **отряды 1–6 + Чемпионы** (не войс)\n"
         "· данные грен висят до следующего **19:30** (обнуление сессии)\n"
         "· `/refresh` · `/scan_now`* · `/deletegren`* · `/reset_session`*\n"
-        "· `/voice_scan_start`* · `/voice_scan_stop`* — время речи в войсе (экспериментально)\n"
+        "· время речи (ВРЕМЯ в таблице ГРАНАТЫ) — автосканится с базы до финала\n"
+        "· `/voice_scan_start`* · `/voice_scan_stop`* — вручную (экспериментально)\n"
         "· `/dm_absent` — ЛС (без Чемпионов/замен)\n"
         "· \\* = access-роль или админ\n"
         "\n"
@@ -4387,6 +4470,7 @@ async def cmd_deletegren(interaction: discord.Interaction):
         data["skipped_grenade_steps"] = []
         data["last_grenade_step"] = None
         data["grenade_date"] = None
+        data["voice_speak_seconds"] = {}
         # дату/таблицу убрали; финал КВ по явке не трогаем
         save_db(data)
         data_out = data
@@ -4468,6 +4552,8 @@ async def cmd_reset_session(interaction: discord.Interaction):
     if not can_manage_kv(actor):
         await interaction.response.send_message(embed=deny_embed(), ephemeral=True)
         return
+    if voice_scan_is_active():
+        await stop_voice_scan()
     async with db_lock:
         data = load_db()
         backup_db()
@@ -4480,6 +4566,7 @@ async def cmd_reset_session(interaction: discord.Interaction):
             data["last_grenade_step"] = None
             data["kv_finished"] = False
             data["grenade_date"] = today_msk_str()
+            data["voice_speak_seconds"] = {}
             for p in data.get("players", {}).values():
                 p["came"] = False
                 p["in_voice"] = False
@@ -4629,6 +4716,20 @@ async def schedule_loop():
             # НЕ ставим done до успеха: иначе API fail = этап навсегда пропущен
             await refresh_voice_presence()
             before_last = load_db().get("last_grenade_step")
+
+            # Скан речи (voice_scan): старт на базе (первый этап), стоп на финале
+            # (последний этап списка) — тот же временной интервал, что у грен.
+            is_base_step = step_name == steps[0][0]
+            is_final_step = step_name == steps[-1][0]
+            if is_base_step and not voice_scan_is_active():
+                guild = bot.get_guild(get_guild_id()) if get_guild_id() else None
+                if guild is not None:
+                    ok, msg = await start_voice_scan(guild)
+                    if ok:
+                        log(f"voice_scan · авто-старт на базе в «{msg}»", "kv")
+                    else:
+                        log(f"voice_scan · авто-старт не удался: {msg}", "warn")
+
             await run_grenade_step(step_name, prev)
             after = load_db()
             after_last = after.get("last_grenade_step")
@@ -4648,6 +4749,10 @@ async def schedule_loop():
                         f"этап {step_name} · API не прошёл · повтор через ~20с",
                         "warn",
                     )
+
+            if is_final_step and voice_scan_is_active() and day_step_key in done:
+                totals = await stop_voice_scan()
+                log(f"voice_scan · авто-стоп на финале ({len(totals)} чел. говорили)", "kv")
 
         if len(done) > 80:
             schedule_loop._done = {k for k in done if k.startswith(today)}  # type: ignore
