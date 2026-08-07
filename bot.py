@@ -14,7 +14,9 @@ import json
 import os
 import random
 import re
+import threading
 import time
+from array import array
 from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Any
@@ -2445,6 +2447,13 @@ except Exception as _e:  # библиотека experimental — фича не �
     log(f"discord-ext-voice-recv не установлен, /voice_scan недоступен: {_e}", "warn")
 
 VOICE_SCAN_POLL_SECONDS = 1.0
+# RMS-порог громкости PCM (int16, шкала ~0-32767), ниже которого звук
+# считаем шумом/эхо, даже если Discord включил зелёную обводку.
+# Подбирается по факту — можно переопределить в .env.
+VOICE_SCAN_RMS_THRESHOLD = int(os.getenv("VOICE_SCAN_RMS_THRESHOLD", "500"))
+# Окно, в течение которого "громкий" PCM считается ещё актуальным
+# (речь идёт пакетами по ~20мс, без этого запаса будем терять доли секунды).
+VOICE_SCAN_LOUD_WINDOW = 1.5
 
 _voice_scan: dict[str, Any] = {
     "active": False,
@@ -2452,19 +2461,39 @@ _voice_scan: dict[str, Any] = {
     "channel_id": None,
     "task": None,      # asyncio.Task — цикл опроса get_speaking()
     "totals": {},       # discord_id str -> накопленные секунды
+    "last_loud": {},    # discord_id str -> monotonic-время последнего громкого PCM-пакета
     "started_at": None,
 }
+_voice_loud_lock = threading.Lock()
 
 if VOICE_RECV_AVAILABLE:
 
     class _SilentSink(voice_recv.AudioSink):
-        """Ничего не делает с аудио — нужен только чтобы сокет читался и get_speaking() обновлялся."""
+        """Декодирует PCM только чтобы посчитать RMS-громкость — не хранит и не пишет звук куда-либо."""
 
         def wants_opus(self) -> bool:
-            return True
+            # False -> библиотека сама декодирует Opus в PCM для write()
+            return False
 
         def write(self, user, data) -> None:
-            pass
+            if user is None or getattr(user, "bot", False):
+                return
+            pcm = data.pcm
+            if not pcm:
+                return
+            try:
+                samples = array("h")
+                # длина PCM должна быть кратна 2 байтам (int16); отрезаем хвост на всякий случай
+                samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+                if not samples:
+                    return
+                rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
+            except Exception:
+                return
+            if rms >= VOICE_SCAN_RMS_THRESHOLD:
+                # write() зовётся из отдельного потока декодера, не из asyncio — нужен lock
+                with _voice_loud_lock:
+                    _voice_scan["last_loud"][str(user.id)] = time.monotonic()
 
         def cleanup(self) -> None:
             pass
@@ -2501,15 +2530,23 @@ async def _voice_scan_poll_loop() -> None:
     vc = _voice_scan.get("vc")
     try:
         while _voice_scan.get("active") and vc is not None and vc.is_connected():
+            now = time.monotonic()
             for member in list(vc.channel.members):
                 if member.bot:
                     continue
                 try:
-                    speaking = vc.get_speaking(member)
+                    discord_flag = vc.get_speaking(member)
                 except Exception:
-                    speaking = None
-                if speaking:
-                    key = str(member.id)
+                    discord_flag = None
+                if not discord_flag:
+                    continue
+                key = str(member.id)
+                with _voice_loud_lock:
+                    last_loud = _voice_scan["last_loud"].get(key)
+                # считаем только если и Discord показал зелёную обводку,
+                # И в последние VOICE_SCAN_LOUD_WINDOW сек реально был громкий PCM
+                # (отсекает эхо/шум, который триггерит индикатор почти без звука)
+                if last_loud is not None and (now - last_loud) <= VOICE_SCAN_LOUD_WINDOW:
                     _voice_scan["totals"][key] = (
                         _voice_scan["totals"].get(key, 0.0) + VOICE_SCAN_POLL_SECONDS
                     )
@@ -2555,6 +2592,8 @@ async def start_voice_scan(guild: discord.Guild) -> tuple[bool, str]:
     _voice_scan["vc"] = vc
     _voice_scan["channel_id"] = ch.id
     _voice_scan["totals"] = {}
+    with _voice_loud_lock:
+        _voice_scan["last_loud"] = {}
     _voice_scan["started_at"] = time.monotonic()
     _voice_scan["task"] = asyncio.create_task(_voice_scan_poll_loop())
     log(f"voice_scan · старт в «{ch.name}» ({sum(1 for m in ch.members if not m.bot)} чел.)", "kv")
@@ -2589,6 +2628,8 @@ async def stop_voice_scan() -> dict[str, float]:
     _voice_scan["channel_id"] = None
     _voice_scan["task"] = None
     _voice_scan["totals"] = {}
+    with _voice_loud_lock:
+        _voice_scan["last_loud"] = {}
     _voice_scan["started_at"] = None
     return totals
 
