@@ -2467,27 +2467,65 @@ _voice_scan: dict[str, Any] = {
 _voice_loud_lock = threading.Lock()
 
 if VOICE_RECV_AVAILABLE:
-    # ---- Известный баг библиотеки: PacketDecoder._decode_packet может
-    # бросить discord.opus.OpusError("corrupted stream") на битом/потерянном
-    # пакете и убить весь поток-декодер (см. issue #43 в репо
-    # imayhaveborkedit/discord-ext-voice-recv). Community-воркараунд —
-    # просто скипнуть битый пакет вместо краша. Патчим точечно, только
-    # этот метод, не трогая остальную библиотеку.
+    # ---- Реальная причина "corrupted stream" (issue #43/#49/#53 в репо
+    # imayhaveborkedit/discord-ext-voice-recv): голос в Discord теперь
+    # E2E-зашифрован (DAVE) и НЕ откатывается на transport-only шифрование
+    # даже если в канале не-DAVE слушатель — после транспортной расшифровки
+    # каждый реальный голосовой фрейм всё ещё MLS-шифротекст, и opus_decode
+    # падает почти на каждом пакете, а не только на редких битых.
+    # Фикс по образцу PR #58 того же репо: discord.py>=2.7 (с пакетом davey)
+    # уже держит DaveSession для отправки — переиспользуем её же, чтобы
+    # расшифровать входящие фреймы перед decode. Патчим _process_packet
+    # (не редактируя файлы самой либы), т.к. там уже известен sender (member).
     try:
         from discord.ext.voice_recv import opus as _voice_recv_opus
 
-        _orig_decode_packet = _voice_recv_opus.PacketDecoder._decode_packet
+        try:
+            import davey as _davey
+        except ImportError:
+            _davey = None
 
-        def _safe_decode_packet(self, packet):
+        _orig_process_packet = _voice_recv_opus.PacketDecoder._process_packet
+
+        def _dave_decrypt_inplace(self, packet) -> None:
+            if _davey is None or not packet or not getattr(packet, "decrypted_data", None):
+                return
+            state = getattr(self.sink.voice_client, "_connection", None)
+            session = getattr(state, "dave_session", None)
+            if session is None or not getattr(session, "ready", False):
+                return
+            if getattr(state, "dave_protocol_version", 0) == 0:
+                return
+            user_id = self._cached_id
+            if user_id is None:
+                # SSRC ещё не привязан к юзеру — без sender не выбрать ratchet
+                return
             try:
-                return _orig_decode_packet(self, packet)
-            except Exception as e:
-                log(f"voice_scan opus decode skip: {e}", "warn")
-                return packet, b""
+                packet.decrypted_data = session.decrypt(
+                    int(user_id), _davey.MediaType.audio, bytes(packet.decrypted_data)
+                )
+            except Exception:
+                # Ожидаемо для passthrough (нешифрованных) кадров — silence/keepalive
+                pass
 
-        _voice_recv_opus.PacketDecoder._decode_packet = _safe_decode_packet
+        def _dave_aware_process_packet(self, packet):
+            try:
+                self._dave_decrypt_inplace(packet)
+            except Exception:
+                pass
+            try:
+                return _orig_process_packet(self, packet)
+            except Exception as e:
+                # На всякий случай (эквивалент community-воркараунда issue #43) —
+                # если что-то всё же не расшифровалось/не задекодировалось,
+                # не роняем поток-декодер целиком, просто скипаем пакет.
+                log(f"voice_scan opus decode skip: {e}", "warn")
+                return _voice_recv_opus.VoiceData(packet, self._get_cached_member(), pcm=b"")
+
+        _voice_recv_opus.PacketDecoder._dave_decrypt_inplace = _dave_decrypt_inplace
+        _voice_recv_opus.PacketDecoder._process_packet = _dave_aware_process_packet
     except Exception as e:
-        log(f"voice_scan: не удалось запатчить opus decode guard: {e}", "warn")
+        log(f"voice_scan: не удалось запатчить DAVE decrypt guard: {e}", "warn")
 
     class _SilentSink(voice_recv.AudioSink):
         """Декодирует PCM только чтобы посчитать RMS-громкость — не хранит и не пишет звук куда-либо."""
