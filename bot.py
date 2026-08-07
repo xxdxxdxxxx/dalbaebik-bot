@@ -2432,6 +2432,187 @@ async def refresh_voice_presence() -> None:
         await upsert_status_messages(None, force=False, parts=("online",))
 
 
+# ---------------------------------------------------------------------------
+# Голосовой скан: время "зелёной обводки" (speaking) за КВ
+# ---------------------------------------------------------------------------
+try:
+    from discord.ext import voice_recv
+
+    VOICE_RECV_AVAILABLE = True
+except Exception as _e:  # библиотека experimental — фича не должна ронять бота
+    voice_recv = None  # type: ignore
+    VOICE_RECV_AVAILABLE = False
+    log(f"discord-ext-voice-recv не установлен, /voice_scan недоступен: {_e}", "warn")
+
+VOICE_SCAN_POLL_SECONDS = 1.0
+
+_voice_scan: dict[str, Any] = {
+    "active": False,
+    "vc": None,       # VoiceRecvClient
+    "channel_id": None,
+    "task": None,      # asyncio.Task — цикл опроса get_speaking()
+    "totals": {},       # discord_id str -> накопленные секунды
+    "started_at": None,
+}
+
+if VOICE_RECV_AVAILABLE:
+
+    class _SilentSink(voice_recv.AudioSink):
+        """Ничего не делает с аудио — нужен только чтобы сокет читался и get_speaking() обновлялся."""
+
+        def wants_opus(self) -> bool:
+            return True
+
+        def write(self, user, data) -> None:
+            pass
+
+        def cleanup(self) -> None:
+            pass
+
+
+def voice_scan_is_active() -> bool:
+    return bool(_voice_scan.get("active"))
+
+
+def _pick_busiest_voice_channel(
+    guild: discord.Guild, voice_ids: list[int]
+) -> discord.VoiceChannel | None:
+    """Из настроенных войсов — тот, где сейчас больше всего людей (не ботов)."""
+    best: discord.VoiceChannel | None = None
+    best_n = -1
+    for vid in voice_ids:
+        ch = guild.get_channel(vid)
+        if ch is None or not isinstance(ch, discord.VoiceChannel):
+            continue
+        n = sum(1 for m in ch.members if not m.bot)
+        if n > best_n:
+            best_n = n
+            best = ch
+    return best if best_n > 0 else None
+
+
+async def _voice_scan_poll_loop() -> None:
+    """Каждую VOICE_SCAN_POLL_SECONDS секунд — кто говорит, копим секунды.
+
+    Опрос вместо event-хука: sink-события speaking_start/stop у voice_recv
+    синхронные и sink-only (доп. сложность с потоками), а get_speaking()
+    можно безопасно опрашивать из обычного asyncio-таска.
+    """
+    vc = _voice_scan.get("vc")
+    try:
+        while _voice_scan.get("active") and vc is not None and vc.is_connected():
+            for member in list(vc.channel.members):
+                if member.bot:
+                    continue
+                try:
+                    speaking = vc.get_speaking(member)
+                except Exception:
+                    speaking = None
+                if speaking:
+                    key = str(member.id)
+                    _voice_scan["totals"][key] = (
+                        _voice_scan["totals"].get(key, 0.0) + VOICE_SCAN_POLL_SECONDS
+                    )
+            await asyncio.sleep(VOICE_SCAN_POLL_SECONDS)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        log(f"voice_scan poll: {e}", "err")
+
+
+async def start_voice_scan(guild: discord.Guild) -> tuple[bool, str]:
+    """Подключиться к самому населённому настроенному войсу и начать скан speaking."""
+    if not VOICE_RECV_AVAILABLE:
+        return False, "Библиотека `discord-ext-voice-recv` не установлена на сервере бота."
+    if voice_scan_is_active():
+        return False, "Скан уже идёт."
+
+    voice_ids = get_voice_channel_ids()
+    if not voice_ids:
+        return False, "Не настроены войсы (`/voice_add`)."
+
+    ch = _pick_busiest_voice_channel(guild, voice_ids)
+    if ch is None:
+        return False, "Ни в одном настроенном войсе сейчас никого нет."
+
+    try:
+        vc = await ch.connect(cls=voice_recv.VoiceRecvClient)
+    except Exception as e:
+        log(f"voice_scan connect: {e}", "err")
+        return False, f"Не удалось подключиться к войсу: {e}"
+
+    try:
+        vc.listen(_SilentSink())
+    except Exception as e:
+        log(f"voice_scan listen: {e}", "err")
+        try:
+            await vc.disconnect(force=True)
+        except Exception:
+            pass
+        return False, f"Не удалось начать приём: {e}"
+
+    _voice_scan["active"] = True
+    _voice_scan["vc"] = vc
+    _voice_scan["channel_id"] = ch.id
+    _voice_scan["totals"] = {}
+    _voice_scan["started_at"] = time.monotonic()
+    _voice_scan["task"] = asyncio.create_task(_voice_scan_poll_loop())
+    log(f"voice_scan · старт в «{ch.name}» ({sum(1 for m in ch.members if not m.bot)} чел.)", "kv")
+    return True, ch.name
+
+
+async def stop_voice_scan() -> dict[str, float]:
+    """Остановить скан, отключиться от войса, вернуть итог {discord_id: секунды}."""
+    totals = dict(_voice_scan.get("totals") or {})
+    _voice_scan["active"] = False
+
+    task = _voice_scan.get("task")
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    vc = _voice_scan.get("vc")
+    if vc is not None:
+        try:
+            vc.stop_listening()
+        except Exception:
+            pass
+        try:
+            await vc.disconnect(force=True)
+        except Exception as e:
+            log(f"voice_scan disconnect: {e}", "err")
+
+    _voice_scan["vc"] = None
+    _voice_scan["channel_id"] = None
+    _voice_scan["task"] = None
+    _voice_scan["totals"] = {}
+    _voice_scan["started_at"] = None
+    return totals
+
+
+def format_voice_scan_report(totals: dict[str, float], data: dict[str, Any] | None = None) -> str:
+    """Рейтинг по времени speaking, от большего к меньшему."""
+    if data is None:
+        data = load_db()
+    players = data.get("players", {})
+    rows: list[tuple[str, float]] = []
+    for did, secs in totals.items():
+        p = players.get(did) or {}
+        name = p.get("game_nick") or p.get("discord_name") or f"<@{did}>"
+        rows.append((name, secs))
+    rows.sort(key=lambda r: r[1], reverse=True)
+    if not rows:
+        return "_Никто не говорил (или скан был слишком коротким)._"
+    lines = []
+    for name, secs in rows:
+        m, s = divmod(int(secs), 60)
+        lines.append(f"· **{name}** — `{m:02d}:{s:02d}`")
+    return "\n".join(lines)
+
+
 def _step_already_done(last: str | None, step_name: str) -> bool:
     """True, если last_grenade_step уже на этом этапе или позже."""
     if not last or last not in STEP_ORDER or step_name not in STEP_ORDER:
@@ -3751,6 +3932,7 @@ async def cmd_help(interaction: discord.Interaction):
         "· скан грен: **отряды 1–6 + Чемпионы** (не войс)\n"
         "· данные грен висят до следующего **19:30** (обнуление сессии)\n"
         "· `/refresh` · `/scan_now`* · `/deletegren`* · `/reset_session`*\n"
+        "· `/voice_scan_start`* · `/voice_scan_stop`* — время речи в войсе (экспериментально)\n"
         "· `/dm_absent` — ЛС (без Чемпионов/замен)\n"
         "· \\* = access-роль или админ\n"
         "\n"
@@ -4122,6 +4304,61 @@ async def cmd_deletegren(interaction: discord.Interaction):
             color=COLOR_OK,
         ),
         ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="voice_scan_start",
+    description="Скан времени 'зелёной обводки' (речи) в самом населённом войсе",
+)
+async def cmd_voice_scan_start(interaction: discord.Interaction):
+    actor = await resolve_member(interaction)
+    if not can_manage_kv(actor):
+        await interaction.response.send_message(embed=deny_embed(), ephemeral=True)
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("Только на сервере.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=False)
+    ok, msg = await start_voice_scan(interaction.guild)
+    if not ok:
+        await interaction.followup.send(
+            embed=make_reply_embed("❌  Не удалось начать скан", msg, color=COLOR_ERR)
+        )
+        return
+    await interaction.followup.send(
+        embed=make_reply_embed(
+            "🎙️  Скан речи запущен",
+            (
+                f"Бот зашёл в войс **{msg}**.\n"
+                f"Считаем секунды 'зелёной обводки' у каждого до `/voice_scan_stop`.\n"
+                f"_Экспериментальная фича — точность не 1:1 с индикатором Discord._"
+            ),
+            color=COLOR_LIVE,
+        )
+    )
+
+
+@bot.tree.command(
+    name="voice_scan_stop",
+    description="Остановить скан речи и показать итог по времени",
+)
+async def cmd_voice_scan_stop(interaction: discord.Interaction):
+    actor = await resolve_member(interaction)
+    if not can_manage_kv(actor):
+        await interaction.response.send_message(embed=deny_embed(), ephemeral=True)
+        return
+    if not voice_scan_is_active():
+        await interaction.response.send_message(
+            embed=make_reply_embed("ℹ️  Скан не запущен", "Сначала `/voice_scan_start`.", color=COLOR_WAIT),
+            ephemeral=True,
+        )
+        return
+    await interaction.response.defer(ephemeral=False)
+    totals = await stop_voice_scan()
+    report = format_voice_scan_report(totals)
+    await interaction.followup.send(
+        embed=make_reply_embed("🏁  Итог скана речи", report, color=COLOR_GRENADES)
     )
 
 
