@@ -1,0 +1,35 @@
+# secrets
+.env
+
+# runtime data
+players.json
+players.json.bak
+players.json.tmp
+*.json.tmp
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# runtime / logs
+log.txt
+*.log
+
+# excel locks
+~$*
+*.tmp
+
+# scan outputs
+scans/etapy/*
+scans/itogi/*
+!scans/etapy/.gitkeep
+!scans/itogi/.gitkeep
+!scans/README.md
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
