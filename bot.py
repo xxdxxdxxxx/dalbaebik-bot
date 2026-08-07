@@ -2475,7 +2475,8 @@ _voice_scan: dict[str, Any] = {
     "task": None,      # asyncio.Task — цикл опроса get_speaking()
     "totals": {},       # discord_id str -> накопленные секунды
     "last_loud": {},    # discord_id str -> monotonic-время последнего громкого PCM-пакета
-    "eligible_ids": set(),  # discord_id str -> кого считаем (отряды 1-6 + Чемпионы)
+    "eligible_ids": set(),  # discord_id str -> кого считаем
+    "manual": False,    # True = ручной /voice_scan_start (все в войсе, без persist в БД)
     "started_at": None,
 }
 _voice_loud_lock = threading.Lock()
@@ -2595,7 +2596,13 @@ def _pick_busiest_voice_channel(
 
 def _persist_voice_totals() -> None:
     """Сбросить накопленные секунды в players.json (voice_speak_seconds),
-    чтобы рестарт бота/разрыв связи не терял данные скана за сессию."""
+    чтобы рестарт бота/разрыв связи не терял данные скана за сессию.
+
+    Только для авто-режима (привязан к таблице ГРАНАТЫ) — ручной скан
+    (/voice_scan_start) живёт только в памяти и players.json не трогает.
+    """
+    if _voice_scan.get("manual"):
+        return
     try:
         data = load_db()
         stored = data.setdefault("voice_speak_seconds", {})
@@ -2671,21 +2678,36 @@ def _scan_roster_ids(data: dict[str, Any] | None = None) -> set[str]:
     return out
 
 
-async def start_voice_scan(guild: discord.Guild) -> tuple[bool, str]:
-    """Подключиться к самому населённому настроенному войсу и начать скан speaking
-    только у тех, кто подходит под параметры скана гранат (отряды 1-6 + Чемпионы)."""
+async def start_voice_scan(
+    guild: discord.Guild,
+    *,
+    channel: discord.VoiceChannel | None = None,
+    manual: bool = False,
+) -> tuple[bool, str]:
+    """Подключиться к войсу и начать скан speaking.
+
+    Два режима:
+    · авто (manual=False, из расписания КВ) — заходит в самый населённый
+      настроенный войс, считает только отряды 1-6 + Чемпионы, копит в
+      players.json (voice_speak_seconds) для колонки ВРЕМЯ в таблице ГРАНАТЫ.
+    · ручной (manual=True, /voice_scan_start) — заходит в конкретный войс
+      (обычно тот, где сидит вызвавший команду), считает ВСЕХ в этом войсе,
+      результат только в памяти на время скана — таблицу ГРАНАТЫ не трогает.
+    """
     if not VOICE_RECV_AVAILABLE:
         return False, "Библиотека `discord-ext-voice-recv` не установлена на сервере бота."
     if voice_scan_is_active():
         return False, "Скан уже идёт."
 
-    voice_ids = get_voice_channel_ids()
-    if not voice_ids:
-        return False, "Не настроены войсы (`/voice_add`)."
-
-    ch = _pick_busiest_voice_channel(guild, voice_ids)
-    if ch is None:
-        return False, "Ни в одном настроенном войсе сейчас никого нет."
+    if channel is not None:
+        ch = channel
+    else:
+        voice_ids = get_voice_channel_ids()
+        if not voice_ids:
+            return False, "Не настроены войсы (`/voice_add`)."
+        ch = _pick_busiest_voice_channel(guild, voice_ids)
+        if ch is None:
+            return False, "Ни в одном настроенном войсе сейчас никого нет."
 
     try:
         vc = await ch.connect(cls=voice_recv.VoiceRecvClient)
@@ -2703,19 +2725,27 @@ async def start_voice_scan(guild: discord.Guild) -> tuple[bool, str]:
             pass
         return False, f"Не удалось начать приём: {e}"
 
-    data = load_db()
-    existing = {str(k): float(v) for k, v in (data.get("voice_speak_seconds") or {}).items()}
+    if manual:
+        # ручной режим: считаем всех в войсе, не только отряды 1-6/Чемпионы,
+        # и не продолжаем сохранённую сессию грен (чистый счёт с нуля)
+        eligible = {str(m.id) for m in ch.members if not m.bot}
+        existing: dict[str, float] = {}
+    else:
+        data = load_db()
+        eligible = _scan_roster_ids(data)
+        existing = {str(k): float(v) for k, v in (data.get("voice_speak_seconds") or {}).items()}
 
     _voice_scan["active"] = True
     _voice_scan["vc"] = vc
     _voice_scan["channel_id"] = ch.id
-    _voice_scan["eligible_ids"] = _scan_roster_ids(data)
-    _voice_scan["totals"] = existing  # продолжаем сессию, если рестартовали mid-KV
+    _voice_scan["eligible_ids"] = eligible
+    _voice_scan["manual"] = manual
+    _voice_scan["totals"] = existing  # продолжаем сессию грен, если рестартовали mid-KV
     with _voice_loud_lock:
         _voice_scan["last_loud"] = {}
     _voice_scan["started_at"] = time.monotonic()
     _voice_scan["task"] = asyncio.create_task(_voice_scan_poll_loop())
-    log(f"voice_scan · старт в «{ch.name}» ({sum(1 for m in ch.members if not m.bot)} чел.)", "kv")
+    log(f"voice_scan · старт в «{ch.name}» ({len(eligible)} чел., manual={manual})", "kv")
     return True, ch.name
 
 
@@ -2749,6 +2779,7 @@ async def stop_voice_scan() -> dict[str, float]:
     _voice_scan["task"] = None
     _voice_scan["totals"] = {}
     _voice_scan["eligible_ids"] = set()
+    _voice_scan["manual"] = False
     with _voice_loud_lock:
         _voice_scan["last_loud"] = {}
     _voice_scan["started_at"] = None
@@ -4493,7 +4524,7 @@ async def cmd_deletegren(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="voice_scan_start",
-    description="Скан времени 'зелёной обводки' (речи) в самом населённом войсе",
+    description="Скан времени 'зелёной обводки' (речи) в твоём войсе — ручной режим",
 )
 async def cmd_voice_scan_start(interaction: discord.Interaction):
     actor = await resolve_member(interaction)
@@ -4504,7 +4535,16 @@ async def cmd_voice_scan_start(interaction: discord.Interaction):
         await interaction.response.send_message("Только на сервере.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=False)
-    ok, msg = await start_voice_scan(interaction.guild)
+
+    # ручной режим: если вызвавший сейчас сам в войсе — заходим именно туда
+    # (считаем ВСЕХ в этом войсе, не только отряды 1-6/Чемпионы)
+    target_channel = None
+    if actor is not None and actor.voice is not None and actor.voice.channel is not None:
+        ch = actor.voice.channel
+        if isinstance(ch, discord.VoiceChannel):
+            target_channel = ch
+
+    ok, msg = await start_voice_scan(interaction.guild, channel=target_channel, manual=True)
     if not ok:
         await interaction.followup.send(
             embed=make_reply_embed("❌  Не удалось начать скан", msg, color=COLOR_ERR)
@@ -4515,8 +4555,9 @@ async def cmd_voice_scan_start(interaction: discord.Interaction):
             "🎙️  Скан речи запущен",
             (
                 f"Бот зашёл в войс **{msg}**.\n"
-                f"Считаем секунды 'зелёной обводки' у каждого до `/voice_scan_stop`.\n"
-                f"_Экспериментальная фича — точность не 1:1 с индикатором Discord._"
+                f"Считаем секунды 'зелёной обводки' у **всех** в этом войсе до `/voice_scan_stop`.\n"
+                f"_Ручной режим — не связан с таблицей ГРАНАТЫ. "
+                f"Экспериментальная фича — точность не 1:1 с индикатором Discord._"
             ),
             color=COLOR_LIVE,
         )
