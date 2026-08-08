@@ -4723,24 +4723,27 @@ async def cmd_voice_scan_start(interaction: discord.Interaction):
             embed=make_reply_embed("❌  Не удалось начать скан", msg, color=COLOR_ERR)
         )
         return
-    await interaction.followup.send(
+
+    # Сразу шлём ЖИВУЮ табличку (одно сообщение) вместо отдельного текста
+    # "скан запущен" + отдельной таблички — дальше она сама редактируется
+    # (_update_manual_voice_scan_report) раз в ~10 сек, пока скан активен.
+    vc_now = _voice_scan.get("vc")
+    table = format_voice_scan_live_table(vc_now) if vc_now is not None else "_Подключаюсь…_"
+    sent = await interaction.followup.send(
         embed=make_reply_embed(
-            "🎙️  Скан речи запущен",
+            "🎙️  Скан речи · live",
             (
-                f"Бот зашёл в войс **{msg}**.\n"
-                f"Считаем секунды 'зелёной обводки' у **всех** в этом войсе до `/voice_scan_stop`.\n"
-                f"Кто зайдёт в войс позже — тоже появится в таблице ниже (с `00:00`).\n"
-                f"_Ручной режим — не связан с таблицей ГРАНАТЫ. "
-                f"Экспериментальная фича — точность не 1:1 с индикатором Discord._"
+                f"Войс: **{msg}** · до `/voice_scan_stop`.\n\n"
+                f"{table}\n\n"
+                f"_Обновляется каждые ~10 сек · кто зайдёт позже — появится сам._"
             ),
             color=COLOR_LIVE,
         )
     )
-    # сразу создаём live-табличку в этом же канале, дальше она обновляется
-    # автоматически внутри _voice_scan_poll_loop раз в ~10 сек
-    vc_now = _voice_scan.get("vc")
-    if vc_now is not None:
-        await _update_manual_voice_scan_report(vc_now)
+    try:
+        _voice_scan["report_message_id"] = sent.id
+    except Exception:
+        pass
 
 
 @bot.tree.command(
