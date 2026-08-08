@@ -2470,6 +2470,12 @@ VOICE_SCAN_DBFS_THRESHOLD = float(os.getenv("VOICE_SCAN_DBFS_THRESHOLD", "-35"))
 # Отступ (дБ) над персональным шумовым полом (EMA) — реальный порог речи
 # для юзера = noise_floor_dbfs + margin, но не ниже VOICE_SCAN_DBFS_THRESHOLD.
 VOICE_SCAN_MARGIN_DB = float(os.getenv("VOICE_SCAN_MARGIN_DB", "12"))
+# Адаптивный шумовой пол (EMA) можно выключить и вернуться к чистому
+# фиксированному dBFS-порогу (VOICE_SCAN_DBFS_THRESHOLD для всех одинаково).
+# По умолчанию выключен — включить через .env при необходимости.
+VOICE_SCAN_ADAPTIVE_THRESHOLD = os.getenv("VOICE_SCAN_ADAPTIVE_THRESHOLD", "false").strip().lower() in (
+    "1", "true", "yes", "on"
+)
 # Attack/Release gate (как в аудио-компрессорах): сколько мс подряд должно
 # быть громко/тихо, чтобы переключить состояние "говорит"/"не говорит".
 # Убирает дребезг на границах слов (замена жёсткого hold-таймера).
@@ -2604,19 +2610,24 @@ if VOICE_RECV_AVAILABLE:
 
             key = str(user.id)
             with _voice_loud_lock:
-                noise_floor = _voice_scan["noise_floor"].get(key, VOICE_SCAN_INITIAL_NOISE_FLOOR)
-                effective_threshold = max(
-                    noise_floor + VOICE_SCAN_MARGIN_DB, VOICE_SCAN_DBFS_THRESHOLD
-                )
+                if VOICE_SCAN_ADAPTIVE_THRESHOLD:
+                    noise_floor = _voice_scan["noise_floor"].get(key, VOICE_SCAN_INITIAL_NOISE_FLOOR)
+                    effective_threshold = max(
+                        noise_floor + VOICE_SCAN_MARGIN_DB, VOICE_SCAN_DBFS_THRESHOLD
+                    )
+                else:
+                    # адаптивный порог выключен — фиксированный dBFS для всех
+                    effective_threshold = VOICE_SCAN_DBFS_THRESHOLD
                 is_loud = dbfs >= effective_threshold
 
                 if not is_loud:
-                    # обновляем шумовой пол только по тихим пакетам — иначе
-                    # реальная речь сама бы поднимала свой же порог
-                    _voice_scan["noise_floor"][key] = (
-                        (1 - VOICE_SCAN_NOISE_EMA_ALPHA) * noise_floor
-                        + VOICE_SCAN_NOISE_EMA_ALPHA * dbfs
-                    )
+                    if VOICE_SCAN_ADAPTIVE_THRESHOLD:
+                        # обновляем шумовой пол только по тихим пакетам — иначе
+                        # реальная речь сама бы поднимала свой же порог
+                        _voice_scan["noise_floor"][key] = (
+                            (1 - VOICE_SCAN_NOISE_EMA_ALPHA) * noise_floor
+                            + VOICE_SCAN_NOISE_EMA_ALPHA * dbfs
+                        )
                     _voice_scan["quiet_ms"][key] = _voice_scan["quiet_ms"].get(key, 0.0) + packet_ms
                     _voice_scan["loud_ms"][key] = 0.0
                 else:
