@@ -2089,7 +2089,8 @@ def format_grenades_embed(data: dict[str, Any]) -> discord.Embed:
     dash = "─" * cw
     dash_t = "─" * tcw
 
-    voice_secs = voice_seconds_by_nick(data)
+    live_voice_totals = voice_scan_live_totals() if voice_scan_is_active() and not _voice_scan.get("manual") else None
+    voice_secs = voice_seconds_by_nick(data, live_voice_totals)
     show_time = bool(voice_secs)
 
     if four:
@@ -2577,6 +2578,11 @@ def voice_scan_is_active() -> bool:
     return bool(_voice_scan.get("active"))
 
 
+def voice_scan_live_totals() -> dict[str, float]:
+    """Снимок текущих накопленных секунд скана прямо из памяти (без диска)."""
+    return dict(_voice_scan.get("totals") or {})
+
+
 def _pick_busiest_voice_channel(
     guild: discord.Guild, voice_ids: list[int]
 ) -> discord.VoiceChannel | None:
@@ -2806,9 +2812,18 @@ def format_voice_scan_report(totals: dict[str, float], data: dict[str, Any] | No
     return "\n".join(lines)
 
 
-def voice_seconds_by_nick(data: dict[str, Any]) -> dict[str, float]:
-    """game_nick (lower) -> накопленные секунды речи за сессию, из players.json."""
-    stored = data.get("voice_speak_seconds") or {}
+def voice_seconds_by_nick(
+    data: dict[str, Any], live_totals: dict[str, float] | None = None
+) -> dict[str, float]:
+    """game_nick (lower) -> накопленные секунды речи за сессию.
+
+    Базa — из players.json (voice_speak_seconds), но если сейчас идёт
+    активный скан (live_totals передан), значения из памяти перекрывают
+    persisted-версию — свежее, чем раз в ~15 сек на диске.
+    """
+    stored = dict(data.get("voice_speak_seconds") or {})
+    if live_totals:
+        stored.update(live_totals)
     players = data.get("players") or {}
     out: dict[str, float] = {}
     for did, secs in stored.items():
@@ -4654,6 +4669,21 @@ async def voice_watch_loop():
         log(f"войс: {e}", "err")
 
 
+# Пока идёт авто-скан речи (между стартом/финалом этапов грен) — обновляем
+# только колонку ВРЕМЯ в таблице «Гранаты» из памяти, без похода в API игры.
+# Сами гранаты (I/II/III/ИТОГ) трогает только run_grenade_step на этапах.
+VOICE_TIME_REFRESH_SECONDS = 10
+
+
+@tasks.loop(seconds=VOICE_TIME_REFRESH_SECONDS)
+async def voice_time_refresh_loop():
+    try:
+        if voice_scan_is_active() and not _voice_scan.get("manual"):
+            await upsert_status_messages(None, force=False, parts=("grenades",))
+    except Exception as e:
+        log(f"voice_scan live-refresh: {e}", "err")
+
+
 @tasks.loop(seconds=SHEET_SYNC_SECONDS)
 async def sheet_sync_loop():
     """Авточтение Excel (ники / отряды / слоты)."""
@@ -4807,6 +4837,11 @@ async def before_voice():
     await bot.wait_until_ready()
 
 
+@voice_time_refresh_loop.before_loop
+async def before_voice_time_refresh():
+    await bot.wait_until_ready()
+
+
 @sheet_sync_loop.before_loop
 async def before_sheet():
     await bot.wait_until_ready()
@@ -4857,6 +4892,8 @@ async def on_ready():
 
     if not voice_watch_loop.is_running():
         voice_watch_loop.start()
+    if not voice_time_refresh_loop.is_running():
+        voice_time_refresh_loop.start()
     if not schedule_loop.is_running():
         schedule_loop.start()
     if not sheet_sync_loop.is_running():
