@@ -2485,12 +2485,22 @@ VOICE_SCAN_RELEASE_MS = float(os.getenv("VOICE_SCAN_RELEASE_MS", "600"))
 VOICE_SCAN_INITIAL_NOISE_FLOOR = -50.0
 # Коэффициент EMA для обновления шумового пола по "тихим" пакетам.
 VOICE_SCAN_NOISE_EMA_ALPHA = 0.05
+# TODO: временный workaround, ждём стабильной поддержки DAVE в used library.
+# Корень проблемы НЕ в этом файле и не лечится на нашей стороне: пакет
+# davey (зависимость discord.py для DAVE E2E-расшифровки голоса) сам
+# успешно расшифровывает лишь ~5% входящих аудио-фреймов — подтверждённый
+# баг ratchet/generation-синхронизации ключей внутри davey (issue открыт,
+# без фикса на момент написания): https://github.com/Snazzah/davey/issues/15
+# Баг воспроизводится идентично даже на py-cord с их собственным DAVE-фиксом
+# (PR Pycord-Development/pycord#3159) — то есть проблема не в discord.py
+# или discord-ext-voice-recv, а в самой Rust-реализации davey. Наш патч
+# интеграции (_dave_decrypt_inplace выше) не может это исправить — он
+# вызывает ту же самую сломанную session.decrypt().
 # Если у юзера дольше этого времени (сек) не было ни одного успешно
-# декодированного PCM-пакета (DAVE-шифрование ломает decode почти всё
-# время — типичный кейс "corrupted stream" в логах), наш attack/release
-# gate физически не может накопить данных. В этом случае откатываемся
-# на прямое доверие Discord'овской "зелёной обводке" (get_speaking()),
-# чтобы не терять реальную речь из-за нехватки валидного аудио.
+# декодированного PCM-пакета — наш attack/release gate физически не
+# может накопить данных из-за нехватки валидных фреймов. В этом случае
+# откатываемся на прямое доверие Discord'овской "зелёной обводке"
+# (get_speaking()) — надёжный сигнал независимо от davey.
 VOICE_SCAN_DECODE_FALLBACK_SECONDS = float(os.getenv("VOICE_SCAN_DECODE_FALLBACK_SECONDS", "3.0"))
 
 _voice_scan: dict[str, Any] = {
