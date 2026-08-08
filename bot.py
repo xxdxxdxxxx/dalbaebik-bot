@@ -2499,6 +2499,8 @@ _voice_scan: dict[str, Any] = {
     "eligible_ids": set(),  # discord_id str -> кого считаем
     "manual": False,    # True = ручной /voice_scan_start (все в войсе, без persist в БД)
     "started_at": None,
+    "report_channel_id": None,  # ручной режим: канал, где вызвали /voice_scan_start
+    "report_message_id": None,  # ручной режим: live-табличка (редактируется каждые ~10с)
 }
 _voice_loud_lock = threading.Lock()
 
@@ -2702,6 +2704,7 @@ async def _voice_scan_poll_loop() -> None:
     """
     vc = _voice_scan.get("vc")
     save_counter = 0
+    report_counter = 0
     try:
         while _voice_scan.get("active") and vc is not None:
             if not vc.is_connected():
@@ -2709,6 +2712,13 @@ async def _voice_scan_poll_loop() -> None:
                 await asyncio.sleep(VOICE_SCAN_POLL_SECONDS)
                 continue
             now = time.monotonic()
+            if _voice_scan.get("manual"):
+                # ручной режим: кто зашёл в войс после старта скана — тоже
+                # добавляем в eligible (авто-режим считает только заранее
+                # заданный реестр отрядов, поэтому там этого не делаем)
+                for member in vc.channel.members:
+                    if not member.bot:
+                        _voice_scan["eligible_ids"].add(str(member.id))
             for member in list(vc.channel.members):
                 if member.bot:
                     continue
@@ -2734,6 +2744,10 @@ async def _voice_scan_poll_loop() -> None:
             if save_counter >= 15:  # persist раз в ~15 сек — не на каждый тик
                 save_counter = 0
                 _persist_voice_totals()
+            report_counter += 1
+            if _voice_scan.get("manual") and _voice_scan.get("report_channel_id") and report_counter >= 10:
+                report_counter = 0
+                await _update_manual_voice_scan_report(vc)
             await asyncio.sleep(VOICE_SCAN_POLL_SECONDS)
     except asyncio.CancelledError:
         pass
@@ -2759,6 +2773,7 @@ async def start_voice_scan(
     *,
     channel: discord.VoiceChannel | None = None,
     manual: bool = False,
+    report_channel_id: int | None = None,
 ) -> tuple[bool, str]:
     """Подключиться к войсу и начать скан speaking.
 
@@ -2817,6 +2832,8 @@ async def start_voice_scan(
     _voice_scan["eligible_ids"] = eligible
     _voice_scan["manual"] = manual
     _voice_scan["totals"] = existing  # продолжаем сессию грен, если рестартовали mid-KV
+    _voice_scan["report_channel_id"] = report_channel_id if manual else None
+    _voice_scan["report_message_id"] = None
     with _voice_loud_lock:
         _voice_scan["noise_floor"] = {}
         _voice_scan["loud_ms"] = {}
@@ -2859,6 +2876,8 @@ async def stop_voice_scan() -> dict[str, float]:
     _voice_scan["totals"] = {}
     _voice_scan["eligible_ids"] = set()
     _voice_scan["manual"] = False
+    _voice_scan["report_channel_id"] = None
+    _voice_scan["report_message_id"] = None
     with _voice_loud_lock:
         _voice_scan["noise_floor"] = {}
         _voice_scan["loud_ms"] = {}
@@ -2866,6 +2885,66 @@ async def stop_voice_scan() -> dict[str, float]:
         _voice_scan["speaking"] = {}
     _voice_scan["started_at"] = None
     return totals
+
+
+def format_voice_scan_live_table(vc: "voice_recv.VoiceRecvClient", data: dict[str, Any] | None = None) -> str:
+    """Табличка live-скана /voice_scan_start: все сейчас в войсе + их секунды речи.
+
+    Ники — game_nick, если юзер зарегистрирован в players.json, иначе
+    discord display name. Кто зашёл после старта скана — тоже появляется
+    (с 00:00, пока не начнёт говорить).
+    """
+    if data is None:
+        data = load_db()
+    players = data.get("players", {})
+    totals = _voice_scan.get("totals") or {}
+    rows: list[tuple[str, float]] = []
+    for member in vc.channel.members:
+        if member.bot:
+            continue
+        did = str(member.id)
+        p = players.get(did) or {}
+        name = p.get("game_nick") or member.display_name
+        secs = float(totals.get(did, 0.0))
+        rows.append((name, secs))
+    rows.sort(key=lambda r: r[1], reverse=True)
+    if not rows:
+        return "_В войсе никого нет._"
+    lines = []
+    for name, secs in rows:
+        m, s = divmod(int(secs), 60)
+        lines.append(f"· **{name}** — `{m:02d}:{s:02d}`")
+    return "\n".join(lines)
+
+
+async def _update_manual_voice_scan_report(vc: "voice_recv.VoiceRecvClient") -> None:
+    """Редактирует (или создаёт) live-сообщение с табличкой ручного скана
+    в канале, где вызвали /voice_scan_start."""
+    channel_id = _voice_scan.get("report_channel_id")
+    if not channel_id:
+        return
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        return
+    table = format_voice_scan_live_table(vc)
+    embed = make_reply_embed(
+        "🎙️  Скан речи · live",
+        f"{table}\n\n_Обновляется каждые ~10 сек · `/voice_scan_stop` — завершить._",
+        color=COLOR_LIVE,
+    )
+    mid = _voice_scan.get("report_message_id")
+    try:
+        if mid:
+            msg = await channel.fetch_message(int(mid))
+            await msg.edit(embed=embed)
+            return
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+        pass
+    try:
+        msg = await channel.send(embed=embed)
+        _voice_scan["report_message_id"] = msg.id
+    except Exception as e:
+        log(f"voice_scan live report: {e}", "warn")
 
 
 def format_voice_scan_report(totals: dict[str, float], data: dict[str, Any] | None = None) -> str:
@@ -4635,7 +4714,10 @@ async def cmd_voice_scan_start(interaction: discord.Interaction):
         if isinstance(ch, discord.VoiceChannel):
             target_channel = ch
 
-    ok, msg = await start_voice_scan(interaction.guild, channel=target_channel, manual=True)
+    report_channel_id = interaction.channel_id
+    ok, msg = await start_voice_scan(
+        interaction.guild, channel=target_channel, manual=True, report_channel_id=report_channel_id
+    )
     if not ok:
         await interaction.followup.send(
             embed=make_reply_embed("❌  Не удалось начать скан", msg, color=COLOR_ERR)
@@ -4647,12 +4729,18 @@ async def cmd_voice_scan_start(interaction: discord.Interaction):
             (
                 f"Бот зашёл в войс **{msg}**.\n"
                 f"Считаем секунды 'зелёной обводки' у **всех** в этом войсе до `/voice_scan_stop`.\n"
+                f"Кто зайдёт в войс позже — тоже появится в таблице ниже (с `00:00`).\n"
                 f"_Ручной режим — не связан с таблицей ГРАНАТЫ. "
                 f"Экспериментальная фича — точность не 1:1 с индикатором Discord._"
             ),
             color=COLOR_LIVE,
         )
     )
+    # сразу создаём live-табличку в этом же канале, дальше она обновляется
+    # автоматически внутри _voice_scan_poll_loop раз в ~10 сек
+    vc_now = _voice_scan.get("vc")
+    if vc_now is not None:
+        await _update_manual_voice_scan_report(vc_now)
 
 
 @bot.tree.command(
