@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import random
 import re
@@ -2461,13 +2462,23 @@ except Exception as _e:  # библиотека experimental — фича не �
     log(f"discord-ext-voice-recv не установлен, /voice_scan недоступен: {_e}", "warn")
 
 VOICE_SCAN_POLL_SECONDS = 1.0
-# RMS-порог громкости PCM (int16, шкала ~0-32767), ниже которого звук
-# считаем шумом/эхо, даже если Discord включил зелёную обводку.
+# Минимальный порог громкости в dBFS (логарифмическая шкала, 0 = full scale,
+# отрицательные значения — тише). Это ПОЛ порога: даже если у юзера очень
+# тихий фон, эффективный порог не опустится ниже этого значения.
 # Подбирается по факту — можно переопределить в .env.
-VOICE_SCAN_RMS_THRESHOLD = int(os.getenv("VOICE_SCAN_RMS_THRESHOLD", "500"))
-# Окно, в течение которого "громкий" PCM считается ещё актуальным
-# (речь идёт пакетами по ~20мс, без этого запаса будем терять доли секунды).
-VOICE_SCAN_LOUD_WINDOW = 1.5
+VOICE_SCAN_DBFS_THRESHOLD = float(os.getenv("VOICE_SCAN_DBFS_THRESHOLD", "-35"))
+# Отступ (дБ) над персональным шумовым полом (EMA) — реальный порог речи
+# для юзера = noise_floor_dbfs + margin, но не ниже VOICE_SCAN_DBFS_THRESHOLD.
+VOICE_SCAN_MARGIN_DB = float(os.getenv("VOICE_SCAN_MARGIN_DB", "12"))
+# Attack/Release gate (как в аудио-компрессорах): сколько мс подряд должно
+# быть громко/тихо, чтобы переключить состояние "говорит"/"не говорит".
+# Убирает дребезг на границах слов (замена жёсткого hold-таймера).
+VOICE_SCAN_ATTACK_MS = float(os.getenv("VOICE_SCAN_ATTACK_MS", "120"))
+VOICE_SCAN_RELEASE_MS = float(os.getenv("VOICE_SCAN_RELEASE_MS", "600"))
+# Стартовый шумовой пол (dBFS) для нового юзера, пока не накопилась EMA-статистика.
+VOICE_SCAN_INITIAL_NOISE_FLOOR = -50.0
+# Коэффициент EMA для обновления шумового пола по "тихим" пакетам.
+VOICE_SCAN_NOISE_EMA_ALPHA = 0.05
 
 _voice_scan: dict[str, Any] = {
     "active": False,
@@ -2475,7 +2486,10 @@ _voice_scan: dict[str, Any] = {
     "channel_id": None,
     "task": None,      # asyncio.Task — цикл опроса get_speaking()
     "totals": {},       # discord_id str -> накопленные секунды
-    "last_loud": {},    # discord_id str -> monotonic-время последнего громкого PCM-пакета
+    "noise_floor": {},  # discord_id str -> EMA шумового пола (dBFS)
+    "loud_ms": {},      # discord_id str -> сколько мс подряд сейчас громко (attack)
+    "quiet_ms": {},     # discord_id str -> сколько мс подряд сейчас тихо (release)
+    "speaking": {},     # discord_id str -> bool, текущее состояние гейта
     "eligible_ids": set(),  # discord_id str -> кого считаем
     "manual": False,    # True = ручной /voice_scan_start (все в войсе, без persist в БД)
     "started_at": None,
@@ -2543,8 +2557,14 @@ if VOICE_RECV_AVAILABLE:
     except Exception as e:
         log(f"voice_scan: не удалось запатчить DAVE decrypt guard: {e}", "warn")
 
+    def _rms_to_dbfs(rms: float) -> float:
+        """Линейный RMS (int16, 0-32767) -> dBFS (логарифмическая шкала, <= 0)."""
+        return 20 * math.log10(max(rms, 1.0) / 32768.0)
+
     class _SilentSink(voice_recv.AudioSink):
-        """Декодирует PCM только чтобы посчитать RMS-громкость — не хранит и не пишет звук куда-либо."""
+        """Декодирует PCM, считает громкость (dBFS) и гоняет attack/release
+        speaking-гейт с адаптивным (EMA) шумовым порогом на юзера —
+        не хранит и не пишет звук куда-либо."""
 
         def wants_opus(self) -> bool:
             # False -> библиотека сама декодирует Opus в PCM для write()
@@ -2562,13 +2582,52 @@ if VOICE_RECV_AVAILABLE:
                 samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
                 if not samples:
                     return
-                rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
+                # Discord voice PCM всегда 48kHz stereo (interleaved L/R) —
+                # усредняем каналы в mono перед расчётом громкости, иначе
+                # разная громкость L/R (панорама, эхо в одном канале) искажает RMS.
+                if len(samples) >= 2:
+                    left = samples[0::2]
+                    right = samples[1::2]
+                    n = min(len(left), len(right))
+                    mono = [(left[i] + right[i]) / 2.0 for i in range(n)]
+                else:
+                    mono = list(samples)
+                if not mono:
+                    return
+                rms = (sum(v * v for v in mono) / len(mono)) ** 0.5
+                dbfs = _rms_to_dbfs(rms)
+                # длительность пакета (мс): 2 байта/сэмпл, stereo -> кадров = samples/2
+                frames = len(samples) // 2 if len(samples) >= 2 else len(samples)
+                packet_ms = (frames / 48000.0) * 1000.0 if frames else 20.0
             except Exception:
                 return
-            if rms >= VOICE_SCAN_RMS_THRESHOLD:
-                # write() зовётся из отдельного потока декодера, не из asyncio — нужен lock
-                with _voice_loud_lock:
-                    _voice_scan["last_loud"][str(user.id)] = time.monotonic()
+
+            key = str(user.id)
+            with _voice_loud_lock:
+                noise_floor = _voice_scan["noise_floor"].get(key, VOICE_SCAN_INITIAL_NOISE_FLOOR)
+                effective_threshold = max(
+                    noise_floor + VOICE_SCAN_MARGIN_DB, VOICE_SCAN_DBFS_THRESHOLD
+                )
+                is_loud = dbfs >= effective_threshold
+
+                if not is_loud:
+                    # обновляем шумовой пол только по тихим пакетам — иначе
+                    # реальная речь сама бы поднимала свой же порог
+                    _voice_scan["noise_floor"][key] = (
+                        (1 - VOICE_SCAN_NOISE_EMA_ALPHA) * noise_floor
+                        + VOICE_SCAN_NOISE_EMA_ALPHA * dbfs
+                    )
+                    _voice_scan["quiet_ms"][key] = _voice_scan["quiet_ms"].get(key, 0.0) + packet_ms
+                    _voice_scan["loud_ms"][key] = 0.0
+                else:
+                    _voice_scan["loud_ms"][key] = _voice_scan["loud_ms"].get(key, 0.0) + packet_ms
+                    _voice_scan["quiet_ms"][key] = 0.0
+
+                speaking = _voice_scan["speaking"].get(key, False)
+                if not speaking and _voice_scan["loud_ms"][key] >= VOICE_SCAN_ATTACK_MS:
+                    _voice_scan["speaking"][key] = True
+                elif speaking and _voice_scan["quiet_ms"][key] >= VOICE_SCAN_RELEASE_MS:
+                    _voice_scan["speaking"][key] = False
 
         def cleanup(self) -> None:
             pass
@@ -2652,11 +2711,11 @@ async def _voice_scan_poll_loop() -> None:
                 if not discord_flag:
                     continue
                 with _voice_loud_lock:
-                    last_loud = _voice_scan["last_loud"].get(key)
+                    is_speaking = _voice_scan["speaking"].get(key, False)
                 # считаем только если и Discord показал зелёную обводку,
-                # И в последние VOICE_SCAN_LOUD_WINDOW сек реально был громкий PCM
+                # И attack/release-гейт (адаптивный dBFS-порог) держит speaking=True
                 # (отсекает эхо/шум, который триггерит индикатор почти без звука)
-                if last_loud is not None and (now - last_loud) <= VOICE_SCAN_LOUD_WINDOW:
+                if is_speaking:
                     _voice_scan["totals"][key] = (
                         _voice_scan["totals"].get(key, 0.0) + VOICE_SCAN_POLL_SECONDS
                     )
@@ -2748,7 +2807,10 @@ async def start_voice_scan(
     _voice_scan["manual"] = manual
     _voice_scan["totals"] = existing  # продолжаем сессию грен, если рестартовали mid-KV
     with _voice_loud_lock:
-        _voice_scan["last_loud"] = {}
+        _voice_scan["noise_floor"] = {}
+        _voice_scan["loud_ms"] = {}
+        _voice_scan["quiet_ms"] = {}
+        _voice_scan["speaking"] = {}
     _voice_scan["started_at"] = time.monotonic()
     _voice_scan["task"] = asyncio.create_task(_voice_scan_poll_loop())
     log(f"voice_scan · старт в «{ch.name}» ({len(eligible)} чел., manual={manual})", "kv")
@@ -2787,7 +2849,10 @@ async def stop_voice_scan() -> dict[str, float]:
     _voice_scan["eligible_ids"] = set()
     _voice_scan["manual"] = False
     with _voice_loud_lock:
-        _voice_scan["last_loud"] = {}
+        _voice_scan["noise_floor"] = {}
+        _voice_scan["loud_ms"] = {}
+        _voice_scan["quiet_ms"] = {}
+        _voice_scan["speaking"] = {}
     _voice_scan["started_at"] = None
     return totals
 
