@@ -2485,6 +2485,13 @@ VOICE_SCAN_RELEASE_MS = float(os.getenv("VOICE_SCAN_RELEASE_MS", "600"))
 VOICE_SCAN_INITIAL_NOISE_FLOOR = -50.0
 # Коэффициент EMA для обновления шумового пола по "тихим" пакетам.
 VOICE_SCAN_NOISE_EMA_ALPHA = 0.05
+# Если у юзера дольше этого времени (сек) не было ни одного успешно
+# декодированного PCM-пакета (DAVE-шифрование ломает decode почти всё
+# время — типичный кейс "corrupted stream" в логах), наш attack/release
+# gate физически не может накопить данных. В этом случае откатываемся
+# на прямое доверие Discord'овской "зелёной обводке" (get_speaking()),
+# чтобы не терять реальную речь из-за нехватки валидного аудио.
+VOICE_SCAN_DECODE_FALLBACK_SECONDS = float(os.getenv("VOICE_SCAN_DECODE_FALLBACK_SECONDS", "3.0"))
 
 _voice_scan: dict[str, Any] = {
     "active": False,
@@ -2496,6 +2503,7 @@ _voice_scan: dict[str, Any] = {
     "loud_ms": {},      # discord_id str -> сколько мс подряд сейчас громко (attack)
     "quiet_ms": {},     # discord_id str -> сколько мс подряд сейчас тихо (release)
     "speaking": {},     # discord_id str -> bool, текущее состояние гейта
+    "last_pcm_ok": {},   # discord_id str -> monotonic время последнего успешно декодированного PCM
     "eligible_ids": set(),  # discord_id str -> кого считаем
     "manual": False,    # True = ручной /voice_scan_start (все в войсе, без persist в БД)
     "started_at": None,
@@ -2642,6 +2650,10 @@ if VOICE_RECV_AVAILABLE:
                 elif speaking and _voice_scan["quiet_ms"][key] >= VOICE_SCAN_RELEASE_MS:
                     _voice_scan["speaking"][key] = False
 
+                # отметка, что у этого юзера только что был валидный PCM —
+                # используется поллером, чтобы понять, работает ли decode вообще
+                _voice_scan["last_pcm_ok"][key] = time.monotonic()
+
         def cleanup(self) -> None:
             pass
 
@@ -2733,10 +2745,21 @@ async def _voice_scan_poll_loop() -> None:
                     continue
                 with _voice_loud_lock:
                     is_speaking = _voice_scan["speaking"].get(key, False)
-                # считаем только если и Discord показал зелёную обводку,
-                # И attack/release-гейт (адаптивный dBFS-порог) держит speaking=True
-                # (отсекает эхо/шум, который триггерит индикатор почти без звука)
-                if is_speaking:
+                    last_pcm_ok = _voice_scan["last_pcm_ok"].get(key)
+                # Decode-fallback: если у юзера давно (или вообще) не было
+                # ни одного валидного PCM-пакета (типичный кейс — DAVE-шифрование
+                # ломает decode почти всегда, лог "corrupted stream" почти без
+                # успешных write()), наш dBFS-гейт физически не набирает данных
+                # и всегда остаётся False -> засчитывалась бы 1 сек и меньше,
+                # хотя человек реально говорил. В этом случае откатываемся на
+                # прямое доверие Discord'овской "зелёной обводке".
+                decode_dead = (
+                    last_pcm_ok is None
+                    or (now - last_pcm_ok) > VOICE_SCAN_DECODE_FALLBACK_SECONDS
+                )
+                # считаем секунду если: (а) наш гейт says speaking, ИЛИ
+                # (б) decode для этого юзера не работает — тогда просто верим Discord
+                if is_speaking or decode_dead:
                     _voice_scan["totals"][key] = (
                         _voice_scan["totals"].get(key, 0.0) + VOICE_SCAN_POLL_SECONDS
                     )
@@ -2839,6 +2862,7 @@ async def start_voice_scan(
         _voice_scan["loud_ms"] = {}
         _voice_scan["quiet_ms"] = {}
         _voice_scan["speaking"] = {}
+        _voice_scan["last_pcm_ok"] = {}
     _voice_scan["started_at"] = time.monotonic()
     _voice_scan["task"] = asyncio.create_task(_voice_scan_poll_loop())
     log(f"voice_scan · старт в «{ch.name}» ({len(eligible)} чел., manual={manual})", "kv")
@@ -2883,6 +2907,7 @@ async def stop_voice_scan() -> dict[str, float]:
         _voice_scan["loud_ms"] = {}
         _voice_scan["quiet_ms"] = {}
         _voice_scan["speaking"] = {}
+        _voice_scan["last_pcm_ok"] = {}
     _voice_scan["started_at"] = None
     return totals
 
