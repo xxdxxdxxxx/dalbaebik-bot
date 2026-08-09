@@ -12,12 +12,15 @@ from __future__ import annotations
 import asyncio
 import audioop
 import json
+import logging
 import math
 import os
 import random
 import re
+import sys
 import threading
 import time
+import traceback
 from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Any
@@ -34,29 +37,85 @@ from openpyxl import load_workbook
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Логи в консоль — коротко и по делу
+# Централизованные логи и общий debug-режим
 # ---------------------------------------------------------------------------
+APP_DEBUG = os.getenv("APP_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
+APP_LOG_LEVEL = os.getenv("APP_LOG_LEVEL", "").strip().upper()
+APP_LOGGER = logging.getLogger("stalzone_bot")
+_LOG_HANDLER_MARKER = "_stalzone_console_handler"
+
+
+class _UnexpectedRtcpFilter(logging.Filter):
+    """Убирает только известный INFO-спам voice_recv, не затрагивая WARNING/ERROR."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            record.name == "discord.ext.voice_recv.reader"
+            and record.levelno == logging.INFO
+            and "Received unexpected rtcp packet" in record.getMessage()
+        )
+
+
+def setup_logging() -> None:
+    """Настроить корневой console logging ровно один раз."""
+    root = logging.getLogger()
+    if any(getattr(handler, _LOG_HANDLER_MARKER, False) for handler in root.handlers):
+        return
+
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError):
+            pass
+
+    requested_level = APP_LOG_LEVEL or ("DEBUG" if APP_DEBUG else "INFO")
+    level = getattr(logging, requested_level, None)
+    if not isinstance(level, int):
+        level = logging.DEBUG if APP_DEBUG else logging.INFO
+
+    handler = logging.StreamHandler(sys.stdout)
+    setattr(handler, _LOG_HANDLER_MARKER, True)
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s", "%H:%M:%S"))
+    handler.addFilter(_UnexpectedRtcpFilter())
+    root.addHandler(handler)
+    root.setLevel(level)
+
+    # Normal voice lifecycle and gateway diagnostics are debug-only.
+    dependency_level = logging.NOTSET if APP_DEBUG else logging.WARNING
+    logging.getLogger("discord.voice_state").setLevel(dependency_level)
+    logging.getLogger("discord.ext.voice_recv.gateway").setLevel(dependency_level)
+
+    if APP_LOG_LEVEL and APP_LOG_LEVEL not in logging._nameToLevel:
+        APP_LOGGER.warning("Неизвестный APP_LOG_LEVEL=%r; используется %s", APP_LOG_LEVEL, logging.getLevelName(level))
+
+
+setup_logging()
+
+
 def log(msg: str, level: str = "info") -> None:
-    """level: info | ok | warn | err | kv"""
-    tag = {
-        "info": "·",
-        "ok": "✓",
-        "warn": "!",
-        "err": "✗",
-        "kv": "◆",
-    }.get(level, "·")
-    print(f"  {tag}  {msg}")
+    """Совместимый фасад: info=DEBUG, ok/kv=INFO, warn=WARNING, err=ERROR."""
+    log_level = {
+        "info": logging.DEBUG,
+        "debug": logging.DEBUG,
+        "ok": logging.INFO,
+        "kv": logging.INFO,
+        "warn": logging.WARNING,
+        "warning": logging.WARNING,
+        "err": logging.ERROR,
+        "error": logging.ERROR,
+    }.get(level.lower(), logging.DEBUG)
+    APP_LOGGER.log(log_level, msg)
 
 
 def log_banner(lines: list[str]) -> None:
     w = 46
-    print()
-    print("  ╔" + "═" * w + "╗")
+    rendered = ["╔" + "═" * w + "╗"]
     for line in lines:
         s = line if len(line) <= w - 2 else line[: w - 3] + "…"
-        print(f"  ║ {s:<{w - 2}} ║")
-    print("  ╚" + "═" * w + "╝")
-    print()
+        rendered.append(f"║ {s:<{w - 2}} ║")
+    rendered.append("╚" + "═" * w + "╝")
+    APP_LOGGER.info("\n%s", "\n".join(rendered))
 
 
 # ---------------------------------------------------------------------------
@@ -2462,10 +2521,39 @@ except Exception as _e:  # библиотека experimental — фича не �
     log(f"discord-ext-voice-recv не установлен, /voice_scan недоступен: {_e}", "warn")
 
 VOICE_SCAN_POLL_SECONDS = float(os.getenv("VOICE_SCAN_POLL_SECONDS", "0.25"))
-VOICE_SCAN_GATE_DEBUG = os.getenv("VOICE_SCAN_GATE_DEBUG", "false").strip().lower() in (
-    "1", "true", "yes", "on"
-)
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_legacy_voice_calibration = os.getenv("VOICE_SCAN_GATE_DEBUG", "false").strip().lower() in _TRUE_ENV_VALUES
+if "VOICE_VOLUME_CALIBRATION_DEBUG" in os.environ:
+    VOICE_VOLUME_CALIBRATION_DEBUG = (
+        os.getenv("VOICE_VOLUME_CALIBRATION_DEBUG", "false").strip().lower() in _TRUE_ENV_VALUES
+    )
+else:
+    # Deprecated compatibility fallback. The new flag always wins when present.
+    VOICE_VOLUME_CALIBRATION_DEBUG = _legacy_voice_calibration
+VOICE_SCAN_GATE_DEBUG = _legacy_voice_calibration
 VOICE_SCAN_GATE_DEBUG_SECONDS = float(os.getenv("VOICE_SCAN_GATE_DEBUG_SECONDS", "2.0"))
+try:
+    VOICE_VOLUME_CALIBRATION_INTERVAL_SECONDS = float(
+        os.getenv("VOICE_VOLUME_CALIBRATION_INTERVAL_SECONDS", "1.0")
+    )
+    if VOICE_VOLUME_CALIBRATION_INTERVAL_SECONDS <= 0:
+        raise ValueError("must be > 0")
+except (TypeError, ValueError) as e:
+    raise ValueError("VOICE_VOLUME_CALIBRATION_INTERVAL_SECONDS must be a number > 0") from e
+_voice_calibration_user_ids_raw = os.getenv("VOICE_VOLUME_CALIBRATION_USER_IDS", "")
+VOICE_VOLUME_CALIBRATION_USER_IDS: set[str] = set()
+if _voice_calibration_user_ids_raw.strip():
+    _voice_calibration_user_id_values = [
+        value.strip() for value in _voice_calibration_user_ids_raw.split(",") if value.strip()
+    ]
+    invalid_user_ids = [value for value in _voice_calibration_user_id_values if not value.isdigit()]
+    if invalid_user_ids or not _voice_calibration_user_id_values:
+        invalid_text = ", ".join(repr(value) for value in invalid_user_ids) or "no Discord IDs"
+        raise ValueError(
+            "VOICE_VOLUME_CALIBRATION_USER_IDS must contain only numeric Discord IDs "
+            f"separated by commas; invalid: {invalid_text}"
+        )
+    VOICE_VOLUME_CALIBRATION_USER_IDS = set(_voice_calibration_user_id_values)
 # Минимальный порог громкости в dBFS (логарифмическая шкала, 0 = full scale,
 # отрицательные значения — тише). Это ПОЛ порога: даже если у юзера очень
 # тихий фон, эффективный порог не опустится ниже этого значения.
@@ -2474,9 +2562,7 @@ VOICE_SCAN_GATE_DEBUG_SECONDS = float(os.getenv("VOICE_SCAN_GATE_DEBUG_SECONDS",
 # примерно -33…-48 dBFS, тишина — около -90 dBFS. Старый -35 отбрасывал
 # большую часть даже громкой речи. Порог -55 оставляет хороший запас до тишины
 # и не даёт кратким просадкам голоса сбрасывать attack-гейт.
-VOICE_SCAN_DBFS_THRESHOLD = min(
-    float(os.getenv("VOICE_SCAN_DBFS_THRESHOLD", "-55")), -55.0
-)
+VOICE_SCAN_DBFS_THRESHOLD = float(os.getenv("VOICE_SCAN_DBFS_THRESHOLD", "-55"))
 # Отступ (дБ) над персональным шумовым полом (EMA) — реальный порог речи
 # для юзера = noise_floor_dbfs + margin, но не ниже VOICE_SCAN_DBFS_THRESHOLD.
 VOICE_SCAN_MARGIN_DB = float(os.getenv("VOICE_SCAN_MARGIN_DB", "12"))
@@ -2489,8 +2575,12 @@ VOICE_SCAN_ADAPTIVE_THRESHOLD = os.getenv("VOICE_SCAN_ADAPTIVE_THRESHOLD", "fals
 # Attack/Release gate (как в аудио-компрессорах): сколько мс подряд должно
 # быть громко/тихо, чтобы переключить состояние "говорит"/"не говорит".
 # Убирает дребезг на границах слов (замена жёсткого hold-таймера).
-VOICE_SCAN_ATTACK_MS = min(float(os.getenv("VOICE_SCAN_ATTACK_MS", "60")), 60.0)
-VOICE_SCAN_RELEASE_MS = max(float(os.getenv("VOICE_SCAN_RELEASE_MS", "1000")), 1000.0)
+VOICE_SCAN_ATTACK_MS = float(os.getenv("VOICE_SCAN_ATTACK_MS", "60"))
+VOICE_SCAN_RELEASE_MS = float(os.getenv("VOICE_SCAN_RELEASE_MS", "1000"))
+if VOICE_SCAN_ATTACK_MS < 0:
+    raise ValueError("VOICE_SCAN_ATTACK_MS must be >= 0")
+if VOICE_SCAN_RELEASE_MS < 0:
+    raise ValueError("VOICE_SCAN_RELEASE_MS must be >= 0")
 # Стартовый шумовой пол (dBFS) для нового юзера, пока не накопилась EMA-статистика.
 VOICE_SCAN_INITIAL_NOISE_FLOOR = -50.0
 # Коэффициент EMA для обновления шумового пола по "тихим" пакетам.
@@ -2512,9 +2602,24 @@ VOICE_SCAN_NOISE_EMA_ALPHA = 0.05
 # откатываемся на прямое доверие Discord'овской "зелёной обводке"
 # (get_speaking()) — надёжный сигнал независимо от davey.
 VOICE_SCAN_DECODE_FALLBACK_SECONDS = float(os.getenv("VOICE_SCAN_DECODE_FALLBACK_SECONDS", "3.0"))
+# voice_recv может оставить reader формально active после того, как UDP-поток
+# фактически умер. RTCP приходит даже в тихом канале, поэтому отсутствие любых
+# пакетов дольше этого окна — надёжный признак зависшего receive path.
+# Receive-only voice clients otherwise send no UDP after IP discovery. Some NAT/firewall
+# mappings expire near 300 seconds while the voice WebSocket remains healthy.
+# A valid encrypted Opus silence packet preserves that mapping without setting speaking.
+VOICE_SCAN_UDP_KEEPALIVE_SECONDS = max(
+    5.0, float(os.getenv("VOICE_SCAN_UDP_KEEPALIVE_SECONDS", "20.0"))
+)
+VOICE_SCAN_OPUS_SILENCE = bytes.fromhex("f8fffe")
+
+VOICE_SCAN_PACKET_TIMEOUT_SECONDS = max(
+    10.0, float(os.getenv("VOICE_SCAN_PACKET_TIMEOUT_SECONDS", "30.0"))
+)
 
 _voice_scan: dict[str, Any] = {
     "active": False,
+    "desired": False,   # скан должен работать; остаётся True при временном обрыве
     "vc": None,       # VoiceRecvClient
     "channel_id": None,
     "task": None,      # asyncio.Task — цикл опроса get_speaking()
@@ -2527,9 +2632,12 @@ _voice_scan: dict[str, Any] = {
     "last_loud": {},      # discord_id str -> monotonic время последнего пакета выше порога
     "gate_debug": {},     # discord_id str -> последние dbfs/threshold/packet_ms
     "gate_debug_log": {}, # discord_id str -> monotonic последнего debug-лога
+    "calibration_windows": {}, # discord_id str -> агрегаты VOICE_CAL текущего окна
+    "calibration_last_flush": None,
     "eligible_ids": set(),  # discord_id str -> кого считаем
     "manual": False,    # True = ручной /voice_scan_start (все в войсе, без persist в БД)
     "started_at": None,
+    "last_packet_at": None,  # monotonic последнего RTP/RTCP от voice UDP
     "report_channel_id": None,  # ручной режим: канал, где вызвали /voice_scan_start
     "report_message_id": None,  # ручной режим: live-табличка (редактируется каждые ~10с)
 }
@@ -2558,6 +2666,7 @@ if VOICE_RECV_AVAILABLE:
         _dave_diag = {
             "decrypt_ok": 0, "decrypt_fail": 0, "decode_ok": 0, "decode_fail": 0,
             "not_ready": 0, "passthrough": 0, "last_log": 0.0,
+            "not_ready_since": None, "consecutive_decrypt_fail": 0,
         }
         _dave_diag_lock = threading.Lock()
 
@@ -2589,7 +2698,25 @@ if VOICE_RECV_AVAILABLE:
                     f"{key}={value}" for key, value in _dave_diag.items() if key != "last_log"
                 )
             err = f" error={type(error).__name__}: {error}" if error is not None else ""
-            log(f"voice_scan DAVE {reason}: {_dave_session_details(session, user_id)} {counters}{err}", "warn")
+            level = "warn"
+            if reason == "session_not_ready":
+                started = _dave_diag["not_ready_since"] or now
+                if now - started < 15.0 and _dave_diag["not_ready"] < 50:
+                    level = "debug"
+            elif (
+                error is not None
+                and type(error).__name__ == "DecryptionFailed"
+                and str(error) == "UnencryptedWhenPassthroughDisabled"
+            ):
+                attempts = _dave_diag["decrypt_ok"] + _dave_diag["decrypt_fail"]
+                if (
+                    _dave_diag["decrypt_ok"] >= 100
+                    and _dave_diag["decode_ok"] >= 100
+                    and _dave_diag["consecutive_decrypt_fail"] == 1
+                    and _dave_diag["decrypt_fail"] / max(1, attempts) <= 0.01
+                ):
+                    level = "debug"
+            log(f"voice_scan DAVE {reason}: {_dave_session_details(session, user_id)} {counters}{err}", level)
 
         def _dave_decrypt_inplace(self, packet):
             if _davey is None or not packet or not getattr(packet, "decrypted_data", None):
@@ -2602,9 +2729,14 @@ if VOICE_RECV_AVAILABLE:
             if getattr(state, "dave_protocol_version", 0) == 0:
                 return session, user_id, "protocol_disabled"
             if not getattr(session, "ready", False):
-                _dave_diag_increment("not_ready")
+                with _dave_diag_lock:
+                    _dave_diag["not_ready"] += 1
+                    if _dave_diag["not_ready_since"] is None:
+                        _dave_diag["not_ready_since"] = time.monotonic()
                 _dave_diag_log(session, user_id, "session_not_ready")
                 return session, user_id, "not_ready"
+            with _dave_diag_lock:
+                _dave_diag["not_ready_since"] = None
             if user_id is None:
                 return session, None, "unknown_sender"
             try:
@@ -2614,10 +2746,14 @@ if VOICE_RECV_AVAILABLE:
                 packet.decrypted_data = session.decrypt(
                     int(user_id), _davey.MediaType.audio, bytes(packet.decrypted_data)
                 )
-                _dave_diag_increment("decrypt_ok")
+                with _dave_diag_lock:
+                    _dave_diag["decrypt_ok"] += 1
+                    _dave_diag["consecutive_decrypt_fail"] = 0
                 return session, user_id, "decrypted"
             except Exception as e:
-                _dave_diag_increment("decrypt_fail")
+                with _dave_diag_lock:
+                    _dave_diag["decrypt_fail"] += 1
+                    _dave_diag["consecutive_decrypt_fail"] += 1
                 _dave_diag_log(session, user_id, "decrypt_failed", e)
                 return session, user_id, "decrypt_failed"
 
@@ -2644,8 +2780,29 @@ if VOICE_RECV_AVAILABLE:
 
         _voice_recv_opus.PacketDecoder._dave_decrypt_inplace = _dave_decrypt_inplace
         _voice_recv_opus.PacketDecoder._process_packet = _dave_aware_process_packet
+
+        # AudioReader.active не отражает зависший UDP receive path: в логе он
+        # остался True после последнего RTCP в 03:46:56. Отмечаем каждый реально
+        # полученный пакет; poll-loop по таймауту завершится, сохранив totals.
+        from discord.ext.voice_recv import reader as _voice_recv_reader
+
+        _orig_reader_callback = _voice_recv_reader.AudioReader.callback
+
+        def _tracked_reader_callback(self, packet_data):
+            # Считаем транспорт живым только после того, как reader успешно
+            # распознал/принял пакет. callback обрабатывает и RTP, и RTCP, поэтому
+            # нормальная тишина с RTCP не выглядит как зависший UDP-поток.
+            result = _orig_reader_callback(self, packet_data)
+            if (
+                getattr(self.voice_client, "_voice_scan_owned", False)
+                and self.voice_client is _voice_scan.get("vc")
+            ):
+                _voice_scan["last_packet_at"] = time.monotonic()
+            return result
+
+        _voice_recv_reader.AudioReader.callback = _tracked_reader_callback
     except Exception as e:
-        log(f"voice_scan: не удалось запатчить DAVE decrypt guard: {e}", "warn")
+        log(f"voice_scan: не удалось установить receive guards: {e}", "warn")
 
     def _rms_to_dbfs(rms: float) -> float:
         """Линейный RMS (int16, 0-32767) -> dBFS (логарифмическая шкала, <= 0)."""
@@ -2665,6 +2822,17 @@ if VOICE_RECV_AVAILABLE:
                 return
             pcm = data.pcm
             if not pcm:
+                if VOICE_VOLUME_CALIBRATION_DEBUG:
+                    key = str(user.id)
+                    if not VOICE_VOLUME_CALIBRATION_USER_IDS or key in VOICE_VOLUME_CALIBRATION_USER_IDS:
+                        with _voice_loud_lock:
+                            window = _voice_scan["calibration_windows"].setdefault(
+                                key, {"name": str(user), "packets": 0, "pcm_ok": 0,
+                                      "pcm_errors": 0, "dbfs": [], "packet_ms": 0.0,
+                                      "loud_packets": 0, "transition": "none"}
+                            )
+                            window["packets"] += 1
+                            window["pcm_errors"] += 1
                 return
             try:
                 # audioop выполняет RMS в C и не создаёт тысячи Python-объектов
@@ -2717,10 +2885,30 @@ if VOICE_RECV_AVAILABLE:
                     _voice_scan["quiet_ms"][key] = 0.0
 
                 speaking = _voice_scan["speaking"].get(key, False)
+                transition = "none"
                 if not speaking and _voice_scan["loud_ms"][key] >= VOICE_SCAN_ATTACK_MS:
                     _voice_scan["speaking"][key] = True
+                    transition = "attack"
                 elif speaking and _voice_scan["quiet_ms"][key] >= VOICE_SCAN_RELEASE_MS:
                     _voice_scan["speaking"][key] = False
+                    transition = "release"
+
+                if VOICE_VOLUME_CALIBRATION_DEBUG and (
+                    not VOICE_VOLUME_CALIBRATION_USER_IDS or key in VOICE_VOLUME_CALIBRATION_USER_IDS
+                ):
+                    window = _voice_scan["calibration_windows"].setdefault(
+                        key, {"name": str(user), "packets": 0, "pcm_ok": 0,
+                              "pcm_errors": 0, "dbfs": [], "packet_ms": 0.0,
+                              "loud_packets": 0, "transition": "none"}
+                    )
+                    window["name"] = str(user)
+                    window["packets"] += 1
+                    window["pcm_ok"] += 1
+                    window["dbfs"].append(dbfs)
+                    window["packet_ms"] += packet_ms
+                    window["loud_packets"] += int(is_loud)
+                    if transition != "none":
+                        window["transition"] = transition
 
                 # отметка, что у этого юзера только что был валидный PCM —
                 # используется поллером, чтобы понять, работает ли decode вообще
@@ -2779,6 +2967,57 @@ def _persist_voice_totals() -> None:
         log(f"voice_scan persist: {e}", "err")
 
 
+def _percentile95(values: list[float]) -> float | None:
+    """Nearest-rank p95 without external dependencies."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
+
+
+def _flush_voice_calibration(now: float, *, force: bool = False) -> None:
+    if not VOICE_VOLUME_CALIBRATION_DEBUG:
+        return
+    last_flush = _voice_scan.get("calibration_last_flush") or now
+    if not force and now - last_flush < VOICE_VOLUME_CALIBRATION_INTERVAL_SECONDS:
+        return
+    with _voice_loud_lock:
+        windows = _voice_scan.get("calibration_windows") or {}
+        _voice_scan["calibration_windows"] = {}
+        _voice_scan["calibration_last_flush"] = now
+        snapshots = []
+        for key, window in windows.items():
+            snapshot = dict(window)
+            snapshot["noise_floor"] = _voice_scan["noise_floor"].get(key)
+            snapshot["gate_state"] = _voice_scan["speaking"].get(key, False)
+            snapshots.append((key, snapshot))
+    window_ms = max(0.0, (now - last_flush) * 1000.0)
+    for key, window in snapshots:
+        values = window.get("dbfs") or []
+        def fmt(value: Any) -> str:
+            return f"{value:.1f}" if isinstance(value, (int, float)) else "n/a"
+        noise_floor = window.get("noise_floor")
+        threshold = max(noise_floor + VOICE_SCAN_MARGIN_DB, VOICE_SCAN_DBFS_THRESHOLD) if (
+            VOICE_SCAN_ADAPTIVE_THRESHOLD and isinstance(noise_floor, (int, float))
+        ) else VOICE_SCAN_DBFS_THRESHOLD
+        packets = int(window.get("packets", 0))
+        loud_ratio = (float(window.get("loud_packets", 0)) / packets) if packets else 0.0
+        APP_LOGGER.info(
+            "VOICE_CAL user_id=%s name=%s window_ms=%.0f packets=%d pcm_ok=%d pcm_errors=%d "
+            "dbfs_min=%s dbfs_mean=%s dbfs_p95=%s dbfs_max=%s noise_floor=%s "
+            "effective_threshold=%.1f margin=%.1f loud_ratio=%.3f attack_ms=%.1f release_ms=%.1f "
+            "gate_state=%s transition=%s discord_speaking=%r decode_fallback=%s decode_dead=%s counted_ms=%.1f",
+            key, window.get("name", "unknown"), window_ms, packets,
+            int(window.get("pcm_ok", 0)), int(window.get("pcm_errors", 0)),
+            fmt(min(values) if values else None), fmt(sum(values) / len(values) if values else None),
+            fmt(_percentile95(values)), fmt(max(values) if values else None), fmt(noise_floor),
+            threshold, VOICE_SCAN_MARGIN_DB, loud_ratio, VOICE_SCAN_ATTACK_MS, VOICE_SCAN_RELEASE_MS,
+            window.get("gate_state"), window.get("transition", "none"),
+            window.get("discord_speaking"), window.get("decode_fallback", False),
+            window.get("decode_dead", False), float(window.get("counted_ms", 0.0)),
+        )
+
+
 async def _voice_scan_poll_loop() -> None:
     """Каждую VOICE_SCAN_POLL_SECONDS секунд — кто говорит, копим секунды.
 
@@ -2794,6 +3033,8 @@ async def _voice_scan_poll_loop() -> None:
     save_counter = 0.0
     report_counter = 0.0
     last_tick = time.monotonic()
+    last_udp_keepalive = 0.0
+    udp_keepalive_failures = 0
     unhealthy_since: float | None = None
     try:
         while _voice_scan.get("active") and vc is not None:
@@ -2802,6 +3043,17 @@ async def _voice_scan_poll_loop() -> None:
                 listening = bool(vc.is_listening())
             except Exception:
                 listening = True
+            if connected and (time.monotonic() - last_udp_keepalive) >= VOICE_SCAN_UDP_KEEPALIVE_SECONDS:
+                try:
+                    # Normal RTP + encryption/DAVE path; speaking stays false.
+                    vc.send_audio_packet(VOICE_SCAN_OPUS_SILENCE, encode=False)
+                    last_udp_keepalive = time.monotonic()
+                    udp_keepalive_failures = 0
+                except Exception as e:
+                    udp_keepalive_failures += 1
+                    if udp_keepalive_failures == 1 or udp_keepalive_failures % 10 == 0:
+                        log(f"voice_scan UDP keepalive failed x{udp_keepalive_failures}: {type(e).__name__}: {e}", "warn")
+
             if not connected or not listening:
                 # Короткий reconnect допустим. Если соединение/reader не ожили за
                 # 30 секунд, завершаем task: schedule_loop увидит это и перезапустит scan.
@@ -2815,6 +3067,40 @@ async def _voice_scan_poll_loop() -> None:
                 continue
             unhealthy_since = None
             now = time.monotonic()
+            last_packet_at = _voice_scan.get("last_packet_at")
+            if (
+                last_packet_at is not None
+                and now - last_packet_at >= VOICE_SCAN_PACKET_TIMEOUT_SECONDS
+            ):
+                stalled_for = now - last_packet_at
+                log(f"voice_scan receive stall {stalled_for:.1f}s · reconnect", "warn")
+                _persist_voice_totals()
+                channel = vc.channel
+                try:
+                    try:
+                        vc.stop_listening()
+                    except Exception:
+                        pass
+                    await asyncio.wait_for(vc.disconnect(force=True), timeout=10.0)
+                    vc = await asyncio.wait_for(
+                        channel.connect(cls=voice_recv.VoiceRecvClient), timeout=30.0
+                    )
+                    vc._voice_scan_owned = True
+                    vc.listen(_SilentSink())
+                    _voice_scan["vc"] = vc
+                    _voice_scan["channel_id"] = channel.id
+                    _voice_scan["last_packet_at"] = time.monotonic()
+                    unhealthy_since = None
+                    last_tick = time.monotonic()
+                    log(f"voice_scan receive восстановлен в «{channel.name}»", "ok")
+                    continue
+                except Exception as e:
+                    log(
+                        f"voice_scan reconnect: {type(e).__name__}: {e}\n"
+                        f"{traceback.format_exc()}",
+                        "err",
+                    )
+                    raise RuntimeError("voice receive reconnect failed") from e
             # Считаем реальное время между тиками, а не предполагаем идеальный sleep.
             # Верхний предел не даёт приписать долгий event-loop stall как речь.
             tick_seconds = min(max(now - last_tick, 0.0), VOICE_SCAN_POLL_SECONDS * 2.0)
@@ -2870,9 +3156,25 @@ async def _voice_scan_poll_loop() -> None:
 
                 # Валидный свежий PCM-гейт основной. Discord-флаг используется
                 # только как fallback, если decode действительно умер.
-                counted = gate_active or (bool(discord_flag) and decode_dead)
+                decode_fallback = bool(discord_flag) and decode_dead
+                counted = gate_active or decode_fallback
                 if counted:
                     _voice_scan["totals"][key] = _voice_scan["totals"].get(key, 0.0) + tick_seconds
+
+                if VOICE_VOLUME_CALIBRATION_DEBUG and (
+                    not VOICE_VOLUME_CALIBRATION_USER_IDS or key in VOICE_VOLUME_CALIBRATION_USER_IDS
+                ):
+                    with _voice_loud_lock:
+                        window = _voice_scan["calibration_windows"].get(key)
+                        if window is not None:
+                            window["discord_speaking"] = discord_flag
+                            window["decode_dead"] = bool(window.get("decode_dead", False) or decode_dead)
+                            window["decode_fallback"] = bool(
+                                window.get("decode_fallback", False) or decode_fallback
+                            )
+                            window["counted_ms"] = window.get("counted_ms", 0.0) + (
+                                tick_seconds * 1000.0 if counted else 0.0
+                            )
 
                 if VOICE_SCAN_GATE_DEBUG and now - last_debug >= VOICE_SCAN_GATE_DEBUG_SECONDS:
                     with _voice_loud_lock:
@@ -2893,6 +3195,7 @@ async def _voice_scan_poll_loop() -> None:
                         f"total={_voice_scan['totals'].get(key, 0.0):.3f}",
                         "info",
                     )
+            _flush_voice_calibration(now)
             save_counter += tick_seconds
             if save_counter >= 15.0:
                 save_counter = 0.0
@@ -2905,7 +3208,7 @@ async def _voice_scan_poll_loop() -> None:
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        log(f"voice_scan poll: {e}", "err")
+        log(f"voice_scan poll: {type(e).__name__}: {e}\n{traceback.format_exc()}", "err")
     finally:
         _persist_voice_totals()
         # Не оставляем ложный active=True, если poll-loop аварийно завершился.
@@ -2959,6 +3262,8 @@ async def start_voice_scan(
 
     try:
         vc = await ch.connect(cls=voice_recv.VoiceRecvClient)
+        # Маркер нужен глобальному receive callback только для нашего сканера.
+        vc._voice_scan_owned = True
     except Exception as e:
         log(f"voice_scan connect: {e}", "err")
         return False, f"Не удалось подключиться к войсу: {e}"
@@ -2984,6 +3289,7 @@ async def start_voice_scan(
         existing = {str(k): float(v) for k, v in (data.get("voice_speak_seconds") or {}).items()}
 
     _voice_scan["active"] = True
+    _voice_scan["desired"] = True
     _voice_scan["vc"] = vc
     _voice_scan["channel_id"] = ch.id
     _voice_scan["eligible_ids"] = eligible
@@ -3000,7 +3306,10 @@ async def start_voice_scan(
         _voice_scan["last_loud"] = {}
         _voice_scan["gate_debug"] = {}
         _voice_scan["gate_debug_log"] = {}
+        _voice_scan["calibration_windows"] = {}
+        _voice_scan["calibration_last_flush"] = time.monotonic()
     _voice_scan["started_at"] = time.monotonic()
+    _voice_scan["last_packet_at"] = time.monotonic()
     _voice_scan["task"] = asyncio.create_task(_voice_scan_poll_loop())
     log(f"voice_scan · старт в «{ch.name}» ({len(eligible)} чел., manual={manual})", "kv")
     return True, ch.name
@@ -3008,8 +3317,8 @@ async def start_voice_scan(
 
 async def stop_voice_scan() -> dict[str, float]:
     """Остановить скан, отключиться от войса, вернуть итог {discord_id: секунды}."""
-    totals = dict(_voice_scan.get("totals") or {})
     _voice_scan["active"] = False
+    _voice_scan["desired"] = False
 
     task = _voice_scan.get("task")
     if task is not None:
@@ -3018,6 +3327,10 @@ async def stop_voice_scan() -> dict[str, float]:
             await task
         except (asyncio.CancelledError, Exception):
             pass
+
+    # Снимок только после полной остановки poll-loop: иначе последний тик мог
+    # попасть в БД, но отсутствовать в возвращаемом ручном/финальном отчёте.
+    totals = dict(_voice_scan.get("totals") or {})
 
     vc = _voice_scan.get("vc")
     if vc is not None:
@@ -3039,6 +3352,7 @@ async def stop_voice_scan() -> dict[str, float]:
     _voice_scan["manual"] = False
     _voice_scan["report_channel_id"] = None
     _voice_scan["report_message_id"] = None
+    _flush_voice_calibration(time.monotonic(), force=True)
     with _voice_loud_lock:
         _voice_scan["noise_floor"] = {}
         _voice_scan["loud_ms"] = {}
@@ -3048,7 +3362,10 @@ async def stop_voice_scan() -> dict[str, float]:
         _voice_scan["last_loud"] = {}
         _voice_scan["gate_debug"] = {}
         _voice_scan["gate_debug_log"] = {}
+        _voice_scan["calibration_windows"] = {}
+        _voice_scan["calibration_last_flush"] = None
     _voice_scan["started_at"] = None
+    _voice_scan["last_packet_at"] = None
     return totals
 
 
@@ -5382,7 +5699,8 @@ def main():
         await _orig_close()
 
     bot.close = _close_with_http  # type: ignore[method-assign]
-    bot.run(DISCORD_TOKEN)
+    # Logging уже централизованно настроен выше; discord.py не должен добавлять handler.
+    bot.run(DISCORD_TOKEN, log_handler=None)
 
 
 if __name__ == "__main__":

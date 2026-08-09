@@ -35,3 +35,6 @@ scans/itogi/*
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+.postman/
+postman/

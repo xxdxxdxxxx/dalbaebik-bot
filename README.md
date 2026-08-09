@@ -93,3 +93,44 @@ ds bot stalzone/
 
 См. [docs/EXCEL.md](docs/EXCEL.md). Лист **tech** обновляется после add/remove.  
 Чемпионы (F) — без ЛС перед КВ.
+
+## Отладка
+
+Общая отладка по умолчанию выключена:
+
+```env
+APP_DEBUG=false
+APP_LOG_LEVEL=
+```
+
+`APP_LOG_LEVEL` необязателен. При `APP_DEBUG=false` штатные INFO-сообщения подключения войса и voice gateway скрыты, но WARNING/ERROR остаются видны; при `APP_DEBUG=true` эти INFO выводятся. Калибровка громкости работает независимо от `APP_DEBUG` и не записывает аудио или текст речи. `VOICE_SCAN_GATE_DEBUG` устарел и поддерживается только как deprecated fallback.
+
+## Калибровка громкости войса
+
+Калибровка включается и настраивается независимо от общей отладки:
+
+```env
+VOICE_VOLUME_CALIBRATION_DEBUG=false
+VOICE_VOLUME_CALIBRATION_INTERVAL_SECONDS=1.0
+VOICE_VOLUME_CALIBRATION_USER_IDS=
+```
+
+В `VOICE_VOLUME_CALIBRATION_USER_IDS` укажите цифровые Discord ID пользователей через запятую. Пустое значение отключает фильтр и собирает диагностические строки для всех eligible users; любая невалидная запись приводит к ошибке конфигурации при запуске.
+
+### Процедура сбора
+
+Для каждого пользователя:
+
+1. Соберите **10–15 секунд тишины**.
+2. Затем соберите **10–15 секунд обычной речи**.
+3. Пришлите все полученные строки `VOICE_CAL` без выборочного удаления.
+
+Рекомендуемые параметры голосового порога:
+
+```env
+VOICE_SCAN_DBFS_THRESHOLD=-55
+VOICE_SCAN_ADAPTIVE_THRESHOLD=false
+VOICE_SCAN_MARGIN_DB=12
+VOICE_SCAN_ATTACK_MS=60
+VOICE_SCAN_RELEASE_MS=1000
+```
