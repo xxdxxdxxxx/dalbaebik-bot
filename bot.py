@@ -10,6 +10,7 @@ Discord-бот для КВ STALCRAFT:
 from __future__ import annotations
 
 import asyncio
+import audioop
 import json
 import math
 import os
@@ -17,7 +18,6 @@ import random
 import re
 import threading
 import time
-from array import array
 from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Any
@@ -2461,12 +2461,22 @@ except Exception as _e:  # библиотека experimental — фича не �
     VOICE_RECV_AVAILABLE = False
     log(f"discord-ext-voice-recv не установлен, /voice_scan недоступен: {_e}", "warn")
 
-VOICE_SCAN_POLL_SECONDS = 1.0
+VOICE_SCAN_POLL_SECONDS = float(os.getenv("VOICE_SCAN_POLL_SECONDS", "0.25"))
+VOICE_SCAN_GATE_DEBUG = os.getenv("VOICE_SCAN_GATE_DEBUG", "false").strip().lower() in (
+    "1", "true", "yes", "on"
+)
+VOICE_SCAN_GATE_DEBUG_SECONDS = float(os.getenv("VOICE_SCAN_GATE_DEBUG_SECONDS", "2.0"))
 # Минимальный порог громкости в dBFS (логарифмическая шкала, 0 = full scale,
 # отрицательные значения — тише). Это ПОЛ порога: даже если у юзера очень
 # тихий фон, эффективный порог не опустится ниже этого значения.
 # Подбирается по факту — можно переопределить в .env.
-VOICE_SCAN_DBFS_THRESHOLD = float(os.getenv("VOICE_SCAN_DBFS_THRESHOLD", "-35"))
+# Голос из Discord после stereo→mono у реального пользователя в логах был
+# примерно -33…-48 dBFS, тишина — около -90 dBFS. Старый -35 отбрасывал
+# большую часть даже громкой речи. Порог -55 оставляет хороший запас до тишины
+# и не даёт кратким просадкам голоса сбрасывать attack-гейт.
+VOICE_SCAN_DBFS_THRESHOLD = min(
+    float(os.getenv("VOICE_SCAN_DBFS_THRESHOLD", "-55")), -55.0
+)
 # Отступ (дБ) над персональным шумовым полом (EMA) — реальный порог речи
 # для юзера = noise_floor_dbfs + margin, но не ниже VOICE_SCAN_DBFS_THRESHOLD.
 VOICE_SCAN_MARGIN_DB = float(os.getenv("VOICE_SCAN_MARGIN_DB", "12"))
@@ -2479,8 +2489,8 @@ VOICE_SCAN_ADAPTIVE_THRESHOLD = os.getenv("VOICE_SCAN_ADAPTIVE_THRESHOLD", "fals
 # Attack/Release gate (как в аудио-компрессорах): сколько мс подряд должно
 # быть громко/тихо, чтобы переключить состояние "говорит"/"не говорит".
 # Убирает дребезг на границах слов (замена жёсткого hold-таймера).
-VOICE_SCAN_ATTACK_MS = float(os.getenv("VOICE_SCAN_ATTACK_MS", "120"))
-VOICE_SCAN_RELEASE_MS = float(os.getenv("VOICE_SCAN_RELEASE_MS", "600"))
+VOICE_SCAN_ATTACK_MS = min(float(os.getenv("VOICE_SCAN_ATTACK_MS", "60")), 60.0)
+VOICE_SCAN_RELEASE_MS = max(float(os.getenv("VOICE_SCAN_RELEASE_MS", "1000")), 1000.0)
 # Стартовый шумовой пол (dBFS) для нового юзера, пока не накопилась EMA-статистика.
 VOICE_SCAN_INITIAL_NOISE_FLOOR = -50.0
 # Коэффициент EMA для обновления шумового пола по "тихим" пакетам.
@@ -2514,6 +2524,9 @@ _voice_scan: dict[str, Any] = {
     "quiet_ms": {},     # discord_id str -> сколько мс подряд сейчас тихо (release)
     "speaking": {},     # discord_id str -> bool, текущее состояние гейта
     "last_pcm_ok": {},   # discord_id str -> monotonic время последнего успешно декодированного PCM
+    "last_loud": {},      # discord_id str -> monotonic время последнего пакета выше порога
+    "gate_debug": {},     # discord_id str -> последние dbfs/threshold/packet_ms
+    "gate_debug_log": {}, # discord_id str -> monotonic последнего debug-лога
     "eligible_ids": set(),  # discord_id str -> кого считаем
     "manual": False,    # True = ручной /voice_scan_start (все в войсе, без persist в БД)
     "started_at": None,
@@ -2542,40 +2555,91 @@ if VOICE_RECV_AVAILABLE:
             _davey = None
 
         _orig_process_packet = _voice_recv_opus.PacketDecoder._process_packet
+        _dave_diag = {
+            "decrypt_ok": 0, "decrypt_fail": 0, "decode_ok": 0, "decode_fail": 0,
+            "not_ready": 0, "passthrough": 0, "last_log": 0.0,
+        }
+        _dave_diag_lock = threading.Lock()
 
-        def _dave_decrypt_inplace(self, packet) -> None:
+        def _dave_session_details(session, user_id) -> str:
+            can_passthrough = False
+            if user_id is not None:
+                try:
+                    can_passthrough = bool(session.can_passthrough(int(user_id)))
+                except Exception:
+                    pass
+            return (
+                f"ready={getattr(session, 'ready', None)} status={getattr(session, 'status', None)} "
+                f"epoch={getattr(session, 'epoch', None)} "
+                f"own_leaf_index={getattr(session, 'own_leaf_index', None)} "
+                f"user_id={user_id} can_passthrough={can_passthrough}"
+            )
+
+        def _dave_diag_increment(key: str) -> None:
+            with _dave_diag_lock:
+                _dave_diag[key] += 1
+
+        def _dave_diag_log(session, user_id, reason: str, error=None) -> None:
+            now = time.monotonic()
+            with _dave_diag_lock:
+                if now - _dave_diag["last_log"] < 10.0:
+                    return
+                _dave_diag["last_log"] = now
+                counters = " ".join(
+                    f"{key}={value}" for key, value in _dave_diag.items() if key != "last_log"
+                )
+            err = f" error={type(error).__name__}: {error}" if error is not None else ""
+            log(f"voice_scan DAVE {reason}: {_dave_session_details(session, user_id)} {counters}{err}", "warn")
+
+        def _dave_decrypt_inplace(self, packet):
             if _davey is None or not packet or not getattr(packet, "decrypted_data", None):
-                return
+                return None, None, "no_data"
             state = getattr(self.sink.voice_client, "_connection", None)
             session = getattr(state, "dave_session", None)
-            if session is None or not getattr(session, "ready", False):
-                return
-            if getattr(state, "dave_protocol_version", 0) == 0:
-                return
             user_id = self._cached_id
+            if session is None:
+                return None, user_id, "no_session"
+            if getattr(state, "dave_protocol_version", 0) == 0:
+                return session, user_id, "protocol_disabled"
+            if not getattr(session, "ready", False):
+                _dave_diag_increment("not_ready")
+                _dave_diag_log(session, user_id, "session_not_ready")
+                return session, user_id, "not_ready"
             if user_id is None:
-                # SSRC ещё не привязан к юзеру — без sender не выбрать ratchet
-                return
+                return session, None, "unknown_sender"
             try:
+                # При can_passthrough=True decrypt сам пропускает незашифрованный пакет.
+                if session.can_passthrough(int(user_id)):
+                    _dave_diag_increment("passthrough")
                 packet.decrypted_data = session.decrypt(
                     int(user_id), _davey.MediaType.audio, bytes(packet.decrypted_data)
                 )
-            except Exception:
-                # Ожидаемо для passthrough (нешифрованных) кадров — silence/keepalive
-                pass
+                _dave_diag_increment("decrypt_ok")
+                return session, user_id, "decrypted"
+            except Exception as e:
+                _dave_diag_increment("decrypt_fail")
+                _dave_diag_log(session, user_id, "decrypt_failed", e)
+                return session, user_id, "decrypt_failed"
 
         def _dave_aware_process_packet(self, packet):
+            session, user_id, decrypt_result = None, None, "guard_failed"
             try:
-                self._dave_decrypt_inplace(packet)
-            except Exception:
-                pass
-            try:
-                return _orig_process_packet(self, packet)
+                session, user_id, decrypt_result = self._dave_decrypt_inplace(packet)
             except Exception as e:
-                # На всякий случай (эквивалент community-воркараунда issue #43) —
-                # если что-то всё же не расшифровалось/не задекодировалось,
-                # не роняем поток-декодер целиком, просто скипаем пакет.
-                log(f"voice_scan opus decode skip: {e}", "warn")
+                log(f"voice_scan DAVE guard failed: {type(e).__name__}: {e}", "warn")
+            try:
+                result = _orig_process_packet(self, packet)
+                _dave_diag_increment("decode_ok")
+                return result
+            except Exception as e:
+                _dave_diag_increment("decode_fail")
+                if session is not None:
+                    _dave_diag_log(session, user_id, f"opus_decode_failed decrypt_result={decrypt_result}", e)
+                else:
+                    log(
+                        f"voice_scan opus decode skip: decrypt_result={decrypt_result} "
+                        f"error={type(e).__name__}: {e}", "warn"
+                    )
                 return _voice_recv_opus.VoiceData(packet, self._get_cached_member(), pcm=b"")
 
         _voice_recv_opus.PacketDecoder._dave_decrypt_inplace = _dave_decrypt_inplace
@@ -2603,27 +2667,15 @@ if VOICE_RECV_AVAILABLE:
             if not pcm:
                 return
             try:
-                samples = array("h")
-                # длина PCM должна быть кратна 2 байтам (int16); отрезаем хвост на всякий случай
-                samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
-                if not samples:
+                # audioop выполняет RMS в C и не создаёт тысячи Python-объектов
+                # на каждый пакет. Для stereo RMS обоих каналов достаточно для VAD.
+                usable_pcm = pcm[: len(pcm) - (len(pcm) % 2)]
+                if not usable_pcm:
                     return
-                # Discord voice PCM всегда 48kHz stereo (interleaved L/R) —
-                # усредняем каналы в mono перед расчётом громкости, иначе
-                # разная громкость L/R (панорама, эхо в одном канале) искажает RMS.
-                if len(samples) >= 2:
-                    left = samples[0::2]
-                    right = samples[1::2]
-                    n = min(len(left), len(right))
-                    mono = [(left[i] + right[i]) / 2.0 for i in range(n)]
-                else:
-                    mono = list(samples)
-                if not mono:
-                    return
-                rms = (sum(v * v for v in mono) / len(mono)) ** 0.5
+                rms = float(audioop.rms(usable_pcm, 2))
                 dbfs = _rms_to_dbfs(rms)
-                # длительность пакета (мс): 2 байта/сэмпл, stereo -> кадров = samples/2
-                frames = len(samples) // 2 if len(samples) >= 2 else len(samples)
+                samples_count = len(usable_pcm) // 2
+                frames = samples_count // 2 if samples_count >= 2 else samples_count
                 packet_ms = (frames / 48000.0) * 1000.0 if frames else 20.0
             except Exception:
                 return
@@ -2639,6 +2691,16 @@ if VOICE_RECV_AVAILABLE:
                     # адаптивный порог выключен — фиксированный dBFS для всех
                     effective_threshold = VOICE_SCAN_DBFS_THRESHOLD
                 is_loud = dbfs >= effective_threshold
+                packet_now = time.monotonic()
+                if is_loud:
+                    _voice_scan["last_loud"][key] = packet_now
+                _voice_scan["gate_debug"][key] = {
+                    "dbfs": dbfs,
+                    "threshold": effective_threshold,
+                    "is_loud": is_loud,
+                    "packet_ms": packet_ms,
+                    "at": packet_now,
+                }
 
                 if not is_loud:
                     if VOICE_SCAN_ADAPTIVE_THRESHOLD:
@@ -2669,7 +2731,11 @@ if VOICE_RECV_AVAILABLE:
 
 
 def voice_scan_is_active() -> bool:
-    return bool(_voice_scan.get("active"))
+    """True только если scan-задача реально жива, а не просто остался stale-флаг."""
+    if not _voice_scan.get("active") or _voice_scan.get("vc") is None:
+        return False
+    task = _voice_scan.get("task")
+    return bool(task is not None and not task.done())
 
 
 def voice_scan_live_totals() -> dict[str, float]:
@@ -2725,15 +2791,34 @@ async def _voice_scan_poll_loop() -> None:
     снова станет True, не прерывая скан и не теряя накопленное.
     """
     vc = _voice_scan.get("vc")
-    save_counter = 0
-    report_counter = 0
+    save_counter = 0.0
+    report_counter = 0.0
+    last_tick = time.monotonic()
+    unhealthy_since: float | None = None
     try:
         while _voice_scan.get("active") and vc is not None:
-            if not vc.is_connected():
-                # временный разрыв — discord.py переподключается сам, просто ждём
+            connected = bool(vc.is_connected())
+            try:
+                listening = bool(vc.is_listening())
+            except Exception:
+                listening = True
+            if not connected or not listening:
+                # Короткий reconnect допустим. Если соединение/reader не ожили за
+                # 30 секунд, завершаем task: schedule_loop увидит это и перезапустит scan.
+                unhealthy_since = unhealthy_since or time.monotonic()
+                if time.monotonic() - unhealthy_since >= 30.0:
+                    raise RuntimeError(
+                        f"voice receive stalled: connected={connected} listening={listening}"
+                    )
                 await asyncio.sleep(VOICE_SCAN_POLL_SECONDS)
+                last_tick = time.monotonic()
                 continue
+            unhealthy_since = None
             now = time.monotonic()
+            # Считаем реальное время между тиками, а не предполагаем идеальный sleep.
+            # Верхний предел не даёт приписать долгий event-loop stall как речь.
+            tick_seconds = min(max(now - last_tick, 0.0), VOICE_SCAN_POLL_SECONDS * 2.0)
+            last_tick = now
             if _voice_scan.get("manual"):
                 # ручной режим: кто зашёл в войс после старта скана — тоже
                 # добавляем в eligible (авто-режим считает только заранее
@@ -2751,11 +2836,12 @@ async def _voice_scan_poll_loop() -> None:
                     discord_flag = vc.get_speaking(member)
                 except Exception:
                     discord_flag = None
-                if not discord_flag:
-                    continue
                 with _voice_loud_lock:
-                    is_speaking = _voice_scan["speaking"].get(key, False)
+                    is_speaking_env = _voice_scan["speaking"].get(key, False)
                     last_pcm_ok = _voice_scan["last_pcm_ok"].get(key)
+                    last_loud = _voice_scan["last_loud"].get(key)
+                    gate = dict(_voice_scan["gate_debug"].get(key) or {})
+                    last_debug = _voice_scan["gate_debug_log"].get(key, 0.0)
                 # Decode-fallback: если у юзера давно (или вообще) не было
                 # ни одного валидного PCM-пакета (типичный кейс — DAVE-шифрование
                 # ломает decode почти всегда, лог "corrupted stream" почти без
@@ -2767,19 +2853,53 @@ async def _voice_scan_poll_loop() -> None:
                     last_pcm_ok is None
                     or (now - last_pcm_ok) > VOICE_SCAN_DECODE_FALLBACK_SECONDS
                 )
-                # считаем секунду если: (а) наш гейт says speaking, ИЛИ
-                # (б) decode для этого юзера не работает — тогда просто верим Discord
-                if is_speaking or decode_dead:
-                    _voice_scan["totals"][key] = (
-                        _voice_scan["totals"].get(key, 0.0) + VOICE_SCAN_POLL_SECONDS
+                # Release нельзя обновлять только из write(): когда пользователь
+                # замолкает, Discord может перестать слать RTP/PCM целиком. Тогда
+                # quiet_ms больше не растёт и speaking навсегда остаётся True.
+                # Принудительно закрываем гейт по wall-clock с последнего громкого PCM.
+                release_seconds = max(VOICE_SCAN_RELEASE_MS / 1000.0, VOICE_SCAN_POLL_SECONDS)
+                loud_age = (now - last_loud) if last_loud is not None else None
+                recent_loud = loud_age is not None and loud_age <= release_seconds
+                gate_active = bool(is_speaking_env and recent_loud)
+                if is_speaking_env and not recent_loud:
+                    with _voice_loud_lock:
+                        _voice_scan["speaking"][key] = False
+                        _voice_scan["loud_ms"][key] = 0.0
+                        _voice_scan["quiet_ms"][key] = 0.0
+                    is_speaking_env = False
+
+                # Валидный свежий PCM-гейт основной. Discord-флаг используется
+                # только как fallback, если decode действительно умер.
+                counted = gate_active or (bool(discord_flag) and decode_dead)
+                if counted:
+                    _voice_scan["totals"][key] = _voice_scan["totals"].get(key, 0.0) + tick_seconds
+
+                if VOICE_SCAN_GATE_DEBUG and now - last_debug >= VOICE_SCAN_GATE_DEBUG_SECONDS:
+                    with _voice_loud_lock:
+                        _voice_scan["gate_debug_log"][key] = now
+                    dbfs = gate.get("dbfs")
+                    threshold = gate.get("threshold")
+                    dbfs_txt = f"{dbfs:.1f}" if isinstance(dbfs, (int, float)) else "None"
+                    threshold_txt = f"{threshold:.1f}" if isinstance(threshold, (int, float)) else "None"
+                    last_loud_age = (now - last_loud) if last_loud is not None else None
+                    last_pcm_age = (now - last_pcm_ok) if last_pcm_ok is not None else None
+                    log(
+                        f"voice_scan gate ts={datetime.now(MSK).isoformat(timespec='milliseconds')} "
+                        f"user={member} id={key} discord_flag={discord_flag!r} "
+                        f"is_speaking_env={is_speaking_env} dbfs={dbfs_txt} "
+                        f"effective_threshold={threshold_txt} is_loud={gate.get('is_loud')} "
+                        f"last_loud_age={last_loud_age} last_pcm_age={last_pcm_age} "
+                        f"decode_dead={decode_dead} counted={counted} tick={tick_seconds:.3f} "
+                        f"total={_voice_scan['totals'].get(key, 0.0):.3f}",
+                        "info",
                     )
-            save_counter += 1
-            if save_counter >= 15:  # persist раз в ~15 сек — не на каждый тик
-                save_counter = 0
+            save_counter += tick_seconds
+            if save_counter >= 15.0:
+                save_counter = 0.0
                 _persist_voice_totals()
-            report_counter += 1
-            if _voice_scan.get("manual") and _voice_scan.get("report_channel_id") and report_counter >= 10:
-                report_counter = 0
+            report_counter += tick_seconds
+            if _voice_scan.get("manual") and _voice_scan.get("report_channel_id") and report_counter >= 10.0:
+                report_counter = 0.0
                 await _update_manual_voice_scan_report(vc)
             await asyncio.sleep(VOICE_SCAN_POLL_SECONDS)
     except asyncio.CancelledError:
@@ -2788,6 +2908,10 @@ async def _voice_scan_poll_loop() -> None:
         log(f"voice_scan poll: {e}", "err")
     finally:
         _persist_voice_totals()
+        # Не оставляем ложный active=True, если poll-loop аварийно завершился.
+        # Авто-watchdog расписания очистит VC и перезапустит при активном КВ.
+        if asyncio.current_task() is _voice_scan.get("task"):
+            _voice_scan["active"] = False
 
 
 def _scan_roster_ids(data: dict[str, Any] | None = None) -> set[str]:
@@ -2873,6 +2997,9 @@ async def start_voice_scan(
         _voice_scan["quiet_ms"] = {}
         _voice_scan["speaking"] = {}
         _voice_scan["last_pcm_ok"] = {}
+        _voice_scan["last_loud"] = {}
+        _voice_scan["gate_debug"] = {}
+        _voice_scan["gate_debug_log"] = {}
     _voice_scan["started_at"] = time.monotonic()
     _voice_scan["task"] = asyncio.create_task(_voice_scan_poll_loop())
     log(f"voice_scan · старт в «{ch.name}» ({len(eligible)} чел., manual={manual})", "kv")
@@ -2918,6 +3045,9 @@ async def stop_voice_scan() -> dict[str, float]:
         _voice_scan["quiet_ms"] = {}
         _voice_scan["speaking"] = {}
         _voice_scan["last_pcm_ok"] = {}
+        _voice_scan["last_loud"] = {}
+        _voice_scan["gate_debug"] = {}
+        _voice_scan["gate_debug_log"] = {}
     _voice_scan["started_at"] = None
     return totals
 
@@ -4921,6 +5051,28 @@ async def schedule_loop():
         if not hasattr(schedule_loop, "_done"):
             schedule_loop._done = set()  # type: ignore[attr-defined]
         done: set = schedule_loop._done  # type: ignore[attr-defined]
+
+        # Watchdog voice scan: после базы и до финала он должен быть жив всегда.
+        # Проверяется каждые 20 секунд независимо от флагов выполненных этапов.
+        scan_window_open = steps[0][1] <= t < steps[-1][1]
+        data_watch = load_db()
+        scan_expected = (
+            scan_window_open
+            and data_watch.get("session_date") == today_msk_str()
+            and bool(data_watch.get("kv_session_active"))
+            and not is_kv_finished(data_watch)
+        )
+        if scan_expected and not voice_scan_is_active():
+            # Сначала очищаем зависший VC/task, сохраняя накопленные totals.
+            if _voice_scan.get("vc") is not None or _voice_scan.get("task") is not None:
+                await stop_voice_scan()
+            guild = bot.get_guild(get_guild_id(data_watch)) if get_guild_id(data_watch) else None
+            if guild is not None:
+                ok, msg = await start_voice_scan(guild)
+                if ok:
+                    log(f"voice_scan watchdog · перезапуск в «{msg}»", "warn")
+                else:
+                    log(f"voice_scan watchdog · перезапуск не удался: {msg}", "err")
 
         # Старт явки ИЛИ догон, если бот включили уже после
         start_key = f"{now.strftime('%Y-%m-%d')}:start"
