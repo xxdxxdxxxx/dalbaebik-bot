@@ -6,6 +6,9 @@ players.json
 players.json.bak
 players.json.tmp
 players.json.preview_bak
+scan_stats.sqlite3
+scan_stats.sqlite3-shm
+scan_stats.sqlite3-wal
 *.json.tmp
 *.preview_bak
 
@@ -20,6 +23,12 @@ venv/
 log.txt
 *.log
 
+# local archive / service artifacts
+archive/
+service/
+*.bak
+*.migration.bak
+
 # excel locks
 ~$*
 *.tmp
@@ -27,9 +36,14 @@ log.txt
 # scan outputs
 scans/etapy/*
 scans/itogi/*
+scans/stats/*
 !scans/etapy/.gitkeep
 !scans/itogi/.gitkeep
 !scans/README.md
+
+# local working spreadsheet / one-off scripts
+ДИТЯ22.xlsx
+tools/_*.py
 
 # OS
 Thumbs.db

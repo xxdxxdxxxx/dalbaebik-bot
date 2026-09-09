@@ -11,12 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import audioop
+import base64
+import hashlib
 import json
 import logging
 import math
 import os
 import random
 import re
+import sqlite3
+from contextlib import closing
+from email.utils import parsedate_to_datetime
+
+import player_store
+from sheet_watcher import watch_file
 import sys
 import threading
 import time
@@ -28,6 +36,7 @@ from urllib.parse import quote
 
 import aiohttp
 import discord
+import requests
 import pytz
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -154,9 +163,15 @@ if not _default_sheet.exists():
     _default_sheet = ROOT / "squads.xlsx"
 SHEET_PATH = Path(os.getenv("SHEET_PATH", str(_default_sheet)).strip() or str(_default_sheet))
 SHEET_SYNC_SECONDS = max(15, int(os.getenv("SHEET_SYNC_SECONDS", "60") or 60))
+SHEET_AUTO_SYNC = os.getenv("SHEET_AUTO_SYNC", "true").strip().lower() in {"1", "true", "yes", "on"}
+SHEET_WATCH_POLL_SECONDS = max(0.2, float(os.getenv("SHEET_WATCH_POLL_SECONDS", "0.5") or 0.5))
+SHEET_WATCH_DEBOUNCE_SECONDS = max(1.0, float(os.getenv("SHEET_WATCH_DEBOUNCE_SECONDS", "2") or 2))
+SHEET_WATCH_RETRY_SECONDS = max(1.0, float(os.getenv("SHEET_WATCH_RETRY_SECONDS", "3") or 3))
 
 MSK = pytz.timezone("Europe/Moscow")
-DB_PATH = ROOT / "players.json"
+LEGACY_JSON_PATH = ROOT / "players.json"
+SCAN_DB_PATH = ROOT / "scan_stats.sqlite3"
+PLAYER_DB_PATH = SCAN_DB_PATH
 # Одна строка = одно сообщение; после !add / /add шлётся случайная через ~5 сек
 ADD_PHRASES_FILE = PHRASES_DIR / "add_phrases.txt"
 # ЛС тем, кто ни разу не зашёл в войс (авто 19:50 + /dm_absent)
@@ -179,10 +194,10 @@ SQUAD_SUBS_ID = 99
 
 # ---------------------------------------------------------------------------
 # Расписание КВ по дням (МСК)
-# чт–сб: 3 этапа — база 20:05, I 20:25, II 20:50, III 21:20
+# чт–сб: 3 этапа — база 20:05, I 20:25, II 20:50, III 21:15
 # вс:    4 этапа —
-#        19:00–19:20 · 19:20–19:40 · 19:40–20:00 · 20:00–20:20
-#        сканы: 19:00 база, 19:20 I, 19:40 II, 20:00 III, 20:20 IV финал
+#        19:00–19:20 · 19:20–19:40 · 19:40–20:00 · 20:00–20:15
+#        сканы: 19:00 база, 19:20 I, 19:40 II, 20:00 III, 20:15 IV финал
 # ---------------------------------------------------------------------------
 def _weekday(dt: datetime | None = None) -> int:
     if dt is None:
@@ -213,13 +228,13 @@ def kv_grenade_steps(dt: datetime | None = None) -> list[tuple[str, dt_time, str
             ("20:25", dt_time(19, 20), "20:00"),   # конец I  19:00–19:20
             ("20:50", dt_time(19, 40), "20:25"),   # конец II 19:20–19:40
             ("21:20", dt_time(20, 0), "20:50"),    # конец III 19:40–20:00
-            ("21:40", dt_time(20, 20), "21:20"),   # конец IV 20:00–20:20 финал
+            ("21:40", dt_time(20, 15), "21:20"),   # конец IV / финал на 5 минут раньше
         ]
     return [
         ("20:00", dt_time(20, 5), None),
         ("20:25", dt_time(20, 25), "20:00"),
         ("20:50", dt_time(20, 50), "20:25"),
-        ("21:20", dt_time(21, 20), "20:50"),
+        ("21:20", dt_time(21, 15), "20:50"),
     ]
 
 
@@ -332,6 +347,9 @@ MAP_ALIASES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Единый источник label/value для параметра /scan map.
+SCAN_MAP_CHOICES = tuple(MAP_ALIASES)
+
 # ---------------------------------------------------------------------------
 # База данных
 # ---------------------------------------------------------------------------
@@ -369,54 +387,36 @@ def default_db() -> dict[str, Any]:
 
 
 def load_db() -> dict[str, Any]:
-    if not DB_PATH.exists():
-        data = default_db()
-        save_db(data)
-        return data
-    with open(DB_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    """Load the compatibility snapshot from SQLite after one-time legacy import."""
+    player_store.ensure_legacy_cutover(PLAYER_DB_PATH, LEGACY_JSON_PATH)
+    data = player_store.load_bot_snapshot(PLAYER_DB_PATH)
     base = default_db()
-    for k, v in base.items():
-        if k not in data:
-            data[k] = v
-    if "message_ids" not in data or not isinstance(data["message_ids"], dict):
-        data["message_ids"] = {"online": None, "grenades": None}
-    if "config" not in data or not isinstance(data["config"], dict):
-        data["config"] = default_db()["config"]
-    else:
-        for ck, cv in default_db()["config"].items():
-            if ck not in data["config"]:
-                data["config"][ck] = cv
-    # HS% убран — не тащим combat_history
+    for key, value in base.items():
+        data.setdefault(key, value)
     data.pop("combat_history", None)
     return data
 
 
 def save_db(data: dict[str, Any]) -> None:
-    """Атомарная запись: temp → replace (не портит players.json при kill)."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = DB_PATH.with_name(DB_PATH.name + ".tmp")
-    payload = json.dumps(data, ensure_ascii=False, indent=2)
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(payload)
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except OSError:
-            pass
-    os.replace(tmp, DB_PATH)
+    """Transactionally save runtime state to SQLite; players.json is never written."""
+    player_store.ensure_legacy_cutover(PLAYER_DB_PATH, LEGACY_JSON_PATH)
+    player_store.save_bot_snapshot(PLAYER_DB_PATH, data)
 
 
 def backup_db() -> None:
-    """Копия players.json.bak (перед wipe сессии / reset)."""
-    if not DB_PATH.exists():
+    """Create a transaction-consistent SQLite backup before a session reset."""
+    if not PLAYER_DB_PATH.exists():
         return
-    bak = DB_PATH.with_name("players.json.bak")
+    bak = PLAYER_DB_PATH.with_name(PLAYER_DB_PATH.name + ".session-reset.bak")
     try:
-        import shutil
-
-        shutil.copy2(DB_PATH, bak)
-    except OSError as e:
+        source = sqlite3.connect(str(PLAYER_DB_PATH), timeout=10)
+        target = sqlite3.connect(str(bak), timeout=10)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+    except sqlite3.Error as e:
         log(f"backup db: {e}", "warn")
 
 
@@ -824,10 +824,35 @@ async def do_roster_add(
                 if can_mark_came(data):
                     data["players"][str(target.id)]["came"] = True
         save_db(data)
-        await upsert_status_messages(data)
+        player_id = await asyncio.to_thread(
+            player_store.upsert_binding,
+            PLAYER_DB_PATH,
+            target.id,
+            game_nick,
+            target.display_name,
+            target.name,
+            target.guild.id,
+        )
+        # /add is the explicit restore path: clear a prior /remove tombstone,
+        # then persist this member as active exactly once.
+        await asyncio.to_thread(
+            player_store.restore_roster_member,
+            PLAYER_DB_PATH,
+            target.guild.id,
+            player_id=player_id,
+        )
+        await asyncio.to_thread(
+            player_store.upsert_roster_member,
+            PLAYER_DB_PATH,
+            target.guild.id,
+            player_id,
+            squad_id=data["players"][str(target.id)].get("squad"),
+            slot=data["players"][str(target.id)].get("slot"),
+            active=True,
+        )
+        await upsert_status_messages(load_db())
 
     # tech = players.json (после unlock — Excel может подтормаживать)
-    await sync_tech_sheet(data)
 
     action = "Обновлён" if was else "Добавлен"
     return True, make_reply_embed(
@@ -916,10 +941,18 @@ async def do_roster_remove(
         gnick = removed.get("game_nick")
         if gnick:
             _hist_pop_ci(data.setdefault("grenade_history", {}), gnick)
+        guild_id = get_guild_id(data)
         save_db(data)
-        await upsert_status_messages(data)
+        # /remove means full roster removal (not merely clearing squad/slot).
+        # Keep identity, bindings and history, but persist a durable tombstone.
+        await asyncio.to_thread(
+            player_store.mark_roster_removed,
+            PLAYER_DB_PATH,
+            guild_id,
+            discord_id=key,
+        )
+        await upsert_status_messages(load_db())
 
-    await sync_tech_sheet(data)
 
     ds_line = f"<@{key}>"
     return make_reply_embed(
@@ -1327,64 +1360,50 @@ def _read_roster_table(ws) -> list[dict[str, Any]]:
     return entries
 
 
-# Жёсткая карта ячеек ДИТЯ22 (openpyxl: row/col 1-based, C=3 … F=6)
-#   C6:C10 → отряд 1
-#   D6:D10 → отряд 2
-#   E6:E10 → отряд 3
-#   C12:C16 → отряд 4
-#   D12:D16 → отряд 5
-#   E12:E16 → отряд 6
-#   F6:F16  → Чемпионы (замены)
-FIXED_SQUAD_RANGES: list[tuple[int, int, int, int, int]] = [
-    # squad_id, col, row_from, row_to
-    (1, 3, 6, 10),
-    (2, 4, 6, 10),
-    (3, 5, 6, 10),
-    (4, 3, 12, 16),
-    (5, 4, 12, 16),
-    (6, 5, 12, 16),
-    (99, 6, 6, 16),  # F6:F16 Чемпионы
-]
-
-
 def _read_pretty_grid(ws) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """
-    Читает только закреплённые диапазоны ячеек (см. FIXED_SQUAD_RANGES).
-    Заметки вне этих ячеек (КТРЛ+S и т.п.) игнорируются.
+    """Read every block whose header cells are squad numbers or ``Замены``.
+
+    A block continues until the next header row.  Slot is the physical row
+    offset below the header, so an empty cell never shifts later players into
+    another slot.  This supports both blocks in the real workbook without
+    depending on hard-coded coordinates.
     """
     entries: list[dict[str, Any]] = []
-    squad_names: dict[str, str] = {
-        "1": "Отряд 1",
-        "2": "Отряд 2",
-        "3": "Отряд 3",
-        "4": "Отряд 4",
-        "5": "Отряд 5",
-        "6": "Отряд 6",
-        "99": "Чемпионы",
-    }
+    squad_names: dict[str, str] = {}
+    header_rows: list[tuple[int, list[tuple[int, int]]]] = []
 
-    for sid, col, r0, r1 in FIXED_SQUAD_RANGES:
-        slot = 0
-        for row in range(r0, r1 + 1):
-            raw = ws.cell(row=row, column=col).value
-            nick = _cell_str(raw)
-            if not nick:
-                continue
-            # пропуск случайных номеров-заголовков в ячейке
-            if _squad_header_id(nick) is not None:
-                continue
-            if _is_subs_header(nick):
-                continue
-            slot += 1
-            entries.append(
-                {
-                    "discord_id": None,
-                    "game_nick": nick,
-                    "squad": sid,
-                    "slot": slot,
-                    "discord_name": "",
-                }
-            )
+    for row in range(1, ws.max_row + 1):
+        headers: list[tuple[int, int]] = []
+        for col in range(1, ws.max_column + 1):
+            sid = _squad_header_id(ws.cell(row=row, column=col).value)
+            if sid is not None:
+                headers.append((col, sid))
+        # A real roster block has at least two adjacent squad headers.  This
+        # avoids treating a numeric nickname/note as a block header.
+        if len(headers) >= 2:
+            header_rows.append((row, headers))
+
+    for block_index, (header_row, headers) in enumerate(header_rows):
+        next_header = header_rows[block_index + 1][0] if block_index + 1 < len(header_rows) else ws.max_row + 1
+        # The pretty sheet has five roster rows per block.  Stop earlier at the
+        # next header, but do not consume notes or the tech table below it.
+        data_end = min(header_row + 5, next_header - 1)
+        for col, sid in headers:
+            squad_names[str(sid)] = "Чемпионы" if sid == 99 else f"Отряд {sid}"
+            for row in range(header_row + 1, data_end + 1):
+                nick = _cell_str(ws.cell(row=row, column=col).value)
+                if not nick or _squad_header_id(nick) is not None:
+                    continue
+                entries.append(
+                    {
+                        "discord_id": None,
+                        "game_nick": nick,
+                        "squad": sid,
+                        "slot": row - header_row,
+                        "discord_name": "",
+                        "cell": ws.cell(row=row, column=col).coordinate,
+                    }
+                )
 
     return entries, squad_names
 
@@ -1549,6 +1568,7 @@ def apply_sheet_entries(
     entries: list[dict[str, Any]],
     squad_names: dict[str, str],
     tech_map: dict[str, str] | None = None,
+    removed_identities: dict[str, set[str]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     Применяет Excel к players.
@@ -1561,6 +1581,13 @@ def apply_sheet_entries(
     players = data.setdefault("players", {})
     history = data.setdefault("grenade_history", {})
     tech_map = tech_map or {}
+    removed_identities = removed_identities or {}
+    removed_nicks = set(removed_identities.get("nicks") or set())
+    removed_dids = {str(v) for v in (removed_identities.get("discord_ids") or set())}
+    skipped_removed: list[str] = []
+
+    def nick_key(value: Any) -> str:
+        return player_store._norm(str(value or ""))
 
     if squad_names:
         data["squad_names"] = {str(k): str(v) for k, v in squad_names.items()}
@@ -1572,23 +1599,27 @@ def apply_sheet_entries(
     for did, p in players.items():
         gn = (p.get("game_nick") or "").strip()
         if gn:
-            nick_to_id[gn.lower()] = did
+            nick_to_id[nick_key(gn)] = did
 
-    # тех-лист перекрывает / дополняет
-    for nick_l, did in tech_map.items():
-        nick_to_id[nick_l] = did
+    # тех-лист перекрывает / дополняет, кроме явно удалённых игроков.
+    for raw_nick, did in tech_map.items():
+        key = nick_key(raw_nick)
+        if key in removed_nicks or str(did) in removed_dids:
+            skipped_removed.append(str(raw_nick))
+            continue
+        nick_to_id[key] = did
         if did not in players:
-            # создать запись из tech (ник = ключ как в таблице — восстановим регистр из entries позже)
+            # создать запись из tech (регистр уточнится по красивой таблице ниже)
             players[did] = {
                 "discord_name": "",
                 "discord_username": "",
-                "game_nick": nick_l,  # временный; поправим ниже
+                "game_nick": raw_nick,
                 "came": False,
                 "in_voice": False,
                 "squad": None,
                 "slot": None,
             }
-            changes.append(f"+ tech <@{did}> `{nick_l}`")
+            changes.append(f"+ tech <@{did}> `{raw_nick}`")
 
     seen_ids: set[str] = set()
     nick_owner: dict[str, str] = {}
@@ -1602,9 +1633,13 @@ def apply_sheet_entries(
         slot = e.get("slot")
         dname = (e.get("discord_name") or "").strip()
 
-        # резолв Discord по нику
+        if (nick and nick_key(nick) in removed_nicks) or (did and str(did) in removed_dids):
+            skipped_removed.append(nick or str(did))
+            continue
+
+        # резолв Discord по нику (Unicode NFKC + casefold)
         if not did and nick:
-            did = nick_to_id.get(nick.lower())
+            did = nick_to_id.get(nick_key(nick))
         if not did:
             if nick:
                 changes.append(f"⚠️ ник `{nick}` нет в базе — `/add` или лист tech")
@@ -1678,6 +1713,17 @@ def apply_sheet_entries(
     for msg in reindex_scan_histories(data):
         changes.append(msg)
 
+    unresolved = [c for c in changes if str(c).startswith("⚠️")]
+    assigned = sum(1 for p in players.values() if p.get("squad") is not None)
+    APP_LOGGER.info(
+        "excel import: rows=%d assigned=%d unresolved=%d",
+        len(entries), assigned, len(unresolved),
+    )
+    if unresolved:
+        APP_LOGGER.warning("excel import unresolved: %s", "; ".join(unresolved))
+    if skipped_removed:
+        unique_removed = list(dict.fromkeys(skipped_removed))
+        APP_LOGGER.info("excel import skipped_removed=%d: %s", len(unique_removed), "; ".join(unique_removed))
     return data, changes
 
 
@@ -1705,7 +1751,7 @@ def player_squad_sort_key(item: tuple[str, dict[str, Any]]) -> tuple:
     _did, p = item
     sq = p.get("squad")
     sl = p.get("slot")
-    nick = (p.get("game_nick") or "").lower()
+    nick = (p.get("game_nick") or "").casefold()
     has = 0 if sq is not None else 1
     try:
         sq_n = int(sq) if sq is not None else 999
@@ -2638,7 +2684,8 @@ _voice_scan: dict[str, Any] = {
     "manual": False,    # True = ручной /voice_scan_start (все в войсе, без persist в БД)
     "started_at": None,
     "last_packet_at": None,  # monotonic последнего RTP/RTCP от voice UDP
-    "report_channel_id": None,  # ручной режим: канал, где вызвали /voice_scan_start
+    "report_channel_id": None,
+    "match_date": None,  # ручной режим: канал, где вызвали /voice_scan_start
     "report_message_id": None,  # ручной режим: live-табличка (редактируется каждые ~10с)
 }
 _voice_loud_lock = threading.Lock()
@@ -2949,11 +2996,10 @@ def _pick_busiest_voice_channel(
 
 
 def _persist_voice_totals() -> None:
-    """Сбросить накопленные секунды в players.json (voice_speak_seconds),
-    чтобы рестарт бота/разрыв связи не терял данные скана за сессию.
+    """Checkpoint automatic voice totals in normalized SQLite live state.
 
-    Только для авто-режима (привязан к таблице ГРАНАТЫ) — ручной скан
-    (/voice_scan_start) живёт только в памяти и players.json не трогает.
+    Manual scans remain in memory until explicitly stopped. Automatic scans are
+    resumed exclusively from ``voice_checkpoints`` through ``load_db``.
     """
     if _voice_scan.get("manual"):
         return
@@ -2965,6 +3011,11 @@ def _persist_voice_totals() -> None:
         save_db(data)
     except Exception as e:
         log(f"voice_scan persist: {e}", "err")
+
+
+async def _persist_voice_totals_async() -> None:
+    """Keep synchronous SQLite checkpoint I/O off the Discord event loop."""
+    await asyncio.to_thread(_persist_voice_totals)
 
 
 def _percentile95(values: list[float]) -> float | None:
@@ -3074,7 +3125,7 @@ async def _voice_scan_poll_loop() -> None:
             ):
                 stalled_for = now - last_packet_at
                 log(f"voice_scan receive stall {stalled_for:.1f}s · reconnect", "warn")
-                _persist_voice_totals()
+                await _persist_voice_totals_async()
                 channel = vc.channel
                 try:
                     try:
@@ -3199,7 +3250,7 @@ async def _voice_scan_poll_loop() -> None:
             save_counter += tick_seconds
             if save_counter >= 15.0:
                 save_counter = 0.0
-                _persist_voice_totals()
+                await _persist_voice_totals_async()
             report_counter += tick_seconds
             if _voice_scan.get("manual") and _voice_scan.get("report_channel_id") and report_counter >= 10.0:
                 report_counter = 0.0
@@ -3210,7 +3261,7 @@ async def _voice_scan_poll_loop() -> None:
     except Exception as e:
         log(f"voice_scan poll: {type(e).__name__}: {e}\n{traceback.format_exc()}", "err")
     finally:
-        _persist_voice_totals()
+        await _persist_voice_totals_async()
         # Не оставляем ложный active=True, если poll-loop аварийно завершился.
         # Авто-watchdog расписания очистит VC и перезапустит при активном КВ.
         if asyncio.current_task() is _voice_scan.get("task"):
@@ -3234,13 +3285,14 @@ async def start_voice_scan(
     channel: discord.VoiceChannel | None = None,
     manual: bool = False,
     report_channel_id: int | None = None,
+    match_date: str | None = None,
 ) -> tuple[bool, str]:
     """Подключиться к войсу и начать скан speaking.
 
     Два режима:
     · авто (manual=False, из расписания КВ) — заходит в самый населённый
-      настроенный войс, считает только отряды 1-6 + Чемпионы, копит в
-      players.json (voice_speak_seconds) для колонки ВРЕМЯ в таблице ГРАНАТЫ.
+      настроенный войс, считает только отряды 1-6 + Чемпионы, сохраняет
+      SQLite checkpoints для колонки ВРЕМЯ в таблице ГРАНАТЫ и restart-resume.
     · ручной (manual=True, /voice_scan_start) — заходит в конкретный войс
       (обычно тот, где сидит вызвавший команду), считает ВСЕХ в этом войсе,
       результат только в памяти на время скана — таблицу ГРАНАТЫ не трогает.
@@ -3295,7 +3347,8 @@ async def start_voice_scan(
     _voice_scan["eligible_ids"] = eligible
     _voice_scan["manual"] = manual
     _voice_scan["totals"] = existing  # продолжаем сессию грен, если рестартовали mid-KV
-    _voice_scan["report_channel_id"] = report_channel_id if manual else None
+    _voice_scan["report_channel_id"] = report_channel_id
+    _voice_scan["match_date"] = match_date if manual else None
     _voice_scan["report_message_id"] = None
     with _voice_loud_lock:
         _voice_scan["noise_floor"] = {}
@@ -3331,6 +3384,11 @@ async def stop_voice_scan() -> dict[str, float]:
     # Снимок только после полной остановки poll-loop: иначе последний тик мог
     # попасть в БД, но отсутствовать в возвращаемом ручном/финальном отчёте.
     totals = dict(_voice_scan.get("totals") or {})
+    manual = bool(_voice_scan.get("manual"))
+    voice_day = _voice_scan.get("match_date")
+    voice_guild = getattr(_voice_scan.get("vc"), "guild", None)
+    if manual and voice_day:
+        player_store.sync_voice_snapshot(PLAYER_DB_PATH, totals, f"manual-voice:{voice_day}", voice_day)
 
     vc = _voice_scan.get("vc")
     if vc is not None:
@@ -3372,8 +3430,8 @@ async def stop_voice_scan() -> dict[str, float]:
 def format_voice_scan_live_table(vc: "voice_recv.VoiceRecvClient", data: dict[str, Any] | None = None) -> str:
     """Табличка live-скана /voice_scan_start: все сейчас в войсе + их секунды речи.
 
-    Ники — game_nick, если юзер зарегистрирован в players.json, иначе
-    discord display name. Кто зашёл после старта скана — тоже появляется
+    Ники — game_nick из SQLite roster, иначе discord display name.
+    Кто зашёл после старта скана — тоже появляется
     (с 00:00, пока не начнёт говорить).
     """
     if data is None:
@@ -3454,9 +3512,9 @@ def voice_seconds_by_nick(
 ) -> dict[str, float]:
     """game_nick (lower) -> накопленные секунды речи за сессию.
 
-    Базa — из players.json (voice_speak_seconds), но если сейчас идёт
-    активный скан (live_totals передан), значения из памяти перекрывают
-    persisted-версию — свежее, чем раз в ~15 сек на диске.
+    База — из SQLite voice checkpoints, но если сейчас идёт активный скан
+    (live_totals передан), значения из памяти перекрывают persisted-версию —
+    свежее, чем периодический checkpoint.
     """
     stored = dict(data.get("voice_speak_seconds") or {})
     if live_totals:
@@ -3608,6 +3666,22 @@ async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
         )
         return
 
+    # На финале сначала фиксируем последний тик речи и сохраняем агрегированные
+    # секунды. Тогда итоговый файл грен получает полный снимок этой же сессии.
+    session_snap = load_db()
+    session_dt = (
+        kv_dt_from_session(session_snap)
+        if session_snap.get("session_date")
+        else now_msk()
+    )
+    if (
+        step_name == kv_final_step_id(session_dt)
+        and voice_scan_is_active()
+        and not _voice_scan.get("manual")
+    ):
+        totals = await stop_voice_scan()
+        log(f"voice_scan · авто-стоп на финале ({len(totals)} чел. говорили)", "kv")
+
     data_for_log: dict[str, Any] | None = None
     async with db_lock:
         data = load_db()
@@ -3632,6 +3706,8 @@ async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
             data["grenade_date"] = data.get("session_date") or today_msk_str()
         if step_name == final_id:
             data["kv_finished"] = True
+        # save_db writes the normalized live checkpoint and, on the final step,
+        # atomically publishes historical grenade/voice rows and closes live state.
         save_db(data)
         data_for_log = data
 
@@ -3698,6 +3774,12 @@ def _grenade_stage_values(
     return v0, v1, v2, v3, v4, e1, e2, e3, e4, total
 
 
+def _saved_log_player_name(nick: str, player: dict[str, Any] | None) -> str:
+    """Имя для локального лога без Discord-запросов: игровой ник(username)."""
+    username = (player.get("discord_username") or "").strip() if player else ""
+    return f"{nick}({username})" if username else nick
+
+
 def save_grenade_scan(data: dict[str, Any], step_name: str) -> Path:
     """
     Чистый txt-лог:
@@ -3716,11 +3798,14 @@ def save_grenade_scan(data: dict[str, Any], step_name: str) -> Path:
 
     players = data.get("players", {})
     nick_meta: dict[str, tuple] = {}
+    nick_players: dict[str, dict[str, Any]] = {}
     for p in players.values():
         gn = p.get("game_nick")
         if gn:
             nick_meta[gn] = (p.get("squad"), p.get("slot"), gn.lower())
             nick_meta[gn.lower()] = nick_meta[gn]
+            nick_players[gn] = p
+            nick_players[gn.lower()] = p
 
     def sort_key(nick: str) -> tuple:
         meta = nick_meta.get(nick) or nick_meta.get(nick.lower())
@@ -3764,9 +3849,21 @@ def save_grenade_scan(data: dict[str, Any], step_name: str) -> Path:
     lines.append("")
 
     cw = 5
-    nick_w = 16
+    # Ширина считается по полному game_nick(discord_username), без обрезания.
+    log_names = {
+        nick: _saved_log_player_name(
+            nick,
+            nick_players.get(nick) or nick_players.get(nick.lower()),
+        )
+        for nick in nicks_sorted
+    }
+    nick_w = max(16, len("ник"), *(len(name) for name in log_names.values()))
+    time_w = 6  # текущий формат длительности: мм:сс
     col_gap = "  "
     tot_gap = "     "
+    time_gap = "  "
+    is_final = step_name == kv_final_step_id(day_dt)
+    voice_secs = voice_seconds_by_nick(data) if is_final else {}
 
     def _cols(*cells: str, with_total: str | None = None) -> str:
         mid = col_gap.join(cells)
@@ -3779,7 +3876,12 @@ def save_grenade_scan(data: dict[str, Any], step_name: str) -> Path:
     else:
         cols = ("I", "II", "III", "ИТОГ")
     hdr_cells = [f"{c:>{cw}}" for c in cols[:-1]]
-    hdr = f"{'ник':<{nick_w}} {_cols(*hdr_cells, with_total=f'{cols[-1]:>{cw}}')}"
+    hdr = (
+        f"{'ник':<{nick_w}} "
+        f"{_cols(*hdr_cells, with_total=f'{cols[-1]:>{cw}}')}"
+    )
+    if is_final:
+        hdr += f"{time_gap}{'ВРЕМЯ':>{time_w}}"
     lines.append(hdr)
     lines.append("-" * len(hdr))
 
@@ -3794,7 +3896,7 @@ def save_grenade_scan(data: dict[str, Any], step_name: str) -> Path:
             lines.append(squad_label(data, sq))
 
         e1, e2, e3, e4, total = _grenade_row_stats(history, nick, four_stages=four)
-        nick_show = nick if len(nick) <= nick_w else nick[: nick_w - 1] + "…"
+        nick_show = log_names[nick]
         if four:
             line = (
                 f"{nick_show:<{nick_w}} "
@@ -3805,13 +3907,50 @@ def save_grenade_scan(data: dict[str, Any], step_name: str) -> Path:
                 f"{nick_show:<{nick_w}} "
                 f"{_cols(cell(e1, cw), cell(e2, cw), cell(e3, cw), with_total=cell(total, cw))}"
             )
+        if is_final:
+            # Ноль выводим явно, чтобы игроки без разговоров не выпадали из итога.
+            voice_time = fmt_voice_mmss(voice_secs.get(nick.lower(), 0.0))
+            if voice_time == "-":
+                voice_time = "00:00"
+            line += f"{time_gap}{voice_time:>{time_w}}"
         lines.append(line)
 
     lines.append("")
+
+    if is_final:
+        guild_id = get_guild_id(data)
+        if guild_id is None:
+            raise ValueError("Нельзя сохранить итог КВ без guild_id")
+        report_rows: list[dict[str, Any]] = []
+        for nick in nicks_sorted:
+            player = nick_players.get(nick) or nick_players.get(nick.lower()) or {}
+            e1, e2, e3, e4, total = _grenade_row_stats(
+                history, nick, four_stages=four
+            )
+            report_rows.append(
+                {
+                    "raw_nick": nick,
+                    "discord_username": player.get("discord_username"),
+                    "squad_label": squad_label(data, player.get("squad")),
+                    "stages": [e1, e2, e3, e4] if four else [e1, e2, e3],
+                    "total_grenades": total,
+                    "voice_seconds": max(0, round(voice_secs.get(nick.lower(), 0.0))),
+                }
+            )
+        player_store.save_kv_daily_report(
+            PLAYER_DB_PATH,
+            day,
+            guild_id,
+            report_rows,
+            4 if four else 3,
+            source_key=f"runtime:{guild_id}:{day}",
+            generated_at_text=now.isoformat(),
+        )
+
     text = "\n".join(lines) + "\n"
     out.write_text(text, encoding="utf-8")
 
-    if step_name == kv_final_step_id(day_dt):
+    if is_final:
         summary = SCANS_ITOGI_DIR / f"{day}_итог.txt"
         itog_lines = lines.copy()
         if itog_lines:
@@ -3888,6 +4027,11 @@ async def cmd_setup(
     voice4: discord.VoiceChannel | None = None,
     voice5: discord.VoiceChannel | None = None,
 ):
+    try:
+        day = player_store.parse_match_date(match_date)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
     if interaction.guild is None:
         await interaction.response.send_message(
             embed=make_reply_embed("❌  Ошибка", "Команда только на сервере.", COLOR_ERR),
@@ -4777,6 +4921,310 @@ async def cmd_fix_slash(interaction: discord.Interaction):
     )
 
 
+def _stats_average(pair: list[float] | None) -> float | None:
+    if not pair or len(pair) != 2 or not pair[1]:
+        return None
+    return float(pair[0]) / float(pair[1])
+
+
+def _round_stats_value(value: float) -> int:
+    """Round non-negative /stats values by the usual half-up rule."""
+    return math.floor(float(value) + 0.5)
+
+
+def _fmt_stats_number(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return str(_round_stats_value(value))
+
+
+def _fmt_stats_time(seconds: float | None) -> str:
+    if seconds is None:
+        return "—"
+    total = max(0, _round_stats_value(seconds))
+    minutes, secs = divmod(total, 60)
+    return f"{minutes:02d}:{secs:02d}"
+
+
+_STATS_NICK_WIDTH = 14
+_STATS_SCORE_WIDTH = 6
+_STATS_EFF_WIDTH = 5
+_STATS_TABLE_HEADER = (
+    f"{'Ник':<{_STATS_NICK_WIDTH}} {'У':>3} {'С':>3} {'П':>3} "
+    f"{'СЧЁТ':>{_STATS_SCORE_WIDTH}} {'ГРЕНЫ':>5} {'ВРЕМЯ':>6} {'ЭФФ':>{_STATS_EFF_WIDTH}}"
+)
+_STATS_TABLE_RULE = "─" * len(_STATS_TABLE_HEADER)
+_STATS_EFF_WEIGHTS = {
+    "KD": 0.35,
+    "assists": 0.15,
+    "grenades": 0.20,
+    "voice_seconds": 0.20,
+    "score": 0.10,
+}
+_STATS_EFF_SQUADS = frozenset(range(1, 7))
+
+
+def _fmt_stats_nick(nick: str) -> str:
+    clean = " ".join(nick.replace("`", "'").split()) or "?"
+    if len(clean) > _STATS_NICK_WIDTH:
+        clean = clean[: _STATS_NICK_WIDTH - 1] + "…"
+    return f"{clean:<{_STATS_NICK_WIDTH}}"
+
+
+def _stats_display_values(metrics: dict[str, list[float]]) -> dict[str, float | None]:
+    """Numeric values exactly matching /stats cells (including its half-up rounding)."""
+    values: dict[str, float | None] = {}
+    for key in ("kills", "deaths", "assists", "score", "grenades", "voice_seconds"):
+        average = _stats_average(metrics.get(key))
+        values[key] = float(_round_stats_value(average)) if average is not None else None
+    return values
+
+
+def calc_stats_efficiencies(
+    rows: list[tuple[Any, dict[str, list[float]]]],
+    *,
+    round_result: bool = True,
+) -> list[float | None]:
+    """Calculate adaptive min-max EFF for roster rows in squads 1..6.
+
+    ``rows`` contains (squad, metrics).  Deliberately use the rounded numeric
+    cells shown by /stats, so the rating can be reproduced from the table.
+    Squad 5 time is physically unavailable even if stale voice data exists.
+    """
+    prepared: list[dict[str, float | None] | None] = []
+    for raw_squad, metrics in rows:
+        try:
+            squad = int(raw_squad)
+        except (TypeError, ValueError):
+            squad = None
+        if squad not in _STATS_EFF_SQUADS:
+            prepared.append(None)
+            continue
+        values = _stats_display_values(metrics)
+        kills, deaths = values.pop("kills"), values.pop("deaths")
+        values["KD"] = (
+            None if kills is None or deaths is None
+            else kills / deaths if deaths > 0
+            else kills
+        )
+        if squad == 5:
+            values["voice_seconds"] = None
+        prepared.append(values)
+
+    bounds: dict[str, tuple[float, float] | None] = {}
+    for key in _STATS_EFF_WEIGHTS:
+        pool = [float(values[key]) for values in prepared if values is not None and values.get(key) is not None]
+        bounds[key] = (min(pool), max(pool)) if pool else None
+
+    result: list[float | None] = []
+    for values in prepared:
+        if values is None:
+            result.append(None)
+            continue
+        normalized: dict[str, float] = {}
+        for key in _STATS_EFF_WEIGHTS:
+            value, bound = values.get(key), bounds[key]
+            if value is None or bound is None:
+                continue
+            minimum, maximum = bound
+            normalized[key] = 50.0 if maximum == minimum else (float(value) - minimum) / (maximum - minimum) * 100.0
+        available_weight = sum(_STATS_EFF_WEIGHTS[key] for key in normalized)
+        if not available_weight:
+            result.append(None)
+            continue
+        efficiency = sum(
+            _STATS_EFF_WEIGHTS[key] / available_weight * value
+            for key, value in normalized.items()
+        )
+        # Keep the raw computed value available for ordering; formatting still uses one decimal.
+        result.append(
+            math.floor(efficiency * 10.0 + 0.5 + 1e-12) / 10.0
+            if round_result else efficiency
+        )
+    return result
+
+
+def _fmt_stats_row(
+    nick: str,
+    metrics: dict[str, list[float]],
+    efficiency: float | None = None,
+) -> str:
+    kills = _fmt_stats_number(_stats_average(metrics.get("kills")))
+    deaths = _fmt_stats_number(_stats_average(metrics.get("deaths")))
+    assists = _fmt_stats_number(_stats_average(metrics.get("assists")))
+    score = _fmt_stats_number(_stats_average(metrics.get("score")))
+    eff = "—" if efficiency is None else f"{efficiency:.1f}"
+    grenades = _fmt_stats_number(_stats_average(metrics.get("grenades")))
+    voice_time = _fmt_stats_time(_stats_average(metrics.get("voice_seconds")))
+    return (
+        f"{_fmt_stats_nick(nick)} {kills:>3} {deaths:>3} {assists:>3} "
+        f"{score:>{_STATS_SCORE_WIDTH}} {grenades:>5} {voice_time:>6} {eff:>{_STATS_EFF_WIDTH}}"
+    )
+
+
+def build_stats_embeds(
+    data: dict[str, Any],
+    collected: dict[str, Any],
+) -> list[discord.Embed]:
+    """Build /stats pages in the same squad order as the KV attendance."""
+    samples: dict[int, dict[str, list[float]]] = collected.get("samples") or {}
+    bindings: dict[str, int] = collected.get("bindings") or {}
+    completed_dates = set(collected.get("completed_dates") or set())
+
+    # Add only the unfinished/current JSON session for an undated query. Final
+    # logs are authoritative, while dated queries must stay within SQLite dates.
+    session_date = str(data.get("session_date") or "").strip()
+    dated_query = bool(collected.get("date_from") or collected.get("date_to"))
+    if not dated_query and (not session_date or session_date not in completed_dates):
+        history = data.get("grenade_history") or {}
+        voice = data.get("voice_speak_seconds") or {}
+        for did, player in (data.get("players") or {}).items():
+            player_id = bindings.get(str(did))
+            if player_id is None:
+                continue
+            bucket = samples.setdefault(player_id, {})
+
+            def add(metric: str, value: float) -> None:
+                pair = bucket.setdefault(metric, [0.0, 0.0])
+                pair[0] += float(value)
+                pair[1] += 1.0
+
+            nick = str(player.get("game_nick") or "").strip()
+            stats = _hist_get(history, nick)
+            if isinstance(stats, dict):
+                total = _grenade_stage_values(stats)[-1]
+                if total is not None:
+                    add("grenades", total)
+            if str(did) in voice:
+                raw_seconds = voice.get(str(did))
+                if isinstance(raw_seconds, (int, float)) and not isinstance(raw_seconds, bool):
+                    add("voice_seconds", float(raw_seconds))
+
+    players = [
+        (did, player)
+        for did, player in (data.get("players") or {}).items()
+        if str(player.get("game_nick") or "").strip()
+    ]
+    players.sort(key=player_squad_sort_key)
+
+    roster_rows: list[tuple[str, dict[str, Any], dict[str, list[float]]]] = []
+    for did, player in players:
+        player_id = bindings.get(str(did))
+        metrics = samples.get(player_id, {}) if player_id is not None else {}
+        roster_rows.append((str(player.get("game_nick") or "?"), player, metrics))
+    efficiencies = calc_stats_efficiencies([
+        (player.get("squad"), metrics) for _, player, metrics in roster_rows
+    ], round_result=False)
+
+    groups: list[tuple[str, list[str]]] = []
+    current_key: Any = object()
+    current_title = ""
+    current_rows: list[tuple[str, dict[str, list[float]], float | None]] = []
+
+    def flush_group() -> None:
+        nonlocal current_rows
+        if not current_rows:
+            return
+        # Python's stable sort keeps roster/slot order for equal EFF and for
+        # unavailable EFF.  The roster was pre-sorted by slot, then casefolded nick.
+        current_rows.sort(
+            key=lambda row: (row[2] is None, -row[2] if row[2] is not None else 0.0)
+        )
+        groups.append((
+            current_title,
+            [_fmt_stats_row(nick, metrics, efficiency) for nick, metrics, efficiency in current_rows],
+        ))
+        current_rows = []
+
+    for (nick, player, metrics), efficiency in zip(roster_rows, efficiencies):
+        squad = player.get("squad")
+        if squad != current_key:
+            flush_group()
+            current_key = squad
+            current_title = squad_label(data, squad).rstrip(":")
+        current_rows.append((nick, metrics, efficiency))
+    flush_group()
+
+    pages: list[str] = []
+    table_prefix = f"```text\n{_STATS_TABLE_HEADER}\n{_STATS_TABLE_RULE}\n"
+    page = table_prefix
+    has_rows = False
+
+    def flush_page() -> None:
+        nonlocal page, has_rows
+        if has_rows:
+            pages.append(page.rstrip() + "\n```")
+        page = table_prefix
+        has_rows = False
+
+    for title, lines in groups:
+        group_started = False
+        for line in lines:
+            group_title = f"{title}{' (прод.)' if group_started else ''}:\n"
+            separator = "\n" if has_rows and not group_started else ""
+            addition = (group_title if not group_started else "") + line + "\n"
+            if len(page) + len(separator) + len(addition) + 3 > 3900:
+                flush_page()
+                group_started = True
+                addition = f"{title} (прод.):\n{line}\n"
+                separator = ""
+            page += separator + addition
+            has_rows = True
+            group_started = True
+    flush_page()
+    if not pages:
+        pages = ["_В составе нет игроков._"]
+
+    result: list[discord.Embed] = []
+    for index, page_text in enumerate(pages, start=1):
+        suffix = f" · {index}/{len(pages)}" if len(pages) > 1 else ""
+        embed = discord.Embed(
+            title=f"📊  СТАТИСТИКА{suffix}",
+            description=page_text,
+            color=COLOR_INFO,
+            timestamp=now_msk(),
+        )
+        embed.set_footer(
+            text="У/С/П/СЧЁТ — за скан таблицы · гранаты/время — за завершённую КВ-сессию · — нет данных"
+        )
+        result.append(embed)
+    return result
+
+
+@bot.tree.command(name="stats", description="Средняя статистика; дата или диапазон табов")
+@app_commands.describe(date="Один день: 19.08.26, 19.08.2026 или 2026-08-19", date_from="Дата с", date_to="Дата по")
+async def cmd_stats(interaction: discord.Interaction, date: str | None = None, date_from: str | None = None, date_to: str | None = None):
+    if date and (date_from or date_to):
+        await interaction.response.send_message("Используйте date либо date_from/date_to, но не вместе.", ephemeral=True)
+        return
+    if date:
+        date_from = date_to = date
+    try:
+        start = player_store.parse_match_date(date_from) if date_from else None
+        end = player_store.parse_match_date(date_to) if date_to else None
+        if start and not end: end = start
+        if end and not start: start = end
+        if start and end and start > end: raise ValueError("Дата «с» не может быть позже даты «по»")
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=False)
+    data = load_db()
+    guild_id = interaction.guild.id if interaction.guild else None
+    collected = await asyncio.to_thread(
+        player_store.collect_kv_daily_stats,
+        PLAYER_DB_PATH,
+        date_from=start,
+        date_to=end,
+        guild_id=guild_id,
+    )
+    embeds = build_stats_embeds(data, collected)
+    if start:
+        for embed in embeds:
+            embed.set_footer(text=f"У/С/П/СЧЁТ, ЭФФ и дневные ГРЕНЫ/ВРЕМЯ: данные SQLite за {start}…{end}.")
+    await interaction.followup.send(embeds=embeds)
+
+
 @bot.tree.command(name="help", description="Список команд бота")
 async def cmd_help(interaction: discord.Interaction):
     text = (
@@ -4791,8 +5239,9 @@ async def cmd_help(interaction: discord.Interaction):
         "· `/sheet_path` — путь к Excel\n"
         "\n"
         "**КВ / явка / гранаты**\n"
-        "· **чт–сб:** явка 19:30–20:05 · 3 этапа · 20:05/25/50/21:20\n"
-        "· **вс:** явка 18:30–19:00 · **4 этапа** · 19:00/20/40 · 20:00/20:20\n"
+        "· `/stats` — средние У/С/П, гранаты и время по отрядам\n"
+        "· **чт–сб:** явка 19:30–20:05 · 3 этапа · 20:05/25/50/21:15\n"
+        "· **вс:** явка 18:30–19:00 · **4 этапа** · 19:00/20/40 · 20:00/20:15\n"
         "· `/map` · `!map` — карты на этапы\n"
         "· скан грен: **отряды 1–6 + Чемпионы** (не войс)\n"
         "· данные грен висят до следующего **19:30** (обнуление сессии)\n"
@@ -4862,18 +5311,25 @@ async def cmd_list(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="refresh", description="Принудительно обновить сообщения явки и гранат")
+@bot.tree.command(name="refresh", description="Импортировать Excel и обновить сообщения явки/гранат")
 async def cmd_refresh(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
+    sheet_ok, sheet_msg, sheet_changes = await run_sheet_sync(force=True, update_embeds=False)
+    if not sheet_ok:
+        await interaction.followup.send(
+            embed=make_reply_embed("❌  Excel не импортирован", sheet_msg, color=COLOR_ERR),
+            ephemeral=True,
+        )
+        return
     await refresh_voice_presence()
     async with db_lock:
         data = load_db()
-        _data, post_err = await upsert_status_messages(data)
+        _data, post_err = await upsert_status_messages(data, force=True)
     if post_err:
         await interaction.followup.send(
             embed=make_reply_embed(
-                "⚠️  Не удалось обновить сообщения",
-                post_err,
+                "⚠️  Состав импортирован, сообщения не обновлены",
+                f"{sheet_msg}\n{post_err}",
                 color=COLOR_LIVE,
             ),
             ephemeral=True,
@@ -4882,7 +5338,8 @@ async def cmd_refresh(interaction: discord.Interaction):
     await interaction.followup.send(
         embed=make_reply_embed(
             "🔄  Обновлено",
-            "Сообщения **ЯВКА** и **ГРАНАТЫ** перерисованы.\nВойсы перепроверены.",
+            f"Excel: **{sheet_msg}**\nИзменений: **{len(sheet_changes)}**.\n"
+            "Сообщения **ЯВКА** и **ГРАНАТЫ** перерисованы; войсы перепроверены.",
             color=COLOR_OK,
         ),
         ephemeral=True,
@@ -4950,7 +5407,12 @@ async def run_sheet_sync(
     data_after: dict[str, Any] | None = None
     async with db_lock:
         data = load_db()
-        data, changes = apply_sheet_entries(data, entries, squad_names, tech_map)
+        removed = player_store.removed_roster_identities(
+            PLAYER_DB_PATH, get_guild_id(data)
+        )
+        data, changes = apply_sheet_entries(
+            data, entries, squad_names, tech_map, removed
+        )
         real = [c for c in changes if not str(c).startswith("⚠️")]
         warns = [c for c in changes if str(c).startswith("⚠️")]
         if real:
@@ -4982,6 +5444,62 @@ async def run_sheet_sync(
         f"файл прочитан, строк: {len(entries)}, без изменений{open_note}",
         [],
     )
+
+
+_sheet_watcher_task: asyncio.Task | None = None
+
+
+async def _auto_sheet_sync_once() -> bool:
+    """Run the exact /sheet_sync pipeline after a stable save."""
+    if _sheet_lock_path().exists():
+        log("excel watcher: файл ещё открыт/сохраняется; повтор позже", "warn")
+        return False
+    data = load_db()
+    if not get_guild_id(data) or not get_log_channel_id(data):
+        log("excel watcher: нет guild/log channel; настрой /setup, импорт отложен", "warn")
+        return False
+    ok, msg, changes = await run_sheet_sync(force=False, update_embeds=True)
+    if ok:
+        if changes:
+            log(f"excel watcher: {msg}", "ok")
+        return True
+    log(f"excel watcher: {msg}; повтор позже", "warn")
+    return False
+
+
+def start_sheet_watcher() -> None:
+    """Start one watcher task; on reconnect keep the existing one."""
+    global _sheet_watcher_task
+    if not SHEET_AUTO_SYNC:
+        log("excel watcher: отключён (SHEET_AUTO_SYNC=false)", "warn")
+        return
+    if _sheet_watcher_task is not None and not _sheet_watcher_task.done():
+        return
+    if not SHEET_PATH.exists():
+        log(f"excel watcher: файл не найден: {SHEET_PATH}; продолжу ждать", "warn")
+    _sheet_watcher_task = asyncio.create_task(
+        watch_file(
+            SHEET_PATH,
+            _auto_sheet_sync_once,
+            poll_seconds=SHEET_WATCH_POLL_SECONDS,
+            debounce_seconds=SHEET_WATCH_DEBOUNCE_SECONDS,
+            retry_seconds=SHEET_WATCH_RETRY_SECONDS,
+        ),
+        name="excel-roster-watcher",
+    )
+    log(f"excel watcher: {SHEET_PATH.name} · debounce {SHEET_WATCH_DEBOUNCE_SECONDS:g}s", "ok")
+
+
+async def stop_sheet_watcher() -> None:
+    global _sheet_watcher_task
+    task, _sheet_watcher_task = _sheet_watcher_task, None
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 @bot.tree.command(name="sheet_sync", description="Синхронизировать состав/отряды из Excel прямо сейчас")
@@ -5096,92 +5614,285 @@ async def cmd_sheet_path(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="scan_now", description="Запустить скан гранат вручную")
-@app_commands.describe(step="Какой этап просканировать")
-@app_commands.choices(
-    step=[
-        app_commands.Choice(name="База (чт–сб 20:05 / вс 19:00)", value="20:00"),
-        app_commands.Choice(name="I (чт–сб 20:25 / вс 19:20)", value="20:25"),
-        app_commands.Choice(name="II (чт–сб 20:50 / вс 19:40)", value="20:50"),
-        app_commands.Choice(name="III (чт–сб 21:20 финал / вс 20:00)", value="21:20"),
-        app_commands.Choice(name="IV финал вс 20:20", value="21:40"),
-    ]
+GEMINI_SCAN_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip() or "gemini-3.6-flash"
+GEMINI_SCAN_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "place": {"type": "integer"},
+            "nickname": {"type": "string"},
+            "kills": {"type": "integer"},
+            "deaths": {"type": "integer"},
+            "assists": {"type": "integer"},
+            "score": {"type": "integer", "nullable": True},
+        },
+        "required": ["place", "nickname", "kills", "deaths", "assists", "score"],
+    },
+}
+GEMINI_SCAN_PROMPT = (
+    "На скриншоте — таблица игроков из игры. Столбцы слева направо: "
+    "номер по порядку (место), Ник, У (убийства), С (смерти), П (помощь), "
+    "Казна, Счёт, Ранг. Извлеки ТОЛЬКО поля: место, ник, У, С, П и Счёт "
+    "для каждой строки таблицы. Не путай столбец 'Счёт' со столбцом 'Казна': "
+    "Казна стоит перед Счётом. Поле score обязательно присутствует в каждой строке: "
+    "целое число, если Счёт читается, иначе null. Не подставляй 0 вместо неизвестного. "
+    "Верни данные строго по schema и ничего не придумывай."
 )
-async def cmd_scan_now(interaction: discord.Interaction, step: app_commands.Choice[str]):
-    actor = await resolve_member(interaction)
-    if not can_manage_kv(actor):
-        await interaction.response.send_message(embed=deny_embed(), ephemeral=True)
+
+
+class GeminiScanError(RuntimeError):
+    """Безопасная для логирования ошибка распознавания Gemini."""
+
+
+GEMINI_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+GEMINI_RETRY_BASE_SECONDS = 1.0
+GEMINI_RETRY_MAX_SECONDS = 30.0
+
+
+def _gemini_retry_delay(response: requests.Response | None, attempt: int) -> float:
+    """Bounded exponential backoff with jitter, honoring a valid Retry-After."""
+    retry_after: float | None = None
+    if response is not None:
+        raw = response.headers.get("Retry-After", "").strip()
+        if raw:
+            try:
+                retry_after = max(0.0, float(raw))
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(raw)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.astimezone()
+                    retry_after = max(0.0, retry_at.timestamp() - time.time())
+                except (TypeError, ValueError, OverflowError):
+                    pass
+    exponential = GEMINI_RETRY_BASE_SECONDS * (2 ** max(0, attempt - 1))
+    delay = retry_after if retry_after is not None else exponential * random.uniform(0.5, 1.5)
+    return min(GEMINI_RETRY_MAX_SECONDS, delay)
+
+
+def scan_image_bytes(image_bytes: bytes, mime_type: str, max_retries: int = 3) -> list[dict[str, Any]]:
+    """Синхронно распознать игровую таблицу из байтов изображения."""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise GeminiScanError("GEMINI_API_KEY не задан")
+    if not image_bytes:
+        return []
+
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": GEMINI_SCAN_PROMPT},
+                {"inline_data": {
+                    "mime_type": mime_type if mime_type.startswith("image/") else "image/png",
+                    "data": base64.b64encode(image_bytes).decode("ascii"),
+                }},
+            ]
+        }],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "response_schema": GEMINI_SCAN_SCHEMA,
+        },
+    }
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_SCAN_MODEL}:generateContent"
+    )
+    headers = {"Content-Type": "application/json", "X-goog-api-key": api_key}
+
+    attempts = max(1, max_retries)
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == attempts:
+                raise GeminiScanError("сетевая ошибка Gemini после повторных попыток") from exc
+            time.sleep(_gemini_retry_delay(None, attempt))
+            continue
+        except requests.RequestException as exc:
+            raise GeminiScanError("сетевая ошибка Gemini") from exc
+
+        if response.status_code in GEMINI_RETRYABLE_STATUSES:
+            if attempt == attempts:
+                raise GeminiScanError(
+                    f"Gemini временно недоступен (HTTP {response.status_code}) после повторных попыток"
+                )
+            time.sleep(_gemini_retry_delay(response, attempt))
+            continue
+        if response.status_code != 200:
+            raise GeminiScanError(f"Gemini отклонил запрос (HTTP {response.status_code})")
+
+        try:
+            envelope = response.json()
+            text = envelope["candidates"][0]["content"]["parts"][0]["text"]
+            parsed = json.loads(text)
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise GeminiScanError("некорректный JSON-ответ Gemini") from exc
+        if not isinstance(parsed, list):
+            raise GeminiScanError("Gemini вернул JSON не в виде списка")
+
+        rows: list[dict[str, Any]] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            try:
+                rows.append({
+                    "place": int(item["place"]),
+                    "nickname": str(item["nickname"]).strip(),
+                    "kills": int(item["kills"]),
+                    "deaths": int(item["deaths"]),
+                    "assists": int(item["assists"]),
+                    "score": None if item.get("score") is None else int(item["score"]),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+        return sorted(rows, key=lambda row: row["place"])
+
+    return []
+
+
+SCAN_DB_SCHEMA = ""  # unified schema is owned by player_store.ensure_schema
+
+
+def init_scan_db(db_path: Path = SCAN_DB_PATH) -> None:
+    """Идемпотентно создать общую SQLite-схему игроков и статистики сканов."""
+    player_store.ensure_schema(db_path)
+    with closing(player_store.connect(db_path)) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+
+
+def save_scan_result(
+    rows: list[dict[str, Any]], *, match_date: str, map_name: str,
+    guild_id: int | None, channel_id: int | None, user_id: int,
+    scanned_at: str, source_filename: str, db_path: Path = SCAN_DB_PATH,
+) -> player_store.ScanSaveResult:
+    init_scan_db(db_path)
+    return player_store.save_scan_result(
+        db_path, rows, match_date=match_date, map_name=map_name, guild_id=guild_id,
+        channel_id=channel_id, user_id=user_id, scanned_at=scanned_at,
+        source_filename=source_filename,
+    )
+
+
+@bot.tree.command(name="alias_add", description="Связать OCR-псевдоним с игровым ником")
+@app_commands.describe(canonical_nick="Основной игровой ник", alias="OCR-псевдоним")
+async def cmd_alias_add(interaction: discord.Interaction, canonical_nick: str, alias: str) -> None:
+    actor = interaction.user
+    data = load_db()
+    if not isinstance(actor, discord.Member) or not can_use_roster(actor, data):
+        await interaction.response.send_message("❌ Нет доступа. Нужны те же права, что для /add.", ephemeral=True)
+        return
+    try:
+        await asyncio.to_thread(player_store.add_alias, PLAYER_DB_PATH, canonical_nick, alias)
+        await asyncio.to_thread(player_store.link_scan_rows, PLAYER_DB_PATH)
+    except ValueError as exc:
+        await interaction.response.send_message(f"❌ Alias не добавлен: {exc}", ephemeral=True)
+        return
+    await interaction.response.send_message(f"✅ Alias `{alias}` связан с `{canonical_nick}`.", ephemeral=True)
+
+
+@bot.tree.command(name="scan", description="Распознать и сохранить таблицу игроков")
+@app_commands.rename(match_date="date", map_name="map", attachment="screenshot")
+@app_commands.describe(match_date="Дата КВ: 19.08.26, 19.08.2026 или 2026-08-19", map_name="Карта матча", attachment="Скриншот таблицы игроков")
+@app_commands.choices(
+    map_name=[app_commands.Choice(name=name, value=name) for name in SCAN_MAP_CHOICES]
+)
+async def cmd_scan(interaction: discord.Interaction, match_date: str, map_name: app_commands.Choice[str], attachment: discord.Attachment):
+    try:
+        normalized_date = player_store.parse_match_date(match_date)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    prev_map = {
-        "20:00": None,
-        "20:25": "20:00",
-        "20:50": "20:25",
-        "21:20": "20:50",
-        "21:40": "21:20",
-    }
-    await run_grenade_step(step.value, prev_map[step.value])
-    await interaction.followup.send(
-        embed=make_reply_embed(
-            "💣  Скан выполнен",
-            f"**{STEP_TITLES.get(step.value, step.value)}** (`{step.value}`) — готово.\n"
-            f"Смотри канал логов и таблицу **ГРАНАТЫ**.\n"
-            f"_Если API fail — этап не закрыт, можно повторить._",
-            color=COLOR_GRENADES,
-        ),
-        ephemeral=True,
-    )
+    try:
+        rows = await asyncio.to_thread(scan_image_bytes, await attachment.read(), attachment.content_type or "image/png")
+        if not rows:
+            await interaction.followup.send("Не удалось распознать таблицу на скриншоте", ephemeral=True)
+            return
+        result = await asyncio.to_thread(save_scan_result, rows, match_date=normalized_date, map_name=map_name.value, guild_id=interaction.guild_id, channel_id=interaction.channel_id, user_id=interaction.user.id, scanned_at=interaction.created_at.isoformat(), source_filename=Path(attachment.filename).name[:255])
+        for chunk in player_store.format_scan_private_report(rows, match_date=normalized_date, map_name=map_name.value, save_result=result):
+            await interaction.followup.send(chunk, ephemeral=True)
+    except (GeminiScanError, json.JSONDecodeError, requests.RequestException, sqlite3.Error) as exc:
+        log(f"/scan: {type(exc).__name__}: {exc}", "err")
+        await interaction.followup.send("Не удалось обработать скриншот. Попробуйте ещё раз позже.", ephemeral=True)
 
 
-@bot.tree.command(
-    name="deletegren",
-    description="Очистить таблицу ГРАНАТЫ (ники, цифры и дату)",
-)
-async def cmd_deletegren(interaction: discord.Interaction):
+@bot.tree.command(name="scan_dates", description="Приватно показать даты КВ и число табов")
+@app_commands.guild_only()
+async def cmd_scan_dates(interaction: discord.Interaction) -> None:
+    rows = await asyncio.to_thread(player_store.list_scan_dates, SCAN_DB_PATH, interaction.guild_id)
+    text = "\n".join(f"`{row['match_date']}` — {row['scan_count']} таб." for row in rows) or "Датированных табов пока нет."
+    await interaction.response.send_message(text, ephemeral=True)
+
+
+@bot.tree.command(name="scan_view", description="Приватно показать сохранённый таб по ID")
+@app_commands.describe(scan_id="ID скана из отчёта /scan")
+async def cmd_scan_view(interaction: discord.Interaction, scan_id: int) -> None:
+    if interaction.guild_id is None:
+        await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        found = await asyncio.to_thread(
+            player_store.get_scan_for_guild, SCAN_DB_PATH, scan_id, interaction.guild_id,
+        )
+        if found is None:
+            await interaction.followup.send(
+                "Скан с таким ID не найден на этом сервере.", ephemeral=True,
+            )
+            return
+        scan, rows = found
+        for chunk in player_store.format_scan_private_report(
+            rows, match_date=scan["match_date"], map_name=scan["map"],
+            save_result=player_store.ScanSaveResult(int(scan["id"]), True),
+        ):
+            await interaction.followup.send(chunk, ephemeral=True)
+    except sqlite3.Error as exc:
+        log(f"/scan_view: {type(exc).__name__}: {exc}", "err")
+        await interaction.followup.send("Не удалось прочитать скан.", ephemeral=True)
+
+
+@bot.tree.command(name="scan_now", description="Ручной полный скан гранат за дату КВ")
+@app_commands.describe(match_date="Обязательная дата КВ: 19.08.26, 19.08.2026 или 2026-08-19")
+@app_commands.rename(match_date="date")
+async def cmd_scan_now(interaction: discord.Interaction, match_date: str):
     actor = await resolve_member(interaction)
     if not can_manage_kv(actor):
         await interaction.response.send_message(embed=deny_embed(), ephemeral=True)
         return
+    try:
+        day = player_store.parse_match_date(match_date)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    steps = (("20:00", None), ("20:25", "20:00"), ("20:50", "20:25"),
+             ("21:20", "20:50"), ("21:40", "21:20"))
+    for step_name, previous in steps:
+        await run_grenade_step(step_name, previous)
     async with db_lock:
-        data = load_db()
-        backup_db()
-        old_label = format_kv_date_label(data) if (
-            data.get("grenade_history") or data.get("grenade_date")
-        ) else None
-        data["grenade_history"] = {}
-        data.pop("combat_history", None)
-        data["skipped_grenade_steps"] = []
-        data["last_grenade_step"] = None
-        data["grenade_date"] = None
-        data["voice_speak_seconds"] = {}
-        # дату/таблицу убрали; финал КВ по явке не трогаем
-        save_db(data)
-        data_out = data
-    await upsert_status_messages(data_out)
-
-    extra = f"Было: **{old_label}**\n" if old_label else ""
-    await interaction.response.send_message(
-        embed=make_reply_embed(
-            "🧹  Гранаты очищены",
-            (
-                f"{extra}"
-                f"Таблица **ГРАНАТЫ** пустая — без ников, цифр и даты.\n"
-                f"Явка не тронута."
-            ),
-            color=COLOR_OK,
-        ),
-        ephemeral=True,
-    )
+        history = (load_db().get("grenade_history") or {}).copy()
+    semantic = hashlib.sha256(json.dumps(history, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    guild_id = interaction.guild.id if interaction.guild else None
+    written = await asyncio.to_thread(player_store.save_grenade_session, PLAYER_DB_PATH, history, day, f"manual:{semantic}", guild_id)
+    await interaction.followup.send(embed=make_reply_embed("💣  Скан выполнен", f"Дата КВ: **{day}**. Сохранено строк: **{written}**.", color=COLOR_OK), ephemeral=True)
 
 
 @bot.tree.command(
     name="voice_scan_start",
     description="Скан времени 'зелёной обводки' (речи) в твоём войсе — ручной режим",
 )
-async def cmd_voice_scan_start(interaction: discord.Interaction):
+@app_commands.describe(match_date="Обязательная дата КВ")
+@app_commands.rename(match_date="date")
+async def cmd_voice_scan_start(interaction: discord.Interaction, match_date: str):
     actor = await resolve_member(interaction)
     if not can_manage_kv(actor):
         await interaction.response.send_message(embed=deny_embed(), ephemeral=True)
+        return
+    try:
+        day = player_store.parse_match_date(match_date)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
         return
     if interaction.guild is None:
         await interaction.response.send_message("Только на сервере.", ephemeral=True)
@@ -5198,7 +5909,8 @@ async def cmd_voice_scan_start(interaction: discord.Interaction):
 
     report_channel_id = interaction.channel_id
     ok, msg = await start_voice_scan(
-        interaction.guild, channel=target_channel, manual=True, report_channel_id=report_channel_id
+        interaction.guild, channel=target_channel, manual=True,
+        report_channel_id=report_channel_id, match_date=day,
     )
     if not ok:
         await interaction.followup.send(
@@ -5249,6 +5961,26 @@ async def cmd_voice_scan_stop(interaction: discord.Interaction):
     await interaction.followup.send(
         embed=make_reply_embed("🏁  Итог скана речи", report, color=COLOR_GRENADES)
     )
+
+
+@bot.tree.command(name="stats_dates", description="Даты доступной исторической статистики")
+@app_commands.guild_only()
+async def cmd_stats_dates(interaction: discord.Interaction):
+    guild_id = interaction.guild.id if interaction.guild else None
+    rows = await asyncio.to_thread(
+        player_store.list_kv_daily_dates, PLAYER_DB_PATH, guild_id
+    )
+    lines = ["Доступные даты итогов КВ:"] + rows
+    chunks, current = [], ""
+    for line in lines:
+        if current and len(current) + len(line) + 1 > 1900:
+            chunks.append(current)
+            current = ""
+        current += line + "\n"
+    if current: chunks.append(current)
+    await interaction.response.send_message(f"```\n{chunks[0]}```", ephemeral=True)
+    for chunk in chunks[1:]:
+        await interaction.followup.send(f"```\n{chunk}```", ephemeral=True)
 
 
 @bot.tree.command(name="reset_session", description="Сбросить явку и гранаты (новая сессия)")
@@ -5333,26 +6065,12 @@ async def voice_time_refresh_loop():
         log(f"voice_scan live-refresh: {e}", "err")
 
 
-@tasks.loop(seconds=SHEET_SYNC_SECONDS)
-async def sheet_sync_loop():
-    """Авточтение Excel (ники / отряды / слоты)."""
-    try:
-        ok, msg, changes = await run_sheet_sync(force=False)
-        if not ok:
-            log(f"excel · {msg}", "err")
-        elif changes and any(not str(c).startswith("⚠️") for c in changes):
-            n = sum(1 for c in changes if not str(c).startswith("⚠️"))
-            log(f"excel · обновлено {n}", "ok")
-    except Exception as e:
-        log(f"excel: {e}", "err")
-
-
 @tasks.loop(seconds=20)
 async def schedule_loop():
     """
     Расписание по дню (МСК):
-    чт–сб: 19:30 явка → 20:05 база → 20:25/50 → 21:20
-    вс:    18:30 явка → 19:00 база → 19:20/40 → 20:20
+    чт–сб: 19:30 явка → 20:05 база → 20:25/50 → 21:15
+    вс:    18:30 явка → 19:00 база → 19:20/40 → 20:15
     """
     try:
         now = now_msk()
@@ -5513,13 +6231,6 @@ async def before_voice_time_refresh():
     await bot.wait_until_ready()
 
 
-@sheet_sync_loop.before_loop
-async def before_sheet():
-    await bot.wait_until_ready()
-    # первый проход уже в on_ready — цикл ждёт интервал, без двойного PATCH/429
-    await asyncio.sleep(SHEET_SYNC_SECONDS)
-
-
 @schedule_loop.before_loop
 async def before_schedule():
     await bot.wait_until_ready()
@@ -5567,10 +6278,7 @@ async def on_ready():
         voice_time_refresh_loop.start()
     if not schedule_loop.is_running():
         schedule_loop.start()
-    if not sheet_sync_loop.is_running():
-        sheet_sync_loop.start()
-
-    await run_sheet_sync(force=True, update_embeds=False)
+    start_sheet_watcher()
 
     n = now_msk()
     async with db_lock:
@@ -5666,6 +6374,7 @@ async def on_voice_state_update(
         live = is_kv_live(data)
         p = data["players"][key]
         p["discord_name"] = member.display_name
+        p["discord_username"] = member.name
         in_target = bool(after_id in relevant) if after_id else False
 
         if not live:
@@ -5687,6 +6396,14 @@ async def on_voice_state_update(
 
 
 def main():
+    # Реальный startup-path: схема и legacy import выполняются до подключения к Discord.
+    migration = player_store.ensure_legacy_cutover(PLAYER_DB_PATH, LEGACY_JSON_PATH)
+    log(
+        "SQLite ready · players {players} · bindings {discord_bindings} · aliases {player_aliases}".format(
+            **migration["counts"]
+        ),
+        "ok",
+    )
     if not DISCORD_TOKEN:
         raise SystemExit("  ✗  нет DISCORD_TOKEN в .env")
     if not CLIENT_SECRET:
@@ -5695,6 +6412,7 @@ def main():
     _orig_close = bot.close
 
     async def _close_with_http() -> None:
+        await stop_sheet_watcher()
         await close_http()
         await _orig_close()
 

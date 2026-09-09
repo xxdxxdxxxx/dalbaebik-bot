@@ -1,5 +1,10 @@
 # КВ STALCRAFT · Discord-бот
 
+## Voice snapshot в SQLite
+
+`voice_speak_seconds` остаётся JSON dual-write для совместимости и зеркалируется в `voice_stats` без блокировки event loop. Ключ `legacy-kv:<session_date>` отделяет КВ-сессии; повторная синхронизация заменяет snapshot и не суммирует его повторно. Если `session_date` отсутствует, применяется `legacy-kv:undated-current`: это стабильный ключ текущего недатированного snapshot, а не выдуманная дата. `player_id` назначается только по точному `discord_bindings`; непривязанные Discord-записи сохраняются с `NULL player_id`. Ручной `/voice_scan_start` намеренно не сохраняется.
+
+
 Явка по войсам · отряды из Excel · сканы гранат · карты этапов.
 
 ## Расписание (МСК)
@@ -13,7 +18,7 @@
 | База грен | **20:05** |
 | Этап I | **20:25** |
 | Этап II | **20:50** |
-| Этап III (финал) | **21:20** |
+| Этап III (финал) | **21:15** |
 
 ### Воскресенье — **4 этапа**
 
@@ -23,7 +28,7 @@
 | I | **19:00 – 19:20** | база **19:00** · I **19:20** |
 | II | **19:20 – 19:40** | II **19:40** |
 | III | **19:40 – 20:00** | III **20:00** |
-| IV | **20:00 – 20:20** | IV **20:20** (финал) |
+| IV | **20:00 – 20:15** | IV **20:15** (финал) |
 
 ## ГРАНАТЫ
 
@@ -50,6 +55,7 @@
 ds bot stalzone/
 ├── bot.py
 ├── players.json
+├── scan_stats.sqlite3  # создаётся автоматически, локальная статистика /scan
 ├── ДИТЯ22.xlsx
 ├── requirements.txt
 ├── .env / .env.example
@@ -69,6 +75,28 @@ ds bot stalzone/
    ```
 5. `/setup` → `/access_add` → состав / Excel
 
+## SQLite и совместимость
+
+`scan_stats.sqlite3` — единая база идентичности игроков, Discord-привязок, OCR-алиасов, гранат и `/scan`. Полный путь определяется как `<папка проекта>\scan_stats.sqlite3`. Таблицы сканов: `scans` (одна запись на таб) и `scan_players` (распознанные строки). При обычном `python bot.py` схема создаётся и legacy-данные из `players.json` импортируются идемпотентно. Текущий JSON сохраняется для совместимости интерфейса и сессионных полей; `/add`, гранатные сканы и `/scan` одновременно обновляют SQLite по единому `player_id`.
+
+Посмотреть содержимое без запуска бота:
+
+```bash
+python -c "import sqlite3; c=sqlite3.connect('scan_stats.sqlite3'); print(list(c.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\"))); print(list(c.execute(\"SELECT * FROM scans ORDER BY id DESC LIMIT 10\")))"
+python -c "import sqlite3; c=sqlite3.connect('scan_stats.sqlite3'); print(list(c.execute(\"SELECT * FROM scan_players ORDER BY scan_id DESC, place LIMIT 100\")))"
+```
+
+Если установлен консольный клиент SQLite: `sqlite3 scan_stats.sqlite3`, затем `.tables`, `.schema scans` и `SELECT * FROM scans ORDER BY id DESC LIMIT 10;`.
+
+OCR-алиасы добавляются только явно командой `/alias_add` с теми же правами, что `/add`; конфликт с другим игроком отклоняется. Автоматического добавления алиасов при startup/migration нет.
+
+Проверка миграции без изменения рабочей БД:
+
+```bash
+python -m py_compile bot.py player_store.py tools/test_player_store.py
+python tools/test_player_store.py
+```
+
 ## Команды
 
 `/help` — полный список.
@@ -77,7 +105,24 @@ ds bot stalzone/
 |--|--|
 | Состав | `/add` · `!add` · `/remove` · `/list` |
 | Excel | `/sheet_sync` · `/squad_list` |
-| КВ | `/map` · `/refresh` · `/scan_now`* · `/reset_session`* · `/deletegren`* |
+| КВ | `/map` · `/stats` · `/refresh` · `/scan_now`* · `/reset_session`* · `/deletegren`* |
+
+## Табы КВ по датам
+
+- `/scan date map screenshot` — дата обязательна; форматы `DD.MM.YY`, `DD.MM.YYYY`, `YYYY-MM-DD`.
+- `/scan_view scan_id` — приватный сохранённый таб с датой КВ.
+- `/scan_dates` — приватный список дат и количества табов сервера.
+- `/stats date_from date_to` — фильтр У/С/П/СЧЁТ и ЭФФ. Одна граница означает один день. ГРЕНЫ/ВРЕМЯ не фильтруются датой табов, потому что их даты хранятся отдельными сессиями.
+
+## `/stats`
+
+Показывает всех известных игроков в порядке: **Отряд 1…6 → Чемпионы → Без отряда**.
+Строка игрока: `ник — У x.x · С x.x · П x.x · Гранаты x.x · Время мм:сс`.
+
+- У/С/П усредняются по сохранённым строкам `/scan` (одна строка таблицы = один матч/скан).
+- Гранаты и время усредняются по завершённым КВ-сессиям из `scans/itogi`; незавершённая текущая сессия добавляется из `players.json`.
+- Отсутствующие показатели не считаются нулём и выводятся как `—`.
+- Длинный результат автоматически делится на несколько embed-страниц.
 
 \* access-роль или админ.
 
@@ -134,3 +179,26 @@ VOICE_SCAN_MARGIN_DB=12
 VOICE_SCAN_ATTACK_MS=60
 VOICE_SCAN_RELEASE_MS=1000
 ```
+
+
+## Фактический синтаксис датированных команд
+
+- `/scan date:<ДД.ММ.ГГ|ДД.ММ.ГГГГ|ГГГГ-ММ-ДД> map:<карта> screenshot:<файл>`
+- `/scan_now date:<дата>` — обязательная дата КВ, полный ручной grenade scan.
+- `/voice_scan_start date:<дата>` и `/voice_scan_stop`.
+- `/stats [date:<дата>] [date_from:<дата> date_to:<дата>]`.
+- `/stats_dates` — приватный список `Дата | Табы | Гранаты | Войс`.
+- `/scan_dates` сохранён для списка дат сканов табов.
+
+
+## ╨п╨▓╨╜╤Л╨╡ import/export ╨╛╨┐╨╡╤А╨░╤Ж╨╕╨╕
+
+Excel ╨╜╨╡ ╤Б╨╕╨╜╤Е╤А╨╛╨╜╨╕╨╖╨╕╤А╤Г╨╡╤В╤Б╤П ╨╜╨░ startup ╨╕╨╗╨╕ ╨┐╨╛ ╤В╨░╨╣╨╝╨╡╤А╤Г. ╨Я╨╛ ╤Г╨╝╨╛╨╗╤З╨░╨╜╨╕╤О import ╨▓╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В dry-run ╨╕ ╨▓╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В conflicts + revision:
+
+```bash
+python tools/roster_io.py import roster.xlsx --guild-id 123
+python tools/roster_io.py import roster.xlsx --guild-id 123 --apply --expected-revision HASH
+python tools/roster_io.py export-tech tech.xlsx --guild-id 123
+```
+
+╨Ш╨╝╨┐╨╛╤А╤В ╤В╤А╨░╨╜╨╖╨░╨║╤Ж╨╕╨╛╨╜╨╜╤Л╨╣, ╨╜╨╡ ╤Г╨┤╨░╨╗╤П╨╡╤В identity/history ╨╕ ╨╜╨╕╨║╨╛╨│╨┤╨░ ╨╜╨╡ ╨╝╨╡╨╜╤П╨╡╤В `players.json`. `players.json` ╨┐╤А╨╡╨┤╨╜╨░╨╖╨╜╨░╤З╨╡╨╜ ╤В╨╛╨╗╤М╨║╨╛ ╨┤╨╗╤П ╨╛╨┤╨╜╨╛╤А╨░╨╖╨╛╨▓╨╛╨│╨╛ legacy import ╨┤╨╛ marker ╨╕ ╤П╨▓╨╜╤Л╤Е snapshot/backup ╨╛╨┐╨╡╤А╨░╤Ж╨╕╨╣.
