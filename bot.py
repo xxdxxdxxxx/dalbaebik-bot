@@ -131,6 +131,12 @@ def log_banner(lines: list[str]) -> None:
 # Настройки (.env — только токен и API; каналы задаются командами в Discord)
 # ---------------------------------------------------------------------------
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
+# Локальная админ-панель базы (http://127.0.0.1:ADMIN_PORT); ADMIN_UI=0 — выключить
+ADMIN_PANEL_ENABLED = os.getenv("ADMIN_UI", "1").strip().lower() not in {"0", "false", "no", "off"}
+try:
+    ADMIN_PANEL_PORT = int(os.getenv("ADMIN_PORT", "8787") or 8787)
+except ValueError:
+    ADMIN_PANEL_PORT = 8787
 # Опциональный запасной вариант из .env (если не настроили через /setup)
 ENV_GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 ENV_LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0") or 0)
@@ -6395,6 +6401,27 @@ async def on_voice_state_update(
         await upsert_status_messages(None, force=False, parts=("online",))
 
 
+def start_admin_panel() -> None:
+    """Поднять локальную админ-панель базы фоновым потоком (только этот ПК)."""
+    if not ADMIN_PANEL_ENABLED:
+        return
+    try:
+        from werkzeug.serving import make_server
+
+        from tools.admin_ui import app
+    except Exception as exc:
+        log(f"админ-панель базы не запустилась: {exc}", "warn")
+        return
+    try:
+        server = make_server("127.0.0.1", ADMIN_PANEL_PORT, app, threaded=True)
+    except OSError as exc:
+        log(f"админ-панель базы: порт {ADMIN_PANEL_PORT} занят ({exc})", "warn")
+        return
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    threading.Thread(target=server.serve_forever, name="admin-ui", daemon=True).start()
+    log(f"админ-панель базы: http://127.0.0.1:{ADMIN_PANEL_PORT}", "ok")
+
+
 def main():
     # Реальный startup-path: схема и legacy import выполняются до подключения к Discord.
     migration = player_store.ensure_legacy_cutover(PLAYER_DB_PATH, LEGACY_JSON_PATH)
@@ -6408,6 +6435,7 @@ def main():
         raise SystemExit("  ✗  нет DISCORD_TOKEN в .env")
     if not CLIENT_SECRET:
         log("STALCRAFT_CLIENT_SECRET пуст — грены не будут сканиться", "warn")
+    start_admin_panel()
 
     _orig_close = bot.close
 

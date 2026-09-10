@@ -300,13 +300,13 @@ def day(date: str):
             f"файл: {esc(s['source_filename'])}" if s.get("source_filename") else "",
         ]))
         scan_html += (
-            f"<div class='panel'><form method='post'>"
-            f"<input type='hidden' name='__del_scan' value='{s['id']}'>"
-            f"<button class='danger' formaction='{url_for('day_save', date=date)}'"
-            f" onclick=\"return confirm('Удалить весь таб {esc(meta)}?')\">✕ удалить таб</button>"
+            "<div class='panel'>"
+            f"<button class='danger' name='__del_scan' value='{s['id']}' "
+            f"formaction='{url_for('day_save', date=date)}' "
+            f"onclick=\"return confirm('Удалить весь таб?')\">✕ удалить таб</button>"
             f"<span class='dim' style='margin-left:10px'>{meta}</span>"
-            f"<table><tr><th>#</th><th>Ник</th><th>У</th><th>С</th><th>П</th><th>СЧЁТ</th></tr>"
-            f"{rows}</table></form></div>")
+            "<table><tr><th>#</th><th>Ник</th><th>У</th><th>С</th><th>П</th><th>СЧЁТ</th></tr>"
+            f"{rows}</table></div>")
 
     kv_rows = ""
     for k in krows:
@@ -326,30 +326,36 @@ def day(date: str):
             f"<td><input class='num' type='number' min='0' name='v{k['row_no']}' "
             f"value='{k['voice_seconds'] or 0}'></td>"
             f"<td class='dim'>{fmt_sec(k['voice_seconds'])}</td>"
-            f"<td><form method='post' action='{url_for('day_save', date=date)}'>"
-            f"<input type='hidden' name='__del_row' value='{k['row_no']}'>"
-            f"<button class='danger' onclick=\"return confirm('Удалить гранаты и войс "
-            f"{esc(nick)} за {fmt_date_ru(date)}?')\">✕</button></form></td>"
+            f"<td><button class='danger' name='__del_row' value='{k['row_no']}' "
+            f"formaction='{url_for('day_save', date=date)}' "
+            f"onclick=\"return confirm('Удалить гранаты и войс {esc(nick)} "
+            f"за {fmt_date_ru(date)}?')\">✕</button></td>"
             "</tr>")
     kv_block = (
         f"<h2>💣 Гранаты по этапам и 🎙 войс за {fmt_date_ru(date)}</h2>"
         "<p class='hint'>Пустая ячейка этапа = записи нет; 0 = записан ноль. "
         "«Всего» пересчитается как сумма этапов при сохранении. Войс — в секундах.</p>"
-        f"<form method='post' action='{url_for('day_save', date=date)}'>"
         f"<div class='panel'><table><tr><th>#</th><th>Ник</th>{stage_cols}"
         "<th>Всего</th><th>Войс, сек</th><th>Войс</th><th></th></tr>"
-        f"{kv_rows}</table>"
-        "<button class='save'>💾 Сохранить гранаты и войс</button></div></form>"
+        f"{kv_rows}</table></div>"
         if krows else
         f"<h2>💣 Гранаты и 🎙 войс за {fmt_date_ru(date)}</h2>"
         "<p class='hint'>Дневной отчёт за эту дату в базе не найден "
         "(гранаты за этот день не импортировались).</p>")
 
+    banner = ""
+    if request.args.get("saved"):
+        banner = "<div class='ok-pill big'>✅ Сохранено</div>"
+    elif request.args.get("deleted"):
+        banner = "<div class='ok-pill big'>🗑 Удалено</div>"
     body = (f"<a class='back' href='{url_for('index')}'>← Дни</a>"
-            f"<h1>📆 {fmt_date_ru(date)}</h1>"
+            f"<h1>📆 {fmt_date_ru(date)}</h1>{banner}"
+            f"<form method='post' action='{url_for('day_save', date=date)}'>"
+            "<button class='save'>💾 Сохранить всё</button>"
             f"<h2>📄 Табы ({len(scans)})</h2>"
             + (scan_html or "<p class='hint'>Табов за этот день нет.</p>")
-            + kv_block)
+            + kv_block
+            + "<button class='save'>💾 Сохранить всё</button></form>")
     return render(date, body)
 
 
@@ -377,7 +383,7 @@ def day_save(date: str):
             con.execute("DELETE FROM scan_players WHERE scan_id=?", (del_scan,))
             con.execute("DELETE FROM scans WHERE id=?", (del_scan,))
             con.execute("COMMIT")
-            return redirect(url_for("day", date=date))
+            return redirect(url_for("day", date=date, deleted=1))
 
         report = one(con, """SELECT id FROM kv_daily_reports WHERE match_date=?
                              ORDER BY id DESC LIMIT 1""", (date,))
@@ -396,7 +402,7 @@ def day_save(date: str):
                 con.execute("""DELETE FROM grenade_session_stats
                                WHERE player_id=? AND match_date=?""", (pid, date))
             con.execute("COMMIT")
-            return redirect(url_for("day", date=date))
+            return redirect(url_for("day", date=date, deleted=1))
 
         # правка табов
         for key, value in form.items():
@@ -449,7 +455,7 @@ def day_save(date: str):
                 con.execute("""UPDATE kv_daily_players SET total_grenades=?
                                WHERE report_id=? AND row_no=?""", (total, rid, row_no))
         con.execute("COMMIT")
-    return redirect(url_for("day", date=date))
+    return redirect(url_for("day", date=date, saved=1))
 
 
 def main() -> None:
