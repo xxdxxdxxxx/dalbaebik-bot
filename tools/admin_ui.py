@@ -261,7 +261,7 @@ def player(player_id: int):
                 stages[int(sn)] = val if val != "" else "·"
         r["stages"] = stages
         max_stage = max([max_stage, *stages.keys()])
-    stage_cols = "".join(f"<th class='gcol'>Э{stage_label(i)}</th>"
+    stage_cols = "".join(f"<th class='gcol'>{stage_label(i)}</th>"
                          for i in range(1, max_stage + 1))
     max_total = max((r["total"] or 0) for r in days) if days else 0
     trs = []
@@ -357,49 +357,59 @@ def _tab_totals(scans: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
 @app.get("/day/<date>")
 def day(date: str):
     date = player_store.parse_match_date(date)
+    mode = request.args.get("mode", "total")
+    if mode not in {"total", "stages"}:
+        mode = "total"
     with closing(player_store.connect(DB_PATH)) as con:
         scans, report, krows = _day_data(con, date)
         dates = all_dates(con)
     tab_sum = _tab_totals(scans)
+    has_tabs = bool(scans)
     max_stage = max((max(k["stages"], default=0) for k in krows), default=0)
     max_stage = max(max_stage, report["stage_count"] if report else 0)
-    stage_cols = "".join(f"<th class='gcol'>Э{stage_label(i)}</th>"
-                         for i in range(1, max_stage + 1))
+    stage_cols = ("".join(f"<th class='gcol'>{stage_label(i)}</th>"
+                          for i in range(1, max_stage + 1))
+                  if mode == "stages" else "")
     save_url = url_for("day_save", date=date)
 
     # ── сводная строка игрока: итог табов + гранаты + войс ────────────────
     rows_html = []
     for k in krows:
         nick = k["canonical_nick"] or k["raw_nick"] or "—"
-        t = tab_sum.get(k["player_id"]) if k["player_id"] else None
-        if t:
-            tip = esc(" | ".join(t["rows"]))
-            tab_cells = (f"<td class='sum' title='{tip}'>{t['k']}</td>"
-                         f"<td class='sum' title='{tip}'>{t['d']}</td>"
-                         f"<td class='sum' title='{tip}'>{t['a']}</td>"
-                         f"<td class='sum' title='{tip}'>{t['s']}</td>"
-                         f"<td class='dim' title='{tip}'>{t['n']} таб.</td>")
+        tab_cells = ""
+        if has_tabs:
+            t = tab_sum.get(k["player_id"]) if k["player_id"] else None
+            if t:
+                tip = esc(" | ".join(t["rows"]))
+                tab_cells = (f"<td class='sum' title='{tip}'>{t['k']}</td>"
+                             f"<td class='sum' title='{tip}'>{t['d']}</td>"
+                             f"<td class='sum' title='{tip}'>{t['a']}</td>"
+                             f"<td class='sum' title='{tip}'>{t['s']}</td>"
+                             f"<td class='dim' title='{tip}'>{t['n']}</td>")
+            else:
+                tab_cells = ("<td class='dim'>—</td><td class='dim'>—</td>"
+                             "<td class='dim'>—</td><td class='dim'>—</td>"
+                             "<td class='dim'>0</td>")
+        if mode == "stages":
+            gcells = ""
+            for i in range(1, max_stage + 1):
+                val = k["stages"].get(i)
+                shown = "" if val is None else val
+                gcells += (f"<td class='gcol'><input type='number' min='0' "
+                           f"name='g{k['row_no']}_{i}' value='{shown}' placeholder='·'></td>")
+            total_cell = f"<td class='total'>{k['total_grenades'] or 0}</td>"
         else:
-            tab_cells = ("<td class='dim'>—</td><td class='dim'>—</td>"
-                         "<td class='dim'>—</td><td class='dim'>—</td>"
-                         "<td class='dim'>нет</td>")
-        gcells = ""
-        for i in range(1, max_stage + 1):
-            val = k["stages"].get(i)
-            shown = "" if val is None else val
-            gcells += (f"<td class='gcol'><input type='number' min='0' "
-                       f"name='g{k['row_no']}_{i}' value='{shown}' placeholder='·'></td>")
+            gcells = ""
+            total_cell = (f"<td class='gcol'><input type='number' min='0' "
+                          f"name='w{k['row_no']}' value='{k['total_grenades'] or 0}' "
+                          f"title='гранат за день (всего)'></td>")
         link = (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(nick)}</a>"
                 if k["player_id"] else esc(nick))
-        squad = (f" <span class='dim'>{esc(k['squad_label'])}</span>"
-                 if k.get("squad_label") else "")
         rows_html.append(
-            f"<tr><td class='dim'>{k['row_no']}</td><td class='nick'>{link}{squad}</td>"
-            f"{tab_cells}{gcells}"
-            f"<td class='total'>{k['total_grenades'] or 0}</td>"
+            f"<tr><td class='dim'>{k['row_no']}</td><td class='nick'>{link}</td>"
+            f"{tab_cells}{gcells}{total_cell}"
             f"<td><input type='number' min='0' name='v{k['row_no']}' "
-            f"value='{k['voice_seconds'] or 0}'></td>"
-            f"<td class='dim'>{fmt_sec(k['voice_seconds'])}</td>"
+            f"value='{k['voice_seconds'] or 0}' title='{fmt_sec(k['voice_seconds'])}'></td>"
             f"<td><button class='danger' name='__del_row' value='{k['row_no']}' "
             f"formaction='{save_url}' onclick=\"return confirm('Удалить гранаты и войс "
             f"{esc(nick)} за {fmt_date_ru(date)}?')\">✕</button></td></tr>")
@@ -471,15 +481,25 @@ def day(date: str):
              "<span class='chip'>🎙 войс: "
              + fmt_sec(sum(k["voice_seconds"] or 0 for k in krows)) + "</span></div>")
 
+    tab_head = ("<th>У</th><th>С</th><th>П</th><th>СЧЁТ</th><th>Табы</th>"
+                if has_tabs else "")
+    toggle = ("<p class='hint'>Гранаты: "
+              + ("<b>всего</b>" if mode == "total"
+                 else f"<a href='{url_for('day', date=date, mode='total')}'>всего</a>")
+              + " · "
+              + (f"<a href='{url_for('day', date=date, mode='stages')}'>по этапам</a>"
+                 if mode == "total" else "<b>по этапам</b>")
+              + (" · в режиме этапов «всего» = сумма ячеек" if mode == "stages"
+                 else " · чтобы править по этапам, переключи вид") + "</p>")
     kv_block = (
-        "<h2>💣 Гранаты по этапам · 🎙 войс · 📄 итог табов</h2>"
-        "<p class='hint'>У/С/П/СЧЁТ — итог дня по табам (наведи курсор — покажет "
-        "разбивку по табам). Пустая ячейка этапа = записи нет, 0 = ноль. "
-        "«Всего» пересчитается при сохранении. Войс — в секундах.</p>"
-        f"<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th>"
-        "<th>У</th><th>С</th><th>П</th><th>СЧЁТ</th><th></th>"
-        f"{stage_cols}<th>💣</th><th>🎙 сек</th><th>🎙</th><th></th></tr></thead>"
-        f"<tbody>{''.join(rows_html)}</tbody></table></div>"
+        "<h2>💣 Гранаты · 🎙 войс" + (" · 📄 итог табов" if has_tabs else "") + "</h2>"
+        + toggle
+        + ("<p class='hint'>У/С/П/СЧЁТ — итог дня по табам (наведи курсор — покажет "
+           "разбивку по табам).</p>" if has_tabs else "")
+        + "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th>"
+        + tab_head + stage_cols
+        + "<th>💣</th><th>🎙 Войс, сек</th><th></th></tr></thead>"
+        + f"<tbody>{''.join(rows_html)}</tbody></table></div>"
         if krows else
         "<p class='hint'>Дневной отчёт за эту дату не найден "
         "(гранаты за этот день не импортировались).</p>")
@@ -487,6 +507,7 @@ def day(date: str):
     body = (f"<a class='back' href='{url_for('index')}'>← Дни</a>"
             f"<h1>📆 {fmt_date_ru(date)}</h1>{nav}{chips}{banner}"
             f"<form method='post' action='{save_url}'>"
+            f"<input type='hidden' name='mode' value='{mode}'>"
             + kv_block + tabs_details
             + "<button class='save float'>💾 Сохранить</button></form>")
     return render(date, body)
@@ -506,6 +527,9 @@ def _to_int(value: str | None) -> int | None:
 def day_save(date: str):
     date = player_store.parse_match_date(date)
     form = request.form
+    mode = form.get("mode", "total")
+    if mode not in {"total", "stages"}:
+        mode = "total"
 
     with closing(player_store.connect(DB_PATH)) as con:
         con.execute("BEGIN IMMEDIATE")
@@ -516,7 +540,7 @@ def day_save(date: str):
             con.execute("DELETE FROM scan_players WHERE scan_id=?", (del_scan,))
             con.execute("DELETE FROM scans WHERE id=?", (del_scan,))
             con.execute("COMMIT")
-            return redirect(url_for("day", date=date, deleted=1))
+            return redirect(url_for("day", date=date, deleted=1, mode=mode))
 
         report = one(con, """SELECT id FROM kv_daily_reports WHERE match_date=?
                              ORDER BY id DESC LIMIT 1""", (date,))
@@ -535,7 +559,7 @@ def day_save(date: str):
                 con.execute("""DELETE FROM grenade_session_stats
                                WHERE player_id=? AND match_date=?""", (pid, date))
             con.execute("COMMIT")
-            return redirect(url_for("day", date=date, deleted=1))
+            return redirect(url_for("day", date=date, deleted=1, mode=mode))
 
         # правка табов
         for key, value in form.items():
@@ -561,6 +585,23 @@ def day_save(date: str):
                         con.execute("""UPDATE kv_daily_players SET voice_seconds=?
                                        WHERE report_id=? AND row_no=?""",
                                     (num, rid, int(key[1:])))
+            # режим «всего»: правка общего числа напрямую; этапы затираются
+            # только если число реально изменили
+            for key, value in form.items():
+                if not (key.startswith("w") and key[1:].isdigit()):
+                    continue
+                num = _to_int(value)
+                if num is None or num < 0:
+                    continue
+                row_no = int(key[1:])
+                cur = one(con, """SELECT total_grenades FROM kv_daily_players
+                                  WHERE report_id=? AND row_no=?""", (rid, row_no))
+                if cur is None or (cur["total_grenades"] or 0) == num:
+                    continue
+                con.execute("""DELETE FROM kv_daily_grenade_stages
+                               WHERE report_id=? AND row_no=?""", (rid, row_no))
+                con.execute("""UPDATE kv_daily_players SET total_grenades=?
+                               WHERE report_id=? AND row_no=?""", (num, rid, row_no))
             stage_updates: dict[int, dict[int, int | None]] = {}
             for key, value in form.items():
                 if not key.startswith("g"):
@@ -588,7 +629,7 @@ def day_save(date: str):
                 con.execute("""UPDATE kv_daily_players SET total_grenades=?
                                WHERE report_id=? AND row_no=?""", (total, rid, row_no))
         con.execute("COMMIT")
-    return redirect(url_for("day", date=date, saved=1))
+    return redirect(url_for("day", date=date, saved=1, mode=mode))
 
 
 def main() -> None:
