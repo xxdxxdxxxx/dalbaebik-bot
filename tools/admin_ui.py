@@ -2,12 +2,16 @@
 """Локальная админ-панель для scan_stats.sqlite3.
 
 Запуск:  python tools/admin_ui.py   →  http://127.0.0.1:8787
-Панель открывает базу рядом с ботом и позволяет:
-  * смотреть все дни КВ (табы, гранаты, войс);
-  * править цифры прямо в таблице (У/С/П/СЧЁТ, гранаты по этапам, войс);
-  * удалять отдельный таб, строку игрока за день, гранаты за день.
-Правки сразу видны в /stats и сообщениях бота (исторические данные он
-читает из SQLite напрямую, перезапускать бота не нужно).
+(также поднимается автоматически вместе с bot.py)
+
+Страницы:
+  /               — дни КВ, сгруппированы по месяцам;
+  /day/<дата>     — сводная таблица дня: игрок → таб (У/С/П/СЧЁТ за день),
+                    гранаты по этапам, войс; правка гранат/войса прямо в строке,
+                    исходные табы — в раскрывающемся разделе;
+  /players, /player/<id> — история игрока по дням (поиск накруток).
+
+Правки сразу видны в /stats бота (исторические данные читаются из SQLite).
 """
 from __future__ import annotations
 
@@ -29,6 +33,11 @@ app = Flask(__name__)
 
 DB_PATH = ROOT / "scan_stats.sqlite3"
 
+RU_MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль",
+             "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+RU_WD = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+STAGE_ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V", 6: "VI"}
+
 
 def q(con: Any, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     return [dict(r) for r in con.execute(sql, params)]
@@ -44,24 +53,29 @@ def fmt_sec(seconds: Any) -> str:
         s = int(seconds)
     except (TypeError, ValueError):
         return "—"
+    if s >= 3600:
+        return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
     return f"{s // 60:02d}:{s % 60:02d}"
 
 
 def fmt_date_ru(day: str) -> str:
     try:
         d = datetime.strptime(day, "%Y-%m-%d")
-        return d.strftime("%d.%m.%y (%a)").replace("Mon", "пн").replace("Tue", "вт") \
-            .replace("Wed", "ср").replace("Thu", "чт").replace("Fri", "пт") \
-            .replace("Sat", "сб").replace("Sun", "вс")
+        return f"{d.strftime('%d.%m.%y')} {RU_WD[d.weekday()]}"
     except ValueError:
         return day
 
 
+def month_ru(day: str) -> str:
+    try:
+        d = datetime.strptime(day, "%Y-%m-%d")
+        return f"{RU_MONTHS[d.month - 1]} {d.year}"
+    except ValueError:
+        return day[:7]
+
+
 def esc(value: Any) -> str:
     return html.escape(str(value if value is not None else ""))
-
-
-STAGE_ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V", 6: "VI"}
 
 
 def stage_label(n: Any) -> str:
@@ -75,47 +89,84 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} · админ-панель</title>
 <style>
-:root {{ --bg:#16171d; --panel:#1e2028; --line:#2c2f3a; --text:#dcddde;
-        --dim:#8e9297; --acc:#5865f2; --ok:#3ba55d; --warn:#ed4245; }}
+:root {{ --bg:#141519; --panel:#1b1d24; --line:#272a34; --line2:#22242e;
+        --text:#dcdcde; --dim:#8e9297; --acc:#5865f2; --ok:#3ba55d; --warn:#ed4245;
+        --gold:#ffd166; }}
 * {{ box-sizing:border-box; }}
 body {{ margin:0; background:var(--bg); color:var(--text);
-        font:14px/1.45 "Segoe UI",system-ui,sans-serif; padding:18px; }}
+        font:14px/1.5 "Segoe UI",system-ui,sans-serif; padding:16px; }}
+.wrap {{ max-width:1320px; margin:0 auto; }}
 a {{ color:#8ea1ff; text-decoration:none; }} a:hover {{ text-decoration:underline; }}
-h1 {{ font-size:20px; margin:0 0 14px; }} h2 {{ font-size:16px; margin:22px 0 8px; }}
+h1 {{ font-size:19px; margin:0 0 4px; }} h2 {{ font-size:15px; margin:20px 0 8px; }}
 .panel {{ background:var(--panel); border:1px solid var(--line); border-radius:10px;
-          padding:14px; margin-bottom:16px; }}
-table {{ border-collapse:collapse; width:100%; margin:6px 0; }}
-th,td {{ border:1px solid var(--line); padding:4px 8px; text-align:center;
-         white-space:nowrap; }}
-th {{ background:#232634; color:var(--dim); font-weight:600; }}
-td.nick {{ text-align:left; max-width:220px; overflow:hidden; text-overflow:ellipsis; }}
-input[type=number] {{ width:76px; background:#111218; color:var(--text);
-  border:1px solid var(--line); border-radius:6px; padding:3px 6px; text-align:center; }}
-input.num {{ width:64px; }}
-button {{ background:var(--acc); color:#fff; border:0; border-radius:6px;
+          padding:12px 14px; margin-bottom:14px; }}
+.chips {{ color:var(--dim); font-size:13px; margin:2px 0 12px; }}
+.chip {{ background:#22242e; border-radius:20px; padding:2px 10px; margin-right:6px;
+         color:var(--text); }}
+.scroll {{ overflow:auto; max-height:70vh; border:1px solid var(--line);
+           border-radius:8px; }}
+table {{ border-collapse:collapse; width:100%; }}
+th,td {{ padding:5px 9px; text-align:center; white-space:nowrap;
+         font-variant-numeric:tabular-nums; border-bottom:1px solid var(--line2); }}
+thead th {{ position:sticky; top:0; background:#232634; color:var(--dim);
+            font-weight:600; z-index:1; }}
+tbody tr:nth-child(even) {{ background:#191b22; }}
+tbody tr:hover {{ background:#20232d; }}
+td.nick {{ text-align:left; max-width:230px; overflow:hidden; text-overflow:ellipsis; }}
+th.gcol, td.gcol {{ background:rgba(88,101,242,.06); }}
+.sum {{ color:#b9bbc4; }}
+input[type=number] {{ width:64px; background:#121318; color:var(--text);
+  border:1px solid var(--line); border-radius:6px; padding:3px 4px;
+  text-align:center; font-variant-numeric:tabular-nums; }}
+input[type=number]:focus {{ outline:1px solid var(--acc); }}
+button {{ background:var(--acc); color:#fff; border:0; border-radius:7px;
           padding:7px 16px; font-size:14px; cursor:pointer; }}
-button.danger {{ background:transparent; color:var(--warn); border:1px solid var(--warn);
+button.danger {{ background:transparent; color:var(--warn); border:1px solid #5a2c30;
                  padding:2px 9px; font-size:12px; }}
-button.save {{ background:var(--ok); font-weight:600; margin-top:8px; }}
-.dim {{ color:var(--dim); }} .big {{ font-size:16px; }}
-.back {{ margin-bottom:10px; display:inline-block; }}
-.total {{ font-weight:700; color:#ffd166; }}
+button.save {{ background:var(--ok); font-weight:600; }}
+.float {{ position:fixed; right:18px; bottom:18px; padding:11px 20px; font-size:15px;
+          box-shadow:0 6px 18px rgba(0,0,0,.5); z-index:5; }}
+.dim {{ color:var(--dim); }} .big {{ font-size:15px; }}
+.back {{ margin-bottom:8px; display:inline-block; }}
+.total {{ font-weight:700; color:var(--gold); }}
 .hint {{ color:var(--dim); font-size:12.5px; margin:4px 0 10px; }}
 .flag {{ color:var(--warn); font-weight:700; }}
-.ok-pill {{ color:var(--ok); }}
-</style></head><body>{body}</body></html>"""
+.ok-pill {{ color:var(--ok); font-weight:700; margin:6px 0 10px; font-size:15px; }}
+.banner {{ background:rgba(59,165,93,.12); border:1px solid rgba(59,165,93,.4);
+           border-radius:8px; padding:6px 12px; display:inline-block; }}
+details {{ margin:6px 0 14px; }}
+details summary {{ cursor:pointer; color:#8ea1ff; padding:6px 0; user-select:none; }}
+details summary:hover {{ text-decoration:underline; }}
+nav.days {{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0 4px; }}
+nav.days button {{ padding:5px 12px; }}
+nav.days select {{ background:#121318; color:var(--text); border:1px solid var(--line);
+                   border-radius:7px; padding:5px 8px; }}
+input#flt {{ background:#121318; color:var(--text); border:1px solid var(--line);
+             border-radius:7px; padding:6px 10px; width:220px; margin-bottom:8px; }}
+.month {{ color:var(--dim); font-weight:600; margin:14px 0 4px; font-size:13px;
+          text-transform:uppercase; letter-spacing:.4px; }}
+</style></head><body><div class="wrap">{body}</div></body></html>"""
 
 
 def render(title: str, body: str) -> str:
     return PAGE.format(title=html.escape(title), body=body)
 
 
+def all_dates(con: Any) -> list[str]:
+    return [r["date"] for r in q(con, """
+        SELECT match_date date FROM scans
+        UNION SELECT match_date FROM kv_daily_reports
+        UNION SELECT match_date FROM grenade_session_stats WHERE match_date IS NOT NULL
+        ORDER BY date DESC""")]
+
+
+# ---------------------------------------------------------------- страницы --
+
 @app.get("/")
 def index():
     with closing(player_store.connect(DB_PATH)) as con:
         rows = q(con, """
-            SELECT d.date,
-                   COALESCE(t.tabs,0) tabs, COALESCE(g.players,0) gplayers,
+            SELECT d.date, COALESCE(t.tabs,0) tabs, COALESCE(g.players,0) players,
                    COALESCE(g.grenades,0) grenades, COALESCE(g.voice,0) voice
             FROM (SELECT match_date date FROM scans UNION
                   SELECT match_date FROM kv_daily_reports UNION
@@ -127,21 +178,26 @@ def index():
                        FROM kv_daily_reports r JOIN kv_daily_players p ON p.report_id=r.id
                        GROUP BY r.match_date) g ON g.match_date=d.date
             ORDER BY d.date DESC""")
-    trs = []
+    out, cur_month = [], None
     for r in rows:
-        trs.append(
+        m = month_ru(r["date"])
+        if m != cur_month:
+            cur_month = m
+            out.append(f"<div class='month'>{esc(m)}</div>")
+        out.append(
             f"<tr><td class='nick'><a href='{url_for('day', date=r['date'])}'>"
             f"{fmt_date_ru(r['date'])}</a></td>"
-            f"<td>{r['tabs'] or 0}</td><td>{r['gplayers'] or 0}</td>"
-            f"<td class='total'>{r['grenades'] or 0}</td><td>{fmt_sec(r['voice'])}</td></tr>"
-        )
+            f"<td>{r['tabs'] or 0}</td><td>{r['players'] or 0}</td>"
+            f"<td class='total'>{r['grenades'] or 0}</td>"
+            f"<td>{fmt_sec(r['voice'])}</td></tr>")
     body = ("<h1>📅 Дни КВ</h1>"
-            "<p class='hint'>Кликни день — откроется таб/гранаты/войс, всё можно править.</p>"
-            "<div class='panel'><table><tr><th>Дата</th><th>Табов</th>"
-            "<th>Игроков с гранатами</th><th>Гранат всего</th><th>Войс</th></tr>"
-            + "".join(trs) + "</table></div>"
-            "<div class='panel'><a class='big' href='" + url_for("players")
-            + "'>👥 Все игроки и их история (найти накрутку)</a></div>")
+            "<p class='hint'>Кликни день — сводная таблица: таб, гранаты по этапам, "
+            "войс по каждому игроку.</p>"
+            "<div class='panel'><table><thead><tr><th>Дата</th><th>Табов</th>"
+            "<th>Игроков</th><th>💣 Гранат</th><th>🎙 Войс</th></tr></thead>"
+            f"<tbody>{''.join(out)}</tbody></table></div>"
+            f"<div class='panel'><a class='big' href='{url_for('players')}'>"
+            "👥 Игроки — история и поиск накруток</a></div>")
     return render("Дни", body)
 
 
@@ -149,9 +205,9 @@ def index():
 def players():
     with closing(player_store.connect(DB_PATH)) as con:
         rows = q(con, """
-            SELECT p.id, p.canonical_nick,
-                   COUNT(DISTINCT r.match_date) days,
-                   SUM(k.total_grenades) grenades
+            SELECT p.id, p.canonical_nick, COUNT(DISTINCT r.match_date) days,
+                   SUM(k.total_grenades) grenades,
+                   MAX(r.match_date) last_day
             FROM players p
             LEFT JOIN kv_daily_players k ON k.player_id=p.id
             LEFT JOIN kv_daily_reports r ON r.id=k.report_id
@@ -159,11 +215,16 @@ def players():
     trs = "".join(
         f"<tr><td class='nick'><a href='{url_for('player', player_id=r['id'])}'>"
         f"{esc(r['canonical_nick'])}</a></td>"
-        f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td></tr>"
+        f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td>"
+        f"<td>{fmt_date_ru(r['last_day']) if r['last_day'] else '—'}</td></tr>"
         for r in rows)
-    body = ("<a class='back' href='/'>← Дни</a><h1>👥 Игроки</h1>"
-            "<div class='panel'><table><tr><th>Ник</th><th>Дней с гранатами</th>"
-            f"<th>Гранат всего</th></tr>{trs}</table></div>")
+    body = (f"<a class='back' href='{url_for('index')}'>← Дни</a><h1>👥 Игроки</h1>"
+            "<input id='flt' placeholder='🔍 фильтр по нику…' oninput="
+            "\"[...document.querySelectorAll('tbody tr')].forEach(tr=>tr.style.display"
+            "=tr.textContent.toLowerCase().includes(this.value.toLowerCase())?'':'none')\">"
+            "<div class='panel'><table><thead><tr><th>Ник</th><th>Дней</th>"
+            "<th>💣 Гранат всего</th><th>Последний день</th></tr></thead>"
+            f"<tbody>{trs}</tbody></table></div>")
     return render("Игроки", body)
 
 
@@ -173,24 +234,24 @@ def player(player_id: int):
         p = one(con, "SELECT canonical_nick FROM players WHERE id=?", (player_id,))
         if not p:
             return render("Нет игрока", "<p>Игрок не найден.</p>"), 404
-        tabs = q(con, """
-            SELECT s.match_date date, sp.kills k, sp.deaths d, sp.assists a, sp.score sc,
-                   s.stage, s.id scan_id
-            FROM scan_players sp JOIN scans s ON s.id=sp.scan_id
-            WHERE sp.player_id=? ORDER BY s.match_date DESC, s.stage, s.id""", (player_id,))
-        days = q(con, """
-            SELECT r.match_date date, k.total_grenades total, k.voice_seconds voice,
-                   GROUP_CONCAT(g.stage_no||':'||g.grenades) stages
-            FROM kv_daily_players k
-            JOIN kv_daily_reports r ON r.id=k.report_id
-            LEFT JOIN kv_daily_grenade_stages g ON g.report_id=k.report_id AND g.row_no=k.row_no
-            WHERE k.player_id=? GROUP BY r.match_date, k.report_id, k.row_no
-            ORDER BY r.match_date DESC""", (player_id,))
-        snaps = q(con, """
-            SELECT match_date date, GROUP_CONCAT(stat_key||'='||value) snap
-            FROM grenade_session_stats WHERE player_id=? AND match_date IS NOT NULL
-            GROUP BY match_date ORDER BY match_date DESC""", (player_id,))
-    # гранаты по этапам в колонки
+        tabs = q(con, """SELECT s.match_date date, sp.kills k, sp.deaths d, sp.assists a,
+                                sp.score sc, s.stage
+                         FROM scan_players sp JOIN scans s ON s.id=sp.scan_id
+                         WHERE sp.player_id=? ORDER BY s.match_date DESC, s.stage, s.id""",
+                 (player_id,))
+        days = q(con, """SELECT r.match_date date, k.total_grenades total,
+                                k.voice_seconds voice,
+                                GROUP_CONCAT(g.stage_no||':'||g.grenades) stages
+                         FROM kv_daily_players k
+                         JOIN kv_daily_reports r ON r.id=k.report_id
+                         LEFT JOIN kv_daily_grenade_stages g
+                           ON g.report_id=k.report_id AND g.row_no=k.row_no
+                         WHERE k.player_id=? GROUP BY r.match_date, k.report_id, k.row_no
+                         ORDER BY r.match_date DESC""", (player_id,))
+        snaps = q(con, """SELECT match_date date, GROUP_CONCAT(stat_key||'='||value) snap
+                          FROM grenade_session_stats WHERE player_id=?
+                          AND match_date IS NOT NULL
+                          GROUP BY match_date ORDER BY match_date DESC""", (player_id,))
     max_stage = 0
     for r in days:
         stages = {}
@@ -200,42 +261,43 @@ def player(player_id: int):
                 stages[int(sn)] = val if val != "" else "·"
         r["stages"] = stages
         max_stage = max([max_stage, *stages.keys()])
-    stage_cols = "".join(f"<th>Э{stage_label(i)}</th>" for i in range(1, max_stage + 1))
+    stage_cols = "".join(f"<th class='gcol'>Э{stage_label(i)}</th>"
+                         for i in range(1, max_stage + 1))
     max_total = max((r["total"] or 0) for r in days) if days else 0
     trs = []
     for r in days:
-        cells = "".join(
-            f"<td>{esc(r['stages'].get(i, '—'))}</td>" for i in range(1, max_stage + 1))
-        flag = " <span class='flag'>⚠ подозрительно</span>" \
-            if r["total"] and r["total"] == max_total and max_total > 150 else ""
+        cells = "".join(f"<td class='gcol'>{esc(r['stages'].get(i, '—'))}</td>"
+                        for i in range(1, max_stage + 1))
+        flag = (" <span class='flag'>⚠</span>"
+                if r["total"] and r["total"] == max_total and max_total > 150 else "")
         trs.append(
             f"<tr><td class='nick'><a href='{url_for('day', date=r['date'])}'>"
             f"{fmt_date_ru(r['date'])}</a></td>{cells}"
             f"<td class='total'>{r['total']}</td><td>{fmt_sec(r['voice'])}</td>"
             f"<td>{flag}</td></tr>")
+    tab_rows = "".join(
+        "<tr><td class='nick'><a href='{u}'>{d}</a></td><td>{st}</td>"
+        "<td>{k}/{dt}/{a}</td><td>{sc}</td></tr>".format(
+            u=url_for("day", date=t["date"]), d=fmt_date_ru(t["date"]),
+            st=stage_label(t["stage"]), k=t["k"], dt=t["d"], a=t["a"], sc=t["sc"])
+        for t in tabs)
     snap_rows = "".join(
         f"<tr><td>{fmt_date_ru(s['date'])}</td><td>{esc(s['snap'])}</td></tr>"
         for s in snaps)
-    tab_by_date = {}
-    for t in tabs:
-        tab_by_date.setdefault(t["date"], []).append(t)
-    tab_rows = "".join(
-        "<tr><td class='nick'><a href='%s'>%s</a></td><td>%s</td><td>%s/%s/%s</td><td>%s</td></tr>"
-        % (url_for("day", date=t["date"]), fmt_date_ru(t["date"]),
-           stage_label(t["stage"]), t["k"], t["d"], t["a"], t["sc"])
-        for t in tabs)
     body = (f"<a class='back' href='{url_for('players')}'>← Игроки</a>"
             f"<h1>👤 {esc(p['canonical_nick'])}</h1>"
-            "<h2>Гранаты и войс по дням</h2>"
-            f"<div class='panel'><table><tr><th>Дата</th>{stage_cols}<th>Всего</th>"
-            f"<th>Войс</th><th></th></tr>{''.join(trs)}</table></div>"
-            "<h2>Табы (У/С/П по этапам)</h2>"
-            "<div class='panel'><table><tr><th>Дата</th><th>Этап</th><th>У/С/П</th>"
-            f"<th>СЧЁТ</th></tr>{tab_rows}</table></div>")
+            "<h2>💣 Гранаты по этапам и 🎙 войс по дням</h2>"
+            f"<div class='panel'><div class='scroll'><table><thead><tr><th>Дата</th>"
+            f"{stage_cols}<th>Всего</th><th>Войс</th><th></th></tr></thead>"
+            f"<tbody>{''.join(trs)}</tbody></table></div></div>"
+            "<h2>📄 Табы (У/С/П · СЧЁТ)</h2>"
+            "<div class='panel'><div class='scroll'><table><thead><tr><th>Дата</th>"
+            f"<th>Этап</th><th>У/С/П</th><th>СЧЁТ</th></tr></thead>"
+            f"<tbody>{tab_rows}</tbody></table></div></div>")
     if snap_rows:
-        body += ("<h2>Снапшоты счётчика (runtime)</h2>"
-                 "<div class='panel'><table><tr><th>Дата</th><th>Значения</th></tr>"
-                 f"{snap_rows}</table></div>")
+        body += ("<h2>Счётчик-снапшоты (runtime)</h2>"
+                 "<div class='panel'><table><thead><tr><th>Дата</th><th>Значения</th>"
+                 f"</tr></thead><tbody>{snap_rows}</tbody></table></div>")
     return render(p["canonical_nick"], body)
 
 
@@ -248,19 +310,24 @@ def _day_data(con: Any, date: str):
                                  sp.player_id, p.canonical_nick
                                  FROM scan_players sp LEFT JOIN players p ON p.id=sp.player_id
                                  WHERE sp.scan_id=? ORDER BY sp.place""", (s["id"],))
+        for r in s["players"]:
+            if r["player_id"] is None:  # подтянуть игрока по нику/алиасу
+                m = player_store.match_player_in_connection(con, str(r["nick"]))
+                r["player_id"] = m.player_id if m else None
     report = one(con, """SELECT id, stage_count FROM kv_daily_reports
                          WHERE match_date=? ORDER BY id DESC LIMIT 1""", (date,))
     krows: list[dict[str, Any]] = []
     if report:
         krows = q(con, """SELECT k.row_no, k.player_id, k.raw_nick, k.discord_username,
                           k.squad_label, k.total_grenades, k.voice_seconds,
-                          p.canonical_nick,
-                          (SELECT GROUP_CONCAT(stage_no) FROM kv_daily_grenade_stages g
-                           WHERE g.report_id=k.report_id AND g.row_no=k.row_no) stage_list
+                          p.canonical_nick
                           FROM kv_daily_players k LEFT JOIN players p ON p.id=k.player_id
                           WHERE k.report_id=? ORDER BY k.row_no""", (report["id"],))
         for k in krows:
-            stages = {int(s): None for s in (k.pop("stage_list") or "").split(",") if s}
+            if k["player_id"] is None and k["raw_nick"]:
+                m = player_store.match_player_in_connection(con, str(k["raw_nick"]))
+                k["player_id"] = m.player_id if m else None
+            stages: dict[int, int | None] = {}
             for r in con.execute("""SELECT stage_no, grenades FROM kv_daily_grenade_stages
                                     WHERE report_id=? AND row_no=?""",
                                   (report["id"], k["row_no"])):
@@ -269,93 +336,159 @@ def _day_data(con: Any, date: str):
     return scans, report, krows
 
 
+def _tab_totals(scans: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """Суммы табов дня по игроку: pid → {k,d,a,s,n,rows}."""
+    out: dict[int, dict[str, Any]] = {}
+    for s in scans:
+        for r in s["players"]:
+            pid = r["player_id"]
+            if pid is None:
+                continue
+            b = out.setdefault(pid, {"k": 0, "d": 0, "a": 0, "s": 0, "n": 0, "rows": []})
+            b["k"] += int(r["kills"] or 0)
+            b["d"] += int(r["deaths"] or 0)
+            b["a"] += int(r["assists"] or 0)
+            b["s"] += int(r["score"] or 0)
+            b["n"] += 1
+            b["rows"].append(f"{r['kills']}/{r['deaths']}/{r['assists']}·{r['score']}")
+    return out
+
+
 @app.get("/day/<date>")
 def day(date: str):
     date = player_store.parse_match_date(date)
     with closing(player_store.connect(DB_PATH)) as con:
         scans, report, krows = _day_data(con, date)
-        max_stage = max((max(k["stages"], default=0) for k in krows), default=0)
-        max_stage = max(max_stage, report["stage_count"] if report else 0)
-    stage_cols = "".join(f"<th>Э{stage_label(i)}</th>" for i in range(1, max_stage + 1))
+        dates = all_dates(con)
+    tab_sum = _tab_totals(scans)
+    max_stage = max((max(k["stages"], default=0) for k in krows), default=0)
+    max_stage = max(max_stage, report["stage_count"] if report else 0)
+    stage_cols = "".join(f"<th class='gcol'>Э{stage_label(i)}</th>"
+                         for i in range(1, max_stage + 1))
+    save_url = url_for("day_save", date=date)
 
-    scan_html = ""
+    # ── сводная строка игрока: итог табов + гранаты + войс ────────────────
+    rows_html = []
+    for k in krows:
+        nick = k["canonical_nick"] or k["raw_nick"] or "—"
+        t = tab_sum.get(k["player_id"]) if k["player_id"] else None
+        if t:
+            tip = esc(" | ".join(t["rows"]))
+            tab_cells = (f"<td class='sum' title='{tip}'>{t['k']}</td>"
+                         f"<td class='sum' title='{tip}'>{t['d']}</td>"
+                         f"<td class='sum' title='{tip}'>{t['a']}</td>"
+                         f"<td class='sum' title='{tip}'>{t['s']}</td>"
+                         f"<td class='dim' title='{tip}'>{t['n']} таб.</td>")
+        else:
+            tab_cells = ("<td class='dim'>—</td><td class='dim'>—</td>"
+                         "<td class='dim'>—</td><td class='dim'>—</td>"
+                         "<td class='dim'>нет</td>")
+        gcells = ""
+        for i in range(1, max_stage + 1):
+            val = k["stages"].get(i)
+            shown = "" if val is None else val
+            gcells += (f"<td class='gcol'><input type='number' min='0' "
+                       f"name='g{k['row_no']}_{i}' value='{shown}' placeholder='·'></td>")
+        link = (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(nick)}</a>"
+                if k["player_id"] else esc(nick))
+        squad = (f" <span class='dim'>{esc(k['squad_label'])}</span>"
+                 if k.get("squad_label") else "")
+        rows_html.append(
+            f"<tr><td class='dim'>{k['row_no']}</td><td class='nick'>{link}{squad}</td>"
+            f"{tab_cells}{gcells}"
+            f"<td class='total'>{k['total_grenades'] or 0}</td>"
+            f"<td><input type='number' min='0' name='v{k['row_no']}' "
+            f"value='{k['voice_seconds'] or 0}'></td>"
+            f"<td class='dim'>{fmt_sec(k['voice_seconds'])}</td>"
+            f"<td><button class='danger' name='__del_row' value='{k['row_no']}' "
+            f"formaction='{save_url}' onclick=\"return confirm('Удалить гранаты и войс "
+            f"{esc(nick)} за {fmt_date_ru(date)}?')\">✕</button></td></tr>")
+
+    # ── исходные табы: правка У/С/П/СЧЁТ по каждому табу ──────────────────
+    scan_tables = []
     for s in scans:
+        head = (
+            "<tr><td colspan='6' style='text-align:left'>"
+            f"<button class='danger' name='__del_scan' value='{s['id']}' "
+            f"formaction='{save_url}' onclick=\"return confirm('Удалить весь таб?')\""
+            ">✕ таб</button> <span class='dim'>"
+            + " · ".join(filter(None, [
+                f"этап {stage_label(s['stage'])}" if s["stage"] else "без этапа",
+                esc(s["map"] or ""),
+                esc((s["scanned_at"] or "")[:16]),
+                f"файл: {esc(s['source_filename'])}" if s.get("source_filename") else "",
+            ])) + "</span></td></tr>")
         rows = "".join(
             "<tr>"
-            f"<td>{r['place'] or ''}</td>"
+            f"<td class='dim'>{r['place'] or ''}</td>"
             f"<td class='nick'>{esc(r['nick'])}"
             + (f" <span class='dim'>({esc(r['canonical_nick'])})</span>"
                if r["canonical_nick"] and r["canonical_nick"] != r["nick"] else "")
             + "</td>"
-            f"<td><input class='num' type='number' min='0' name='t{r['row_id']}_k' value='{r['kills']}'></td>"
-            f"<td><input class='num' type='number' min='0' name='t{r['row_id']}_d' value='{r['deaths']}'></td>"
-            f"<td><input class='num' type='number' min='0' name='t{r['row_id']}_a' value='{r['assists']}'></td>"
-            f"<td><input class='num' type='number' min='0' name='t{r['row_id']}_s' value='{r['score']}'></td>"
+            f"<td><input type='number' min='0' name='t{r['row_id']}_k' value='{r['kills']}'></td>"
+            f"<td><input type='number' min='0' name='t{r['row_id']}_d' value='{r['deaths']}'></td>"
+            f"<td><input type='number' min='0' name='t{r['row_id']}_a' value='{r['assists']}'></td>"
+            f"<td><input type='number' min='0' name='t{r['row_id']}_s' value='{r['score']}'></td>"
             "</tr>"
             for r in s["players"])
-        meta = " ".join(filter(None, [
-            f"этап {stage_label(s['stage'])}" if s["stage"] else "этап —",
-            esc(s["map"] or ""),
-            esc((s["scanned_at"] or "")[:16]),
-            f"файл: {esc(s['source_filename'])}" if s.get("source_filename") else "",
-        ]))
-        scan_html += (
-            "<div class='panel'>"
-            f"<button class='danger' name='__del_scan' value='{s['id']}' "
-            f"formaction='{url_for('day_save', date=date)}' "
-            f"onclick=\"return confirm('Удалить весь таб?')\">✕ удалить таб</button>"
-            f"<span class='dim' style='margin-left:10px'>{meta}</span>"
-            "<table><tr><th>#</th><th>Ник</th><th>У</th><th>С</th><th>П</th><th>СЧЁТ</th></tr>"
-            f"{rows}</table></div>")
+        scan_tables.append(head + rows)
+    tabs_details = (
+        "<details" + (" open" if len(scans) == 1 else "") + ">"
+        f"<summary>✏️ Исходные табы ({len(scans)}) — правка У/С/П/СЧЁТ</summary>"
+        "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th>"
+        "<th>У</th><th>С</th><th>П</th><th>СЧЁТ</th></tr></thead>"
+        f"<tbody>{''.join(scan_tables)}</tbody></table></div></details>"
+        if scans else "<p class='hint'>Табов за этот день нет.</p>")
 
-    kv_rows = ""
-    for k in krows:
-        nick = k["canonical_nick"] or k["raw_nick"] or "—"
-        cells = ""
-        for i in range(1, max_stage + 1):
-            val = k["stages"].get(i)
-            shown = "" if val is None else val
-            cells += (f"<td><input class='num' type='number' min='0' "
-                      f"name='g{k['row_no']}_{i}' value='{shown}' placeholder='·'></td>")
-        link = (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(nick)}</a>"
-                if k["player_id"] else esc(nick))
-        kv_rows += (
-            "<tr>"
-            f"<td>{k['row_no']}</td><td class='nick'>{link}</td>{cells}"
-            f"<td class='total'>{k['total_grenades'] or 0}</td>"
-            f"<td><input class='num' type='number' min='0' name='v{k['row_no']}' "
-            f"value='{k['voice_seconds'] or 0}'></td>"
-            f"<td class='dim'>{fmt_sec(k['voice_seconds'])}</td>"
-            f"<td><button class='danger' name='__del_row' value='{k['row_no']}' "
-            f"formaction='{url_for('day_save', date=date)}' "
-            f"onclick=\"return confirm('Удалить гранаты и войс {esc(nick)} "
-            f"за {fmt_date_ru(date)}?')\">✕</button></td>"
-            "</tr>")
-    kv_block = (
-        f"<h2>💣 Гранаты по этапам и 🎙 войс за {fmt_date_ru(date)}</h2>"
-        "<p class='hint'>Пустая ячейка этапа = записи нет; 0 = записан ноль. "
-        "«Всего» пересчитается как сумма этапов при сохранении. Войс — в секундах.</p>"
-        f"<div class='panel'><table><tr><th>#</th><th>Ник</th>{stage_cols}"
-        "<th>Всего</th><th>Войс, сек</th><th>Войс</th><th></th></tr>"
-        f"{kv_rows}</table></div>"
-        if krows else
-        f"<h2>💣 Гранаты и 🎙 войс за {fmt_date_ru(date)}</h2>"
-        "<p class='hint'>Дневной отчёт за эту дату в базе не найден "
-        "(гранаты за этот день не импортировались).</p>")
+    # ── навигация по дням ──────────────────────────────────────────────────
+    pos = dates.index(date) if date in dates else -1
+    prev_d = dates[pos + 1] if 0 <= pos < len(dates) - 1 else None   # старее
+    next_d = dates[pos - 1] if pos > 0 else None                     # новее
+    options = "".join(
+        f"<option value='{url_for('day', date=d)}'"
+        + (" selected" if d == date else "") + f">{fmt_date_ru(d)}</option>"
+        for d in dates)
+    nav = ("<nav class='days'>"
+           + (f"<button onclick=\"location='{url_for('day', date=prev_d)}'\">← старее</button>"
+              if prev_d else "<button disabled>← старее</button>")
+           + "<select onchange=\"if(this.value)location=this.value\">"
+           f"<option value=''>— выбери день —</option>{options}</select>"
+           + (f"<button onclick=\"location='{url_for('day', date=next_d)}'\">новее →</button>"
+              if next_d else "<button disabled>новее →</button>")
+           + f"<a href='{url_for('index')}'>все дни</a></nav>")
 
     banner = ""
     if request.args.get("saved"):
-        banner = "<div class='ok-pill big'>✅ Сохранено</div>"
+        banner = "<div class='banner ok-pill'>✅ Сохранено</div>"
     elif request.args.get("deleted"):
-        banner = "<div class='ok-pill big'>🗑 Удалено</div>"
+        banner = "<div class='banner ok-pill'>🗑 Удалено</div>"
+
+    chips = ("<div class='chips'>"
+             f"<span class='chip'>📄 табов: {len(scans)}</span>"
+             f"<span class='chip'>👤 игроков: {len(krows)}</span>"
+             f"<span class='chip'>💣 гранат: {sum(k['total_grenades'] or 0 for k in krows)}"
+             "</span>"
+             "<span class='chip'>🎙 войс: "
+             + fmt_sec(sum(k["voice_seconds"] or 0 for k in krows)) + "</span></div>")
+
+    kv_block = (
+        "<h2>💣 Гранаты по этапам · 🎙 войс · 📄 итог табов</h2>"
+        "<p class='hint'>У/С/П/СЧЁТ — итог дня по табам (наведи курсор — покажет "
+        "разбивку по табам). Пустая ячейка этапа = записи нет, 0 = ноль. "
+        "«Всего» пересчитается при сохранении. Войс — в секундах.</p>"
+        f"<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th>"
+        "<th>У</th><th>С</th><th>П</th><th>СЧЁТ</th><th></th>"
+        f"{stage_cols}<th>💣</th><th>🎙 сек</th><th>🎙</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody></table></div>"
+        if krows else
+        "<p class='hint'>Дневной отчёт за эту дату не найден "
+        "(гранаты за этот день не импортировались).</p>")
+
     body = (f"<a class='back' href='{url_for('index')}'>← Дни</a>"
-            f"<h1>📆 {fmt_date_ru(date)}</h1>{banner}"
-            f"<form method='post' action='{url_for('day_save', date=date)}'>"
-            "<button class='save'>💾 Сохранить всё</button>"
-            f"<h2>📄 Табы ({len(scans)})</h2>"
-            + (scan_html or "<p class='hint'>Табов за этот день нет.</p>")
-            + kv_block
-            + "<button class='save'>💾 Сохранить всё</button></form>")
+            f"<h1>📆 {fmt_date_ru(date)}</h1>{nav}{chips}{banner}"
+            f"<form method='post' action='{save_url}'>"
+            + kv_block + tabs_details
+            + "<button class='save float'>💾 Сохранить</button></form>")
     return render(date, body)
 
 
