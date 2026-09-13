@@ -1,27 +1,41 @@
-# Excel ┬╖ ╤П╨▓╨╜╤Л╨╣ import/export
+# Excel — состав и отряды
 
-SQLite тАФ ╨╡╨┤╨╕╨╜╤Б╤В╨▓╨╡╨╜╨╜╤Л╨╣ runtime source. ╨С╨╛╤В ╨╜╨╡ ╤З╨╕╤В╨░╨╡╤В Excel ╨┐╤А╨╕ ╨╖╨░╨┐╤Г╤Б╨║╨╡ ╨╕ ╨╜╨╡ ╤Б╨╕╨╜╤Е╤А╨╛╨╜╨╕╨╖╨╕╤А╤Г╨╡╤В ╨╡╨│╨╛ ╨┐╨╛ ╤В╨░╨╣╨╝╨╡╤А╤Г.
+SQLite — основной runtime-источник данных. Excel используется как удобный источник изменений состава. При `SHEET_AUTO_SYNC=true` бот следит за сохранением файла и запускает импорт после debounce; это не периодический таймер. Ручной запуск доступен через `/sheet_sync`.
 
-## Import roster
+## Явный формат `roster`
 
-╨Ы╨╕╤Б╤В `roster`: `squad | slot | discord_id | game_nick`. ╨б╨╜╨░╤З╨░╨╗╨░ dry-run:
+Лист `roster` должен содержать колонки:
+
+```text
+squad | slot | discord_id | game_nick
+```
+
+- `squad` и `slot` — положительные целые числа;
+- `game_nick` обязателен;
+- новый игрок должен иметь `discord_id`;
+- дубли слотов, Discord ID и ников блокируют импорт;
+- удалённый через `/remove` игрок не возвращается от очередного импорта автоматически.
+
+## Транзакционный импорт
+
+Сначала выполните dry-run:
 
 ```bash
 python tools/roster_io.py import roster.xlsx --guild-id 123
 ```
 
-╨Я╤А╨╕╨╝╨╡╨╜╨╡╨╜╨╕╨╡ ╤Б optimistic revision:
+Команда вернёт конфликты и `revision_before`. Если всё верно, примените тот же файл с optimistic revision:
 
 ```bash
 python tools/roster_io.py import roster.xlsx --guild-id 123 --apply --expected-revision HASH
 ```
 
-╨Ш╨╝╨┐╨╛╤А╤В ╨▓╨░╨╗╨╕╨┤╨╕╤А╤Г╨╡╤В ╨┤╤Г╨▒╨╗╨╕/╨║╨╛╨╜╤Д╨╗╨╕╨║╤В╤Л, ╨▓╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤П ╨╛╨┤╨╜╨╛╨╣ SQLite-╤В╤А╨░╨╜╨╖╨░╨║╤Ж╨╕╨╡╨╣, ╤Б╨╛╤Е╤А╨░╨╜╤П╨╡╤В identity/history ╨╕ ╨╜╨╡ ╨┐╨╕╤И╨╡╤В JSON.
+Импорт выполняется одной SQLite-транзакцией, сохраняет identity и историю игрока и не записывает `players.json`.
 
-## Export tech
+## Экспорт листа tech
 
 ```bash
 python tools/roster_io.py export-tech tech.xlsx --guild-id 123
 ```
 
-╨д╨░╨╣╨╗ ╨░╤В╨╛╨╝╨░╤А╨╜╨╛ ╤Б╨╛╨╖╨┤╨░╤С╤В╤Б╤П ╤В╨╛╨╗╤М╨║╨╛ ╨╕╨╖ SQLite.
+Файл создаётся атомарно из текущего активного состава SQLite.

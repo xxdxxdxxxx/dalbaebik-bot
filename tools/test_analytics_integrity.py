@@ -25,8 +25,8 @@ def snapshot():
         "session_date": "2026-09-10", "grenade_date": "2026-09-10",
         "kv_session_active": True, "kv_finished": False,
         "players": {
-            "100": {"game_nick": "Alpha", "squad": 1, "slot": 1},
-            "200": {"game_nick": "Beta", "squad": 2, "slot": 1},
+            "100": {"game_nick": "Alpha", "squad": 1, "slot": 1, "came": True},
+            "200": {"game_nick": "Beta", "squad": 2, "slot": 1, "came": False},
         },
         "grenade_history": {}, "voice_speak_seconds": {},
     }
@@ -96,6 +96,8 @@ class StoreTests(unittest.TestCase):
         rows = self.report_rows()
         self.assertEqual(rows["Alpha"]["total_grenades"], 40)
         self.assertEqual(rows["Alpha"]["voice_seconds"], 0)
+        self.assertEqual(rows["Alpha"]["attended"], 1)
+        self.assertEqual(rows["Beta"]["attended"], 0)
         self.assertIsNone(rows["Beta"]["total_grenades"])
         self.assertIsNone(rows["Beta"]["voice_seconds"])
         with closing(player_store.connect(self.db)) as con:

@@ -10,6 +10,12 @@ sys.path.insert(0, str(ROOT))
 import player_store
 
 class KvDailyImportTests(unittest.TestCase):
+    def fixture(self, pattern):
+        path = next((ROOT / "scans" / "itogi").glob(pattern), None)
+        if path is None:
+            self.skipTest("runtime scans/itogi fixtures are not committed")
+        return path
+
     def test_all_real_reports_parse_and_arithmetic(self):
         expected = {"2026-08-07": (3, 33), "2026-08-08": (3, 32),
                     "2026-08-09": (4, 34), "2026-08-13": (3, 36),
@@ -27,9 +33,9 @@ class KvDailyImportTests(unittest.TestCase):
                     self.assertEqual(row["total_grenades"], sum(known))
                 elif row["total_grenades"] is not None:
                     self.assertGreaterEqual(row["total_grenades"], sum(known))
-        old = player_store.parse_kv_daily_report(next((ROOT / "scans" / "itogi").glob("2026-08-07_*")))
+        old = player_store.parse_kv_daily_report(self.fixture("2026-08-07_*"))
         self.assertIsNone(old["rows"][0]["voice_seconds"])
-        modern = player_store.parse_kv_daily_report(next((ROOT / "scans" / "itogi").glob("2026-08-15_*")))
+        modern = player_store.parse_kv_daily_report(self.fixture("2026-08-15_*"))
         sosew = next(r for r in modern["rows"] if r["raw_nick"].casefold() == "sosew")
         self.assertEqual(sosew["voice_seconds"], 11 * 60 + 11)
         zero = next(r for r in modern["rows"] if r["raw_nick"].casefold() == "exterminat")
@@ -41,7 +47,7 @@ class KvDailyImportTests(unittest.TestCase):
             player_store.ensure_schema(db)
             pid = player_store.upsert_binding(db, "1", "sosew", discord_username="id621", guild_id=42)
             source = root / "2026-08-15_╨╕╤В╨╛╨│.txt"
-            shutil.copy2(next((ROOT / "scans" / "itogi").glob("2026-08-15_*")), source)
+            shutil.copy2(self.fixture("2026-08-15_*"), source)
             first = player_store.import_kv_daily_report(db, source, 42)
             second = player_store.import_kv_daily_report(db, source, 42)
             self.assertEqual((first["status"], second["status"]), ("created", "unchanged"))
@@ -64,7 +70,7 @@ class KvDailyImportTests(unittest.TestCase):
     def test_bad_arithmetic_rolls_back(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); db = root / "test.sqlite3"; source = root / "2026-08-15_╨╕╤В╨╛╨│.txt"
-            text = next((ROOT / "scans" / "itogi").glob("2026-08-15_*")).read_text(encoding="utf-8").replace("8     18      9        35", "8     18      9        36", 1)
+            text = self.fixture("2026-08-15_*").read_text(encoding="utf-8").replace("8     18      9        35", "8     18      9        36", 1)
             source.write_text(text, encoding="utf-8")
             with self.assertRaises(ValueError):
                 player_store.import_kv_daily_report(db, source, 42)

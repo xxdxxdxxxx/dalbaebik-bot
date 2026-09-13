@@ -5162,7 +5162,7 @@ async def cmd_help(interaction: discord.Interaction):
         "· `/access_add` · `/access_remove` · `/access_list` — кто может `/add`\n"
         "· `/say` — сообщение от бота\n"
         "\n"
-        f"Excel: `{SHEET_PATH.name}` · автосинк раз в {SHEET_SYNC_SECONDS} сек"
+        f"Excel: `{SHEET_PATH.name}` · автосинк после сохранения файла"
     )
     await interaction.response.send_message(
         embed=make_reply_embed("📖  Команды бота", text, color=COLOR_INFO),
@@ -5443,8 +5443,8 @@ async def cmd_sheet_sync(interaction: discord.Interaction):
         if len(changes) > 15:
             body += f"\n… и ещё {len(changes) - 15}"
     body += (
-        f"\n\nАвто ~**{SHEET_SYNC_SECONDS}** сек. "
-        f"После правки обязательно **Ctrl+S**, потом `/sheet_sync`."
+        f"\n\nАвтосинк срабатывает после стабильного сохранения файла. "
+        f"После правки нажмите **Ctrl+S**; `/sheet_sync` запускает проверку вручную."
     )
     await interaction.followup.send(
         embed=make_reply_embed("✅  Sheet sync" if ok else "❌  Sheet sync", body, color=COLOR_OK),
@@ -5508,7 +5508,7 @@ async def cmd_sheet_path(interaction: discord.Interaction):
             (
                 f"**Путь:** `{SHEET_PATH}`\n"
                 f"**Существует:** {'✅ да' if exists else '❌ нет'}\n"
-                f"**Автосинк:** каждые {SHEET_SYNC_SECONDS} сек\n"
+                f"**Автосинк:** после сохранения файла (debounce {SHEET_WATCH_DEBOUNCE_SECONDS:g} сек)\n"
                 f"Задай `SHEET_PATH` в `.env` если файл в OneDrive.\n"
                 f"{err}"
             ),
@@ -5756,10 +5756,25 @@ async def cmd_scan_view(interaction: discord.Interaction, scan_id: int) -> None:
         await interaction.followup.send("Не удалось прочитать скан.", ephemeral=True)
 
 
-@bot.tree.command(name="scan_now", description="Ручной полный скан гранат за дату КВ")
-@app_commands.describe(match_date="Обязательная дата КВ: 19.08.26, 19.08.2026 или 2026-08-19")
+@bot.tree.command(name="scan_now", description="Повторить один текущий замер гранат")
+@app_commands.describe(
+    match_date="Только сегодняшняя дата КВ",
+    step="Какой один замер выполнить: база или этап",
+)
 @app_commands.rename(match_date="date")
-async def cmd_scan_now(interaction: discord.Interaction, match_date: str):
+@app_commands.choices(step=[
+    app_commands.Choice(name="База", value="20:00"),
+    app_commands.Choice(name="Этап I", value="20:25"),
+    app_commands.Choice(name="Этап II", value="20:50"),
+    app_commands.Choice(name="Этап III", value="21:20"),
+    app_commands.Choice(name="Этап IV (только воскресенье)", value="21:40"),
+])
+async def cmd_scan_now(
+    interaction: discord.Interaction,
+    match_date: str,
+    step: app_commands.Choice[str],
+):
+    """Repair one live measurement; never fabricate historical stage deltas."""
     actor = await resolve_member(interaction)
     if not can_manage_kv(actor):
         await interaction.response.send_message(embed=deny_embed(), ephemeral=True)
@@ -5769,17 +5784,53 @@ async def cmd_scan_now(interaction: discord.Interaction, match_date: str):
     except ValueError as exc:
         await interaction.response.send_message(str(exc), ephemeral=True)
         return
+    today = today_msk_str()
+    if day != today:
+        await interaction.response.send_message(
+            "❌ Исторический счётчик гранат восстановить нельзя. Укажите сегодняшнюю дату.",
+            ephemeral=True,
+        )
+        return
+    if not is_cw_day():
+        await interaction.response.send_message("❌ Сегодня не день КВ.", ephemeral=True)
+        return
+
+    data = load_db()
+    if data.get("session_date") != today or not data.get("kv_session_active") or is_kv_finished(data):
+        await interaction.response.send_message(
+            "❌ Нет активной сегодняшней КВ-сессии. Дождитесь старта явки или используйте `/reset_session`.",
+            ephemeral=True,
+        )
+        return
+    step_map = {sid: prev for sid, _tm, prev in kv_grenade_steps(now_msk())}
+    step_id = step.value
+    if step_id not in step_map:
+        await interaction.response.send_message("❌ Этот этап отсутствует в сегодняшнем расписании.", ephemeral=True)
+        return
+    previous = step_map[step_id]
+    last = data.get("last_grenade_step")
+    if _step_already_done(last, step_id):
+        await interaction.response.send_message("ℹ️ Этот замер уже закрыт.", ephemeral=True)
+        return
+    if previous is not None and last != previous:
+        await interaction.response.send_message(
+            f"❌ Сначала должен быть закрыт предыдущий замер: **{STEP_TITLES.get(previous, previous)}**.",
+            ephemeral=True,
+        )
+        return
+
     await interaction.response.defer(ephemeral=True)
-    steps = (("20:00", None), ("20:25", "20:00"), ("20:50", "20:25"),
-             ("21:20", "20:50"), ("21:40", "21:20"))
-    for step_name, previous in steps:
-        await run_grenade_step(step_name, previous)
-    async with db_lock:
-        history = (load_db().get("grenade_history") or {}).copy()
-    semantic = hashlib.sha256(json.dumps(history, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    guild_id = interaction.guild.id if interaction.guild else None
-    written = await asyncio.to_thread(player_store.save_grenade_session, PLAYER_DB_PATH, history, day, f"manual:{semantic}", guild_id)
-    await interaction.followup.send(embed=make_reply_embed("💣  Скан выполнен", f"Дата КВ: **{day}**. Сохранено строк: **{written}**.", color=COLOR_OK), ephemeral=True)
+    await run_grenade_step(step_id, previous)
+    after = load_db()
+    if _step_already_done(after.get("last_grenade_step"), step_id):
+        text = f"Замер **{STEP_TITLES.get(step_id, step_id)}** за **{today}** сохранён."
+        color = COLOR_OK
+    else:
+        text = "Замер пока не закрыт: часть запросов eAPI не прошла. Повторите эту же команду."
+        color = COLOR_WAIT
+    await interaction.followup.send(
+        embed=make_reply_embed("💣  Ручной замер", text, color=color), ephemeral=True,
+    )
 
 
 @bot.tree.command(
@@ -5936,7 +5987,7 @@ async def cmd_reset_session(interaction: discord.Interaction):
                 f"· История гранат очищена\n"
                 f"· Карты этапов сброшены\n"
                 f"· В окне КВ кто в войсе — снова ✅\n"
-                f"· backup: `players.json.bak`"
+                f"· backup: `scan_stats.sqlite3.session-reset.bak`"
             ),
             color=COLOR_INFO,
         ),

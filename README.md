@@ -98,7 +98,7 @@ norm(x) = (x - min) / (max - min) × 100, иначе
 | Права | `/access_add`, `/access_remove`, `/access_list` |
 | Состав | `/add`, `!add`, `/remove`, `!remove`, `/list` |
 | Excel | `/sheet_sync`, `/squad_list`, `/sheet_path` |
-| КВ | `/map`, `!map`, `/refresh`, `/reset_session`, `/dm_absent` |
+| КВ | `/map`, `!map`, `/refresh`, `/scan_now`, `/reset_session`, `/dm_absent` |
 | Аналитика | `/stats`, `/stats_dates`, `/scan`, `/scan_dates`, `/scan_view` |
 | Войс | `/voice_scan_start`, `/voice_scan_stop` |
 | Служебные | `/alias_add`, `/say`, `/help` |
@@ -220,9 +220,12 @@ python tools/admin_ui.py
 ## Проверки
 
 ```bash
-python -m py_compile bot.py player_store.py explicit_roster_io.py sheet_watcher.py tools/*.py
+python -m compileall -q bot.py player_store.py explicit_roster_io.py sheet_watcher.py tools
 python -m unittest discover -s tools -p "test_*.py"
+python tools/test_player_store.py
 ```
+
+`/scan_now` выполняет только один выбранный замер текущей активной сессии. Команда принимает только сегодняшнюю дату и не пытается восстановить исторические значения накопительного счётчика.
 
 Некоторые интеграционные проверки импортируют `bot.py`, поэтому зависимости из `requirements.txt` должны быть установлены.
 

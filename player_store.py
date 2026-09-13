@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 GRENADE_STEPS = ("20:00", "20:25", "20:50", "21:20", "21:40")
 
@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS kv_daily_players(
  discord_username TEXT,
  squad_label TEXT,
  voice_seconds INTEGER CHECK(voice_seconds IS NULL OR voice_seconds >= 0),
+ attended INTEGER CHECK(attended IS NULL OR attended IN (0,1)),
  total_grenades INTEGER CHECK(total_grenades IS NULL OR total_grenades >= 0),
  PRIMARY KEY(report_id, row_no)
 );
@@ -522,6 +523,9 @@ def ensure_schema(db_path: Path | str) -> None:
         cols = {r[1] for r in con.execute("PRAGMA table_info(scan_players)")} if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scan_players'").fetchone() else set()
         if cols and "player_id" not in cols:
             con.execute("ALTER TABLE scan_players ADD COLUMN player_id INTEGER REFERENCES players(id)")
+        daily_player_cols = {r[1] for r in con.execute("PRAGMA table_info(kv_daily_players)")}
+        if "attended" not in daily_player_cols:
+            con.execute("ALTER TABLE kv_daily_players ADD COLUMN attended INTEGER CHECK(attended IS NULL OR attended IN (0,1))")
         score_info = next((r for r in con.execute("PRAGMA table_info(scan_players)") if r[1] == "score"), None)
         if score_info is not None and int(score_info[3]) == 1:
             con.execute("BEGIN IMMEDIATE")
@@ -1108,22 +1112,25 @@ def _ensure_final_daily_report(con: sqlite3.Connection, session_id: int) -> None
         (source,))}
     roster = {int(r["player_id"]): dict(r) for r in con.execute(
         "SELECT * FROM session_roster WHERE session_id=?", (session_id,))}
-    ids = set(history) | set(voice) | set(roster)
+    attendance = {int(r["player_id"]): bool(r["came"]) for r in con.execute(
+        "SELECT player_id,came FROM attendance WHERE session_id=?", (session_id,))}
+    ids = set(history) | set(voice) | set(roster) | set(attendance)
     rows = []
     for pid in sorted(ids):
         nick = con.execute("SELECT canonical_nick FROM players WHERE id=?", (pid,)).fetchone()[0]
         member = roster.get(pid, {})
         stages, total = grenade_summary(history.get(pid, {}), stage_count, final=True)
         rows.append((pid, member.get("game_nick", nick), member.get("squad_label"),
-                     None if pid not in voice else int(voice[pid] + 0.5), stages, total))
+                     None if pid not in voice else int(voice[pid] + 0.5),
+                     None if pid not in attendance else int(attendance[pid]), stages, total))
     digest = hashlib.sha256(_json_text(rows).encode("utf-8")).hexdigest()
     rid = con.execute("""INSERT INTO kv_daily_reports
         (match_date,guild_id,source_path,source_sha256,stage_count,format_version)
         VALUES(?,?,?,?,?,2)""", (day, gid, f"runtime:{gid}:{day}", digest, stage_count)).lastrowid
-    for row_no, (pid, nick, label, seconds, stages, total) in enumerate(rows, 1):
+    for row_no, (pid, nick, label, seconds, attended, stages, total) in enumerate(rows, 1):
         con.execute("""INSERT INTO kv_daily_players
-            (report_id,row_no,player_id,raw_nick,squad_label,voice_seconds,total_grenades)
-            VALUES(?,?,?,?,?,?,?)""", (rid, row_no, pid, nick, label, seconds, total))
+            (report_id,row_no,player_id,raw_nick,squad_label,voice_seconds,attended,total_grenades)
+            VALUES(?,?,?,?,?,?,?,?)""", (rid, row_no, pid, nick, label, seconds, attended, total))
         con.executemany("""INSERT INTO kv_daily_grenade_stages
             (report_id,row_no,stage_no,grenades) VALUES(?,?,?,?)""",
             [(rid, row_no, i, value) for i, value in enumerate(stages, 1)])
@@ -1907,6 +1914,9 @@ def save_kv_daily_report(
         clean_total = None if total is None else max(0, int(total))
         validate_grenade_total(clean_stages, clean_total)
         voice = row.get("voice_seconds")
+        attended = row.get("attended")
+        if attended is not None:
+            attended = int(bool(attended))
         normalized_rows.append(
             {
                 "player_id": row.get("player_id"),
@@ -1916,6 +1926,7 @@ def save_kv_daily_report(
                 "stages": clean_stages,
                 "total_grenades": clean_total,
                 "voice_seconds": None if voice is None else max(0, int(round(float(voice)))),
+                "attended": attended,
             }
         )
     ensure_schema(db_path)
@@ -1947,12 +1958,12 @@ def save_kv_daily_report(
                     player_id = match.player_id if match.method == "exact" else None
                 con.execute(
                     """INSERT INTO kv_daily_players
-                    (report_id,row_no,player_id,raw_nick,discord_username,squad_label,voice_seconds,total_grenades)
-                    VALUES(?,?,?,?,?,?,?,?)""",
+                    (report_id,row_no,player_id,raw_nick,discord_username,squad_label,voice_seconds,attended,total_grenades)
+                    VALUES(?,?,?,?,?,?,?,?,?)""",
                     (
                         report_id, row_no, player_id, row["raw_nick"],
                         row["discord_username"], row["squad_label"],
-                        row["voice_seconds"], row["total_grenades"],
+                        row["voice_seconds"], row["attended"], row["total_grenades"],
                     ),
                 )
                 for stage_no, value in enumerate(row["stages"], 1):

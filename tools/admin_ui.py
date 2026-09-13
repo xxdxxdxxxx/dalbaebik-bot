@@ -78,6 +78,12 @@ def esc(value: Any) -> str:
     return html.escape(str(value if value is not None else ""))
 
 
+def fmt_attended(value: Any) -> str:
+    if value is None:
+        return "—"
+    return "✅" if int(value) else "❌"
+
+
 def stage_label(n: Any) -> str:
     try:
         return STAGE_ROMAN.get(int(n), str(n))
@@ -240,7 +246,7 @@ def player(player_id: int):
                          WHERE sp.player_id=? ORDER BY s.match_date DESC, s.stage, s.id""",
                  (player_id,))
         days = q(con, """SELECT r.match_date date, k.total_grenades total,
-                                k.voice_seconds voice,
+                                k.voice_seconds voice, k.attended attended,
                                 GROUP_CONCAT(g.stage_no||':'||g.grenades) stages
                          FROM kv_daily_players k
                          JOIN kv_daily_reports r ON r.id=k.report_id
@@ -274,7 +280,7 @@ def player(player_id: int):
             f"<tr><td class='nick'><a href='{url_for('day', date=r['date'])}'>"
             f"{fmt_date_ru(r['date'])}</a></td>{cells}"
             f"<td class='total'>{r['total']}</td><td>{fmt_sec(r['voice'])}</td>"
-            f"<td>{flag}</td></tr>")
+            f"<td>{fmt_attended(r['attended'])}</td><td>{flag}</td></tr>")
     tab_rows = "".join(
         "<tr><td class='nick'><a href='{u}'>{d}</a></td><td>{st}</td>"
         "<td>{k}/{dt}/{a}</td><td>{sc}</td></tr>".format(
@@ -288,7 +294,7 @@ def player(player_id: int):
             f"<h1>👤 {esc(p['canonical_nick'])}</h1>"
             "<h2>💣 Гранаты по этапам и 🎙 войс по дням</h2>"
             f"<div class='panel'><div class='scroll'><table><thead><tr><th>Дата</th>"
-            f"{stage_cols}<th>Всего</th><th>Войс</th><th></th></tr></thead>"
+            f"{stage_cols}<th>Всего</th><th>Войс</th><th>Явка</th><th></th></tr></thead>"
             f"<tbody>{''.join(trs)}</tbody></table></div></div>"
             "<h2>📄 Табы (У/С/П · СЧЁТ)</h2>"
             "<div class='panel'><div class='scroll'><table><thead><tr><th>Дата</th>"
@@ -319,7 +325,7 @@ def _day_data(con: Any, date: str):
     krows: list[dict[str, Any]] = []
     if report:
         krows = q(con, """SELECT k.row_no, k.player_id, k.raw_nick, k.discord_username,
-                          k.squad_label, k.total_grenades, k.voice_seconds,
+                          k.squad_label, k.total_grenades, k.voice_seconds, k.attended,
                           p.canonical_nick
                           FROM kv_daily_players k LEFT JOIN players p ON p.id=k.player_id
                           WHERE k.report_id=? ORDER BY k.row_no""", (report["id"],))
@@ -407,7 +413,7 @@ def day(date: str):
                 if k["player_id"] else esc(nick))
         rows_html.append(
             f"<tr><td class='dim'>{k['row_no']}</td><td class='nick'>{link}</td>"
-            f"{tab_cells}{gcells}{total_cell}"
+            f"<td>{fmt_attended(k['attended'])}</td>{tab_cells}{gcells}{total_cell}"
             f"<td><input type='number' min='0' name='v{k['row_no']}' "
             f"value='{k['voice_seconds'] or 0}' title='{fmt_sec(k['voice_seconds'])}'></td>"
             f"<td><button class='danger' name='__del_row' value='{k['row_no']}' "
@@ -496,7 +502,7 @@ def day(date: str):
         + toggle
         + ("<p class='hint'>У/С/П/СЧЁТ — итог дня по табам (наведи курсор — покажет "
            "разбивку по табам).</p>" if has_tabs else "")
-        + "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th>"
+        + "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th><th>Явка</th>"
         + tab_head + stage_cols
         + "<th>💣</th><th>🎙 Войс, сек</th><th></th></tr></thead>"
         + f"<tbody>{''.join(rows_html)}</tbody></table></div>"
