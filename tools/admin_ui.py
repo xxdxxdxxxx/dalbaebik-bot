@@ -91,71 +91,23 @@ def stage_label(n: Any) -> str:
         return "?"
 
 
-PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} · админ-панель</title>
-<style>
-:root {{ --bg:#141519; --panel:#1b1d24; --line:#272a34; --line2:#22242e;
-        --text:#dcdcde; --dim:#8e9297; --acc:#5865f2; --ok:#3ba55d; --warn:#ed4245;
-        --gold:#ffd166; }}
-* {{ box-sizing:border-box; }}
-body {{ margin:0; background:var(--bg); color:var(--text);
-        font:14px/1.5 "Segoe UI",system-ui,sans-serif; padding:16px; }}
-.wrap {{ max-width:1320px; margin:0 auto; }}
-a {{ color:#8ea1ff; text-decoration:none; }} a:hover {{ text-decoration:underline; }}
-h1 {{ font-size:19px; margin:0 0 4px; }} h2 {{ font-size:15px; margin:20px 0 8px; }}
-.panel {{ background:var(--panel); border:1px solid var(--line); border-radius:10px;
-          padding:12px 14px; margin-bottom:14px; }}
-.chips {{ color:var(--dim); font-size:13px; margin:2px 0 12px; }}
-.chip {{ background:#22242e; border-radius:20px; padding:2px 10px; margin-right:6px;
-         color:var(--text); }}
-.scroll {{ overflow:auto; max-height:70vh; border:1px solid var(--line);
-           border-radius:8px; }}
-table {{ border-collapse:collapse; width:100%; }}
-th,td {{ padding:5px 9px; text-align:center; white-space:nowrap;
-         font-variant-numeric:tabular-nums; border-bottom:1px solid var(--line2); }}
-thead th {{ position:sticky; top:0; background:#232634; color:var(--dim);
-            font-weight:600; z-index:1; }}
-tbody tr:nth-child(even) {{ background:#191b22; }}
-tbody tr:hover {{ background:#20232d; }}
-td.nick {{ text-align:left; max-width:230px; overflow:hidden; text-overflow:ellipsis; }}
-th.gcol, td.gcol {{ background:rgba(88,101,242,.06); }}
-.sum {{ color:#b9bbc4; }}
-input[type=number] {{ width:64px; background:#121318; color:var(--text);
-  border:1px solid var(--line); border-radius:6px; padding:3px 4px;
-  text-align:center; font-variant-numeric:tabular-nums; }}
-input[type=number]:focus {{ outline:1px solid var(--acc); }}
-button {{ background:var(--acc); color:#fff; border:0; border-radius:7px;
-          padding:7px 16px; font-size:14px; cursor:pointer; }}
-button.danger {{ background:transparent; color:var(--warn); border:1px solid #5a2c30;
-                 padding:2px 9px; font-size:12px; }}
-button.save {{ background:var(--ok); font-weight:600; }}
-.float {{ position:fixed; right:18px; bottom:18px; padding:11px 20px; font-size:15px;
-          box-shadow:0 6px 18px rgba(0,0,0,.5); z-index:5; }}
-.dim {{ color:var(--dim); }} .big {{ font-size:15px; }}
-.back {{ margin-bottom:8px; display:inline-block; }}
-.total {{ font-weight:700; color:var(--gold); }}
-.hint {{ color:var(--dim); font-size:12.5px; margin:4px 0 10px; }}
-.flag {{ color:var(--warn); font-weight:700; }}
-.ok-pill {{ color:var(--ok); font-weight:700; margin:6px 0 10px; font-size:15px; }}
-.banner {{ background:rgba(59,165,93,.12); border:1px solid rgba(59,165,93,.4);
-           border-radius:8px; padding:6px 12px; display:inline-block; }}
-details {{ margin:6px 0 14px; }}
-details summary {{ cursor:pointer; color:#8ea1ff; padding:6px 0; user-select:none; }}
-details summary:hover {{ text-decoration:underline; }}
-nav.days {{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0 4px; }}
-nav.days button {{ padding:5px 12px; }}
-nav.days select {{ background:#121318; color:var(--text); border:1px solid var(--line);
-                   border-radius:7px; padding:5px 8px; }}
-input#flt {{ background:#121318; color:var(--text); border:1px solid var(--line);
-             border-radius:7px; padding:6px 10px; width:220px; margin-bottom:8px; }}
-.month {{ color:var(--dim); font-weight:600; margin:14px 0 4px; font-size:13px;
-          text-transform:uppercase; letter-spacing:.4px; }}
-</style></head><body><div class="wrap">{body}</div></body></html>"""
+PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} · Clan Analytics</title><style>
+:root{{--bg:#f7f7f5;--panel:#fff;--soft:#f1f1ef;--line:#e5e5e2;--text:#242424;--dim:#787774;--blue:#2783de;--blue2:#e5f2fc;--green:#46a171;--red:#e56458}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#191919;--panel:#202020;--soft:#292928;--line:#3b3b39;--text:#fff;--dim:#aaa;--blue:#5e9fe8;--blue2:#253343;--green:#72bc8f;--red:#e97366}}}}
+*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}}a{{color:inherit;text-decoration:none}}a:hover{{color:var(--blue)}}
+.top{{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line)}}.topin,.wrap{{width:min(1180px,calc(100% - 32px));margin:auto}}.topin{{height:64px;display:flex;align-items:center;justify-content:space-between}}.brand{{font-weight:750;display:flex;align-items:center;gap:9px}}.logo{{width:30px;height:30px;border-radius:8px;background:var(--text);color:var(--bg);display:grid;place-items:center;font-size:12px}}.nav{{display:flex;gap:4px;padding:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px}}.nav a{{min-height:36px;padding:0 13px;display:flex;align-items:center;border-radius:7px;color:var(--dim);font-weight:650}}.nav a.active{{background:var(--blue2);color:var(--blue)}}
+.wrap{{padding:34px 0 70px}}h1{{font-size:30px;line-height:1.15;letter-spacing:-.025em;margin:0 0 6px}}h2{{font-size:18px;margin:30px 0 12px}}.pagehead{{display:flex;justify-content:space-between;align-items:end;gap:16px;margin-bottom:24px}}.subtitle,.hint,.dim,.chips{{color:var(--dim)}}
+.metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 26px}}.metric,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.panel{{overflow:auto}}.metric{{padding:16px}}.metric label{{display:block;color:var(--dim);font-size:13px;font-weight:650}}.metric b{{display:block;font-size:26px;letter-spacing:-.03em;margin-top:5px}}.panel{{padding:14px;margin-bottom:14px}}
+.actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:40px;padding:0 13px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 14px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
+.scroll{{overflow:auto;max-height:68vh;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 11px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:var(--blue2)}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:38px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:70px;text-align:center}}input#flt{{width:min(100%,300px)}}
+.chips{{margin:10px 0 18px}}.chip{{padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:3px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:4px 0 14px}}.seg a,.seg b{{min-height:34px;padding:0 12px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:14px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:10px 0}}nav.days{{margin:12px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:12px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;margin:20px 0 7px}}
+@media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px)}}.topin{{height:58px}}.brand .txt{{display:none}}.wrap{{padding-top:24px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:25px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
+</style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a></nav></div></header><main class="wrap">{body}</main></body></html>"""
 
 
 def render(title: str, body: str) -> str:
-    return PAGE.format(title=html.escape(title), body=body)
+    path=request.path
+    return PAGE.format(title=html.escape(title),body=body,home=url_for("index"),players=url_for("players"),ov="active" if path=="/" or path.startswith("/day/") else "",pl="active" if path.startswith("/player") else "")
 
 
 def all_dates(con: Any) -> list[str]:
@@ -196,14 +148,23 @@ def index():
             f"<td>{r['tabs'] or 0}</td><td>{r['players'] or 0}</td>"
             f"<td class='total'>{r['grenades'] or 0}</td>"
             f"<td>{fmt_sec(r['voice'])}</td></tr>")
-    body = ("<h1>📅 Дни КВ</h1>"
-            "<p class='hint'>Кликни день — сводная таблица: таб, гранаты по этапам, "
-            "войс по каждому игроку.</p>"
-            "<div class='panel'><table><thead><tr><th>Дата</th><th>Табов</th>"
+    total_tabs = sum(int(r["tabs"] or 0) for r in rows)
+    total_grenades = sum(int(r["grenades"] or 0) for r in rows)
+    total_voice = sum(int(r["voice"] or 0) for r in rows)
+    latest = rows[0]["date"] if rows else None
+    summary = ("<div class='metrics'>"
+               f"<div class='metric'><label>Дней КВ</label><b>{len(rows)}</b></div>"
+               f"<div class='metric'><label>Табов</label><b>{total_tabs}</b></div>"
+               f"<div class='metric'><label>Гранат</label><b>{total_grenades}</b></div>"
+               f"<div class='metric'><label>Войс всего</label><b>{fmt_sec(total_voice)}</b></div></div>")
+    body = ("<div class='pagehead'><div><h1>Обзор</h1>"
+            "<p class='subtitle'>Короткая сводка и переход к любому дню КВ.</p></div>"
+            + (f"<a class='button primary' href='{url_for('day',date=latest)}'>Последний КВ</a>" if latest else "")
+            + "</div>" + summary
+            + "<div class='panel'><table><thead><tr><th>Дата</th><th>Табов</th>"
             "<th>Игроков</th><th>💣 Гранат</th><th>🎙 Войс</th></tr></thead>"
             f"<tbody>{''.join(out)}</tbody></table></div>"
-            f"<div class='panel'><a class='big' href='{url_for('players')}'>"
-            "👥 Игроки — история и поиск накруток</a></div>")
+            f"<div class='actions'><a class='button' href='{url_for('players')}'>Все игроки</a></div>")
     return render("Дни", body)
 
 
@@ -224,8 +185,8 @@ def players():
         f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td>"
         f"<td>{fmt_date_ru(r['last_day']) if r['last_day'] else '—'}</td></tr>"
         for r in rows)
-    body = (f"<a class='back' href='{url_for('index')}'>← Дни</a><h1>👥 Игроки</h1>"
-            "<input id='flt' placeholder='🔍 фильтр по нику…' oninput="
+    body = (f"<div class='pagehead'><div><h1>Игроки</h1><p class='subtitle'>История, гранаты и быстрый поиск по составу.</p></div></div>"
+            "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput="
             "\"[...document.querySelectorAll('tbody tr')].forEach(tr=>tr.style.display"
             "=tr.textContent.toLowerCase().includes(this.value.toLowerCase())?'':'none')\">"
             "<div class='panel'><table><thead><tr><th>Ник</th><th>Дней</th>"
@@ -387,15 +348,18 @@ def day(date: str):
             t = tab_sum.get(k["player_id"]) if k["player_id"] else None
             if t:
                 tip = esc(" | ".join(t["rows"]))
+                kd = t["k"] / t["d"] if t["d"] else float(t["k"])
+                avg_score = t["s"] / t["n"] if t["n"] else 0
                 tab_cells = (f"<td class='sum' title='{tip}'>{t['k']}</td>"
                              f"<td class='sum' title='{tip}'>{t['d']}</td>"
                              f"<td class='sum' title='{tip}'>{t['a']}</td>"
                              f"<td class='sum' title='{tip}'>{t['s']}</td>"
+                             f"<td class='sum'>{kd:.2f}</td><td class='sum'>{avg_score:.0f}</td>"
                              f"<td class='dim' title='{tip}'>{t['n']}</td>")
             else:
                 tab_cells = ("<td class='dim'>—</td><td class='dim'>—</td>"
                              "<td class='dim'>—</td><td class='dim'>—</td>"
-                             "<td class='dim'>0</td>")
+                             "<td class='dim'>—</td><td class='dim'>—</td><td class='dim'>0</td>")
         if mode == "stages":
             gcells = ""
             for i in range(1, max_stage + 1):
@@ -487,16 +451,10 @@ def day(date: str):
              "<span class='chip'>🎙 войс: "
              + fmt_sec(sum(k["voice_seconds"] or 0 for k in krows)) + "</span></div>")
 
-    tab_head = ("<th>У</th><th>С</th><th>П</th><th>СЧЁТ</th><th>Табы</th>"
+    tab_head = ("<th>У</th><th>С</th><th>П</th><th>Счёт</th><th>K/D</th><th>Ср/таб</th><th>Табы</th>"
                 if has_tabs else "")
-    toggle = ("<p class='hint'>Гранаты: "
-              + ("<b>всего</b>" if mode == "total"
-                 else f"<a href='{url_for('day', date=date, mode='total')}'>всего</a>")
-              + " · "
-              + (f"<a href='{url_for('day', date=date, mode='stages')}'>по этапам</a>"
-                 if mode == "total" else "<b>по этапам</b>")
-              + (" · в режиме этапов «всего» = сумма ячеек" if mode == "stages"
-                 else " · чтобы править по этапам, переключи вид") + "</p>")
+    toggle = ("<div class='seg'>" + ("<b>Всего</b>" if mode == "total" else f"<a href='{url_for('day',date=date,mode='total')}'>Всего</a>") + (f"<a href='{url_for('day',date=date,mode='stages')}'>По этапам</a>" if mode == "total" else "<b>По этапам</b>") + "</div>")
+
     kv_block = (
         "<h2>💣 Гранаты · 🎙 войс" + (" · 📄 итог табов" if has_tabs else "") + "</h2>"
         + toggle
@@ -510,8 +468,8 @@ def day(date: str):
         "<p class='hint'>Дневной отчёт за эту дату не найден "
         "(гранаты за этот день не импортировались).</p>")
 
-    body = (f"<a class='back' href='{url_for('index')}'>← Дни</a>"
-            f"<h1>📆 {fmt_date_ru(date)}</h1>{nav}{chips}{banner}"
+    body = (f"<a class='back' href='{url_for('index')}'>← Обзор</a>"
+            f"<div class='pagehead'><div><h1>{fmt_date_ru(date)}</h1><p class='subtitle'>Табы, явка, гранаты и войс за один день.</p></div></div>{nav}{chips}{banner}"
             f"<form method='post' action='{save_url}'>"
             f"<input type='hidden' name='mode' value='{mode}'>"
             + kv_block + tabs_details
