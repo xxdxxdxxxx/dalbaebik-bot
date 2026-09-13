@@ -55,7 +55,7 @@ def fmt_sec(seconds: Any) -> str:
         return "—"
     if s >= 3600:
         return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
-    return f"{s // 60:02d}:{s % 60:02d}"
+    return f"{s // 60}:{s % 60:02d}"
 
 
 def fmt_date_ru(day: str) -> str:
@@ -99,7 +99,7 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name=
 .wrap{{padding:20px 0 48px}}h1{{font-size:24px;line-height:1.15;letter-spacing:-.02em;margin:0 0 4px}}h2{{font-size:15px;margin:18px 0 8px}}.pagehead{{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-bottom:14px}}.subtitle,.hint,.dim,.chips{{color:var(--dim)}}
 .metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 16px}}.metric,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.panel{{overflow:auto}}.metric{{padding:10px 12px}}.metric label{{display:block;color:var(--dim);font-size:11px;font-weight:650}}.metric b{{display:block;font-size:20px;letter-spacing:-.03em;margin-top:2px}}.panel{{padding:8px;margin-bottom:10px}}
 .actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 12px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
-.scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number]{{width:48px;height:21px;min-height:21px;padding:0 3px;border-radius:4px;background:transparent;border-color:transparent;font:inherit}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus{{background:var(--panel);border-color:var(--line);outline:none}}input#flt{{width:min(100%,300px)}}
+.scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}input#flt{{width:min(100%,300px)}}
 .chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}
 @media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
 </style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a></nav></div></header><main class="wrap {layout}">{body}</main></body></html>"""
@@ -173,16 +173,26 @@ def index():
 def players():
     with closing(player_store.connect(DB_PATH)) as con:
         rows = q(con, """
-            SELECT p.id, p.canonical_nick, COUNT(DISTINCT r.match_date) days,
+            SELECT p.id, p.canonical_nick, rm.squad_id,
+                   COUNT(DISTINCT r.match_date) days,
                    SUM(k.total_grenades) grenades,
                    MAX(r.match_date) last_day
             FROM players p
+            JOIN (
+                SELECT player_id, MIN(squad_id) squad_id
+                FROM roster_memberships
+                WHERE active=1 AND (squad_id BETWEEN 1 AND 6 OR squad_id=99)
+                GROUP BY player_id
+            ) rm ON rm.player_id=p.id
             LEFT JOIN kv_daily_players k ON k.player_id=p.id
             LEFT JOIN kv_daily_reports r ON r.id=k.report_id
-            GROUP BY p.id ORDER BY p.canonical_nick COLLATE NOCASE""")
+            GROUP BY p.id, rm.squad_id
+            ORDER BY CASE WHEN rm.squad_id=99 THEN 0 ELSE rm.squad_id END,
+                     p.canonical_nick COLLATE NOCASE""")
     trs = "".join(
         f"<tr><td class='nick'><a href='{url_for('player', player_id=r['id'])}'>"
         f"{esc(r['canonical_nick'])}</a></td>"
+        f"<td>{'Чемпионы' if r['squad_id'] == 99 else 'Отряд ' + str(r['squad_id'])}</td>"
         f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td>"
         f"<td>{fmt_date_ru(r['last_day']) if r['last_day'] else '—'}</td></tr>"
         for r in rows)
@@ -190,8 +200,8 @@ def players():
             "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput="
             "\"[...document.querySelectorAll('tbody tr')].forEach(tr=>tr.style.display"
             "=tr.textContent.toLowerCase().includes(this.value.toLowerCase())?'':'none')\">"
-            "<div class='panel'><table><thead><tr><th>Ник</th><th>Дней</th>"
-            "<th>💣 Гранат всего</th><th>Последний день</th></tr></thead>"
+            "<div class='panel'><table><thead><tr><th>Ник</th><th>Отряд</th><th>Дней</th>"
+            "<th>Гранат всего</th><th>Последний день</th></tr></thead>"
             f"<tbody>{trs}</tbody></table></div>")
     return render("Игроки", body)
 
@@ -355,12 +365,11 @@ def day(date: str):
                              f"<td class='sum' title='{tip}'>{t['d']}</td>"
                              f"<td class='sum' title='{tip}'>{t['a']}</td>"
                              f"<td class='sum' title='{tip}'>{t['s']}</td>"
-                             f"<td class='sum'>{kd:.2f}</td><td class='sum'>{avg_score:.0f}</td>"
-                             f"<td class='dim' title='{tip}'>{t['n']}</td>")
+                             f"<td class='sum'>{kd:.2f}</td><td class='sum'>{avg_score:.0f}</td>")
             else:
                 tab_cells = ("<td class='dim'>—</td><td class='dim'>—</td>"
                              "<td class='dim'>—</td><td class='dim'>—</td>"
-                             "<td class='dim'>—</td><td class='dim'>—</td><td class='dim'>0</td>")
+                             "<td class='dim'>—</td><td class='dim'>—</td>")
         if mode == "stages":
             gcells = ""
             for i in range(1, max_stage + 1):
@@ -378,18 +387,20 @@ def day(date: str):
                 if k["player_id"] else esc(nick))
         rows_html.append(
             f"<tr><td class='dim'>{k['row_no']}</td><td class='nick'>{link}</td>"
-            f"<td>{fmt_attended(k['attended'])}</td>{tab_cells}{gcells}{total_cell}"
-            f"<td><input type='number' min='0' name='v{k['row_no']}' "
-            f"value='{k['voice_seconds'] or 0}' title='{fmt_sec(k['voice_seconds'])}'></td>"
+            f"{tab_cells}{gcells}{total_cell}"
+            f"<td><input type='text' inputmode='numeric' name='v{k['row_no']}' "
+            f"value='{fmt_sec(k['voice_seconds'] or 0)}' title='минуты:секунды'></td>"
             f"<td><button class='danger' name='__del_row' value='{k['row_no']}' "
             f"formaction='{save_url}' onclick=\"return confirm('Удалить гранаты и войс "
             f"{esc(nick)} за {fmt_date_ru(date)}?')\">✕</button></td></tr>")
 
     # ── исходные табы: правка У/С/П/СЧЁТ по каждому табу ──────────────────
     scan_tables = []
+    scan_player_count = sum(len(s["players"]) for s in scans)
+    unmatched_count = sum(1 for s in scans for r in s["players"] if r["player_id"] is None)
     for s in scans:
         head = (
-            "<tr><td colspan='6' style='text-align:left'>"
+            "<tr><td colspan='7' style='text-align:left'>"
             f"<button class='danger' name='__del_scan' value='{s['id']}' "
             f"formaction='{save_url}' onclick=\"return confirm('Удалить весь таб?')\""
             ">✕ таб</button> <span class='dim'>"
@@ -406,7 +417,9 @@ def day(date: str):
             + (f" <span class='dim'>({esc(r['canonical_nick'])})</span>"
                if r["canonical_nick"] and r["canonical_nick"] != r["nick"] else "")
             + "</td>"
-            f"<td><input type='number' min='0' name='t{r['row_id']}_k' value='{r['kills']}'></td>"
+            + ("<td class='ok-match'>найден</td>" if r["player_id"] is not None
+               else "<td class='flag'>не найден</td>")
+            + f"<td><input type='number' min='0' name='t{r['row_id']}_k' value='{r['kills']}'></td>"
             f"<td><input type='number' min='0' name='t{r['row_id']}_d' value='{r['deaths']}'></td>"
             f"<td><input type='number' min='0' name='t{r['row_id']}_a' value='{r['assists']}'></td>"
             f"<td><input type='number' min='0' name='t{r['row_id']}_s' value='{r['score']}'></td>"
@@ -415,9 +428,11 @@ def day(date: str):
         scan_tables.append(head + rows)
     tabs_details = (
         "<details" + (" open" if len(scans) == 1 else "") + ">"
-        f"<summary>✏️ Исходные табы ({len(scans)}) — правка У/С/П/СЧЁТ</summary>"
-        "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th>"
-        "<th>У</th><th>С</th><th>П</th><th>СЧЁТ</th></tr></thead>"
+        f"<summary>Исходные табы ({len(scans)}) · найдено {scan_player_count - unmatched_count}/{scan_player_count}"
+        + (f" · не найдено {unmatched_count}" if unmatched_count else " · все ники найдены")
+        + "</summary>"
+        "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th><th>Совпадение</th>"
+        "<th>У</th><th>С</th><th>П</th><th>Счёт</th></tr></thead>"
         f"<tbody>{''.join(scan_tables)}</tbody></table></div></details>"
         if scans else "<p class='hint'>Табов за этот день нет.</p>")
 
@@ -445,14 +460,13 @@ def day(date: str):
         banner = "<div class='banner ok-pill'>🗑 Удалено</div>"
 
     chips = ("<div class='chips'>"
-             f"<span class='chip'>Табов: {len(scans)}</span>"
              f"<span class='chip'>Игроков: {len(krows)}</span>"
              f"<span class='chip'>Гранат: {sum(k['total_grenades'] or 0 for k in krows)}"
              "</span>"
              "<span class='chip'>Войс: "
              + fmt_sec(sum(k["voice_seconds"] or 0 for k in krows)) + "</span></div>")
 
-    tab_head = ("<th>У</th><th>С</th><th>П</th><th>Счёт</th><th>K/D</th><th>Ср/таб</th><th>Табы</th>"
+    tab_head = ("<th>У</th><th>С</th><th>П</th><th>Счёт</th><th>K/D</th><th>Ср/таб</th>"
                 if has_tabs else "")
     toggle = ("<div class='seg'>" + ("<b>Всего</b>" if mode == "total" else f"<a href='{url_for('day',date=date,mode='total')}'>Всего</a>") + (f"<a href='{url_for('day',date=date,mode='stages')}'>По этапам</a>" if mode == "total" else "<b>По этапам</b>") + "</div>")
 
@@ -461,16 +475,16 @@ def day(date: str):
         + toggle
         + ("<p class='hint'>У/С/П/СЧЁТ — итог дня по табам (наведи курсор — покажет "
            "разбивку по табам).</p>" if has_tabs else "")
-        + "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th><th>Явка</th>"
+        + "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th>"
         + tab_head + stage_cols
-        + "<th>💣</th><th>🎙 Войс, сек</th><th></th></tr></thead>"
+        + "<th>Гранаты</th><th>Войс</th><th></th></tr></thead>"
         + f"<tbody>{''.join(rows_html)}</tbody></table></div>"
         if krows else
         "<p class='hint'>Дневной отчёт за эту дату не найден "
         "(гранаты за этот день не импортировались).</p>")
 
     body = (f"<a class='back' href='{url_for('index')}'>← Обзор</a>"
-            f"<div class='pagehead'><div><h1>{fmt_date_ru(date)}</h1><p class='subtitle'>Табы, явка, гранаты и войс за один день.</p></div></div>{nav}{chips}{banner}"
+            f"<div class='pagehead'><div><h1>{fmt_date_ru(date)}</h1><p class='subtitle'>Гранаты, статистика и войс за один день.</p></div></div>{nav}{chips}{banner}"
             f"<form class='day-edit' method='post' action='{save_url}'>"
             f"<input type='hidden' name='mode' value='{mode}'>"
             + kv_block + tabs_details
@@ -486,6 +500,29 @@ def _to_int(value: str | None) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _to_seconds(value: str | None) -> int | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    if ":" not in text:
+        return _to_int(text)
+    try:
+        parts = [int(part) for part in text.split(":")]
+    except ValueError:
+        return None
+    if len(parts) == 2:
+        minutes, seconds = parts
+        if minutes < 0 or not 0 <= seconds < 60:
+            return None
+        return minutes * 60 + seconds
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+        if hours < 0 or not 0 <= minutes < 60 or not 0 <= seconds < 60:
+            return None
+        return hours * 3600 + minutes * 60 + seconds
+    return None
 
 
 @app.post("/day/<date>/save")
@@ -545,7 +582,7 @@ def day_save(date: str):
             rid = report["id"]
             for key, value in form.items():
                 if key.startswith("v") and key[1:].isdigit():
-                    num = _to_int(value)
+                    num = _to_seconds(value)
                     if not str(value).strip() or (num is not None and num >= 0):
                         con.execute("""UPDATE kv_daily_players SET voice_seconds=?
                                        WHERE report_id=? AND row_no=?""",
