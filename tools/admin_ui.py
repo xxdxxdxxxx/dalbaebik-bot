@@ -100,7 +100,7 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name=
 .metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 16px}}.metric,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.panel{{overflow:auto}}.metric{{padding:10px 12px}}.metric label{{display:block;color:var(--dim);font-size:11px;font-weight:650}}.metric b{{display:block;font-size:20px;letter-spacing:-.03em;margin-top:2px}}.panel{{padding:8px;margin-bottom:10px}}
 .actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 12px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
 .scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}.source-badge{{display:inline-block;margin-left:5px;padding:1px 4px;border:1px solid var(--line);border-radius:4px;color:var(--dim);font-size:9px;vertical-align:1px}}input#flt{{width:min(100%,300px)}}
-.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--text);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}.sortable{{cursor:pointer;user-select:none}}.sortable::after{{content:" ↕";color:var(--dim);font-size:9px}}.sortable[data-dir="desc"]::after{{content:" ↓";color:var(--blue)}}.sortable[data-dir="asc"]::after{{content:" ↑";color:var(--blue)}}
+.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--text);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}.sortable{{cursor:pointer;user-select:none}}.sortable::after{{content:" ↕";color:var(--dim);font-size:9px}}.sortable[data-dir="desc"]::after{{content:" ↓";color:var(--blue)}}.sortable[data-dir="asc"]::after{{content:" ↑";color:var(--blue)}}.eff{{font-weight:800;color:var(--blue)}}
 @media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
 </style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a></nav></div></header><main class="wrap {layout}">{body}</main></body></html>"""
 
@@ -368,6 +368,38 @@ def day(date: str):
             "voice_seconds": None, "attended": None, "stages": {},
             "scan_only": True,
         })
+    # EFF is calculated independently inside this KV day.
+    # The four requested weights sum to 0.90, so divide by 0.90 to keep EFF on a 0–100 scale.
+    eff_weights = {"kills_per_tab": 0.25, "kda": 0.25, "score_per_tab": 0.20, "grenades": 0.20}
+    eff_values: dict[int, dict[str, float]] = {}
+    for k in krows:
+        player_id = k.get("player_id")
+        t = tab_sum.get(player_id) if player_id is not None else None
+        if not t or k.get("total_grenades") is None:
+            continue
+        tabs = max(int(t["n"]), 1)
+        deaths = int(t["d"])
+        eff_values[int(player_id)] = {
+            "kills_per_tab": float(t["k"]) / tabs,
+            "kda": (float(t["k"] + t["a"]) / deaths) if deaths else float(t["k"] + t["a"]),
+            "score_per_tab": float(t["s"]) / tabs,
+            "grenades": float(k["total_grenades"]),
+        }
+    eff_bounds = {
+        key: (min(values[key] for values in eff_values.values()),
+              max(values[key] for values in eff_values.values()))
+        for key in eff_weights
+    } if eff_values else {}
+    day_eff: dict[int, float] = {}
+    for player_id, values in eff_values.items():
+        normalized = {}
+        for key, value in values.items():
+            minimum, maximum = eff_bounds[key]
+            normalized[key] = 50.0 if maximum == minimum else (value - minimum) / (maximum - minimum) * 100.0
+        day_eff[player_id] = round(
+            sum(normalized[key] * weight for key, weight in eff_weights.items())
+            / sum(eff_weights.values()), 1)
+
     has_tabs = bool(scans)
     max_stage = max((max(k["stages"], default=0) for k in krows), default=0)
     max_stage = max(max_stage, report["stage_count"] if report else 0)
@@ -386,13 +418,15 @@ def day(date: str):
             t = tab_sum.get(k["player_id"]) if k["player_id"] else None
             if t:
                 tip = esc(" | ".join(t["rows"]))
-                kd = t["k"] / t["d"] if t["d"] else float(t["k"])
-                avg_score = t["s"] / t["n"] if t["n"] else 0
+                kda = ((t["k"] + t["a"]) / t["d"]
+                       if t["d"] else float(t["k"] + t["a"]))
+                efficiency = day_eff.get(int(k["player_id"]))
+                eff_cell = (f"{efficiency:.1f}" if efficiency is not None else "—")
                 tab_cells = (f"<td class='sum' title='{tip}'>{t['k']}</td>"
                              f"<td class='sum' title='{tip}'>{t['d']}</td>"
                              f"<td class='sum' title='{tip}'>{t['a']}</td>"
                              f"<td class='sum' title='{tip}'>{t['s']}</td>"
-                             f"<td class='sum'>{kd:.2f}</td><td class='sum'>{avg_score:.0f}</td>")
+                             f"<td class='sum'>{kda:.2f}</td><td class='eff'>{eff_cell}</td>")
             else:
                 tab_cells = ("<td class='dim'>—</td><td class='dim'>—</td>"
                              "<td class='dim'>—</td><td class='dim'>—</td>"
@@ -508,8 +542,8 @@ def day(date: str):
                 "<th class='sortable' data-sort='number'>С</th>"
                 "<th class='sortable' data-sort='number'>П</th>"
                 "<th class='sortable' data-sort='number'>Счёт</th>"
-                "<th class='sortable' data-sort='number'>K/D</th>"
-                "<th class='sortable' data-sort='number' title='Средний счёт за один таб'>Счёт/таб</th>"
+                "<th class='sortable' data-sort='number'>KDA</th>"
+                "<th class='sortable' data-sort='number' title='EFF дня: У/таб 25%, KDA 25%, Счёт/таб 20%, Гранаты/КВ 20%'>EFF</th>"
                 if has_tabs else "")
     toggle = ("<div class='seg'>" + ("<b>Всего</b>" if mode == "total" else f"<a href='{url_for('day',date=date,mode='total')}'>Всего</a>") + (f"<a href='{url_for('day',date=date,mode='stages')}'>По этапам</a>" if mode == "total" else "<b>По этапам</b>") + "</div>")
 
