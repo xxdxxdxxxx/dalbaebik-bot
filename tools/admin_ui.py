@@ -100,7 +100,7 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name=
 .metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 16px}}.metric,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.panel{{overflow:auto}}.metric{{padding:10px 12px}}.metric label{{display:block;color:var(--dim);font-size:11px;font-weight:650}}.metric b{{display:block;font-size:20px;letter-spacing:-.03em;margin-top:2px}}.panel{{padding:8px;margin-bottom:10px}}
 .actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 12px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
 .scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}.source-badge{{display:inline-block;margin-left:5px;padding:1px 4px;border:1px solid var(--line);border-radius:4px;color:var(--dim);font-size:9px;vertical-align:1px}}input#flt{{width:min(100%,300px)}}
-.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--dim);font-size:10px;font-weight:750;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}
+.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--text);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}
 @media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
 </style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a></nav></div></header><main class="wrap {layout}">{body}</main></body></html>"""
 
@@ -159,13 +159,13 @@ def index():
                f"<div class='metric'><label>Гранат</label><b>{total_grenades}</b></div>"
                f"<div class='metric'><label>Войс всего</label><b>{fmt_sec(total_voice)}</b></div></div>")
     body = ("<div class='pagehead'><div><h1>Обзор</h1>"
-            "<p class='subtitle'>Короткая сводка и переход к любому дню КВ.</p></div>"
+            "</div>"
             + (f"<a class='button primary' href='{url_for('day',date=latest)}'>Последний КВ</a>" if latest else "")
             + "</div>" + summary
             + "<div class='panel'><table><thead><tr><th>Дата</th><th>Табов</th>"
             "<th>Игроков</th><th>Гранаты</th><th>Войс</th></tr></thead>"
             f"<tbody>{''.join(out)}</tbody></table></div>"
-            f"<div class='actions'><a class='button' href='{url_for('players')}'>Все игроки</a></div>")
+            )
     return render("Дни", body)
 
 
@@ -201,15 +201,15 @@ def players():
         member_rows = "".join(
             f"<tr class='player-row'><td class='nick'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
             f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td>"
-            f"<td>{fmt_date_ru(r['last_day']) if r['last_day'] else '—'}</td></tr>"
+            "</tr>"
             for r in members)
         bodies.append(
-            f"<tbody class='squad-group'><tr class='squad-title'><td colspan='4'>{label}<span>{len(members)} чел.</span></td></tr>"
+            f"<tbody class='squad-group'><tr class='squad-title'><td colspan='3'>{label}</td></tr>"
             f"{member_rows}</tbody>")
     body = ("<div class='pagehead'><div><h1>Игроки</h1>"
-            "<p class='subtitle'>Активный состав по отрядам.</p></div></div>"
+            "</div></div>"
             "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
-            "<div class='panel'><table><thead><tr><th class='nick'>Ник</th><th>Дни</th><th>Грены</th><th>Последний КВ</th></tr></thead>"
+            "<div class='panel'><table><thead><tr><th class='nick'>Ник</th><th>Дни</th><th>Грены</th></tr></thead>"
             f"{''.join(bodies)}</table></div>"
             "<script>function filterPlayers(value){const q=value.toLowerCase();document.querySelectorAll('.squad-group').forEach(group=>{let n=0;group.querySelectorAll('.player-row').forEach(row=>{const show=row.textContent.toLowerCase().includes(q);row.style.display=show?'':'none';if(show)n++});group.style.display=n?'':'none'})}</script>")
     return render("Игроки", body)
@@ -509,10 +509,7 @@ def day(date: str):
     toggle = ("<div class='seg'>" + ("<b>Всего</b>" if mode == "total" else f"<a href='{url_for('day',date=date,mode='total')}'>Всего</a>") + (f"<a href='{url_for('day',date=date,mode='stages')}'>По этапам</a>" if mode == "total" else "<b>По этапам</b>") + "</div>")
 
     kv_block = (
-        "<h2>Гранаты · Войс" + (" · 📄 итог табов" if has_tabs else "") + "</h2>"
-        + toggle
-        + ("<p class='hint'>У/С/П/СЧЁТ — итог дня по табам (наведи курсор — покажет "
-           "разбивку по табам).</p>" if has_tabs else "")
+        toggle
         + "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th>"
         + tab_head + stage_cols
         + "<th>Гранаты</th><th>Войс</th><th></th></tr></thead>"
@@ -522,7 +519,7 @@ def day(date: str):
         "(гранаты за этот день не импортировались).</p>")
 
     body = (f"<a class='back' href='{url_for('index')}'>← Обзор</a>"
-            f"<div class='pagehead'><div><h1>{fmt_date_ru(date)}</h1><p class='subtitle'>Гранаты, статистика и войс за один день.</p></div></div>{nav}{chips}{banner}"
+            f"<div class='pagehead'><div><h1>{fmt_date_ru(date)}</h1></div></div>{nav}{chips}{banner}"
             f"<form class='day-edit' method='post' action='{save_url}'>"
             f"<input type='hidden' name='mode' value='{mode}'>"
             + kv_block + tabs_details
