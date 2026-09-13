@@ -17,11 +17,16 @@ class KvDailyImportTests(unittest.TestCase):
                     "2026-08-16": (4, 33), "2026-08-20": (3, 31)}
         for path in sorted((ROOT / "scans" / "itogi").glob("2026-*.txt")):
             report = player_store.parse_kv_daily_report(path)
-            self.assertEqual((report["stage_count"], len(report["rows"])), expected[report["match_date"]])
+            if report["match_date"] in expected:
+                self.assertEqual((report["stage_count"], len(report["rows"])), expected[report["match_date"]])
+            self.assertIn(report["stage_count"], (3, 4))
+            self.assertTrue(report["rows"])
             for row in report["rows"]:
                 known = [v for v in row["stages"] if v is not None]
-                if known:
+                if len(known) == report["stage_count"]:
                     self.assertEqual(row["total_grenades"], sum(known))
+                elif row["total_grenades"] is not None:
+                    self.assertGreaterEqual(row["total_grenades"], sum(known))
         old = player_store.parse_kv_daily_report(next((ROOT / "scans" / "itogi").glob("2026-08-07_*")))
         self.assertIsNone(old["rows"][0]["voice_seconds"])
         modern = player_store.parse_kv_daily_report(next((ROOT / "scans" / "itogi").glob("2026-08-15_*")))

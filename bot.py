@@ -2083,48 +2083,16 @@ def format_online_embed(data: dict[str, Any]) -> discord.Embed:
 
 
 def _grenade_row_stats(
-    history: dict, gnick: str, *, four_stages: bool = False
+    history: dict, gnick: str, *, four_stages: bool = False, final: bool = False,
 ) -> tuple[int | None, int | None, int | None, int | None, int | None]:
     """I, II, III, [IV], ИТОГ."""
     s = _hist_get(history, gnick) or {}
     if not isinstance(s, dict):
         s = {}
-    v0 = s.get("20:00")
-    v1 = s.get("20:25")
-    v2 = s.get("20:50")
-    v3 = s.get("21:20")
-    v4 = s.get("21:40")
-
-    def stage_diff(a, b) -> int | None:
-        if a is None or b is None:
-            return None
-        d = int(a) - int(b)
-        return d if d >= 0 else None
-
-    e1 = stage_diff(v1, v0)
-    e2 = stage_diff(v2, v1) if v1 is not None else stage_diff(v2, v0)
-    e3 = (
-        stage_diff(v3, v2)
-        if v2 is not None
-        else (stage_diff(v3, v1) if v1 is not None else stage_diff(v3, v0))
-    )
-    e4 = None
-    if four_stages:
-        if v3 is not None:
-            e4 = stage_diff(v4, v3)
-        elif v2 is not None:
-            e4 = stage_diff(v4, v2)
-        else:
-            e4 = stage_diff(v4, v0)
-
-    parts = [x for x in (e1, e2, e3, e4) if x is not None]
-    if parts:
-        total: int | None = sum(parts)
-    elif v0 is not None:
-        total = 0
-    else:
-        total = None
-    return e1, e2, e3, e4, total
+    stages, total = player_store.grenade_summary(s, 4 if four_stages else 3, final=final)
+    if not four_stages:
+        stages.append(None)
+    return (*stages, total)
 
 
 def format_grenades_embed(data: dict[str, Any]) -> discord.Embed:
@@ -2224,7 +2192,9 @@ def format_grenades_embed(data: dict[str, Any]) -> discord.Embed:
             last_sq = sq
             body.append(f"**{squad_label(data, sq)}**")
 
-        e1, e2, e3, e4, total = _grenade_row_stats(history, gnick, four_stages=four)
+        e1, e2, e3, e4, total = _grenade_row_stats(
+            history, gnick, four_stages=four, final=is_kv_finished(data),
+        )
         nick_show = pad_nick(gnick, nick_w)
         time_cell = cell(fmt_voice_mmss(voice_secs.get(gnick.lower())), tcw) if show_time else None
         if four:
@@ -2251,6 +2221,7 @@ def format_grenades_embed(data: dict[str, Any]) -> discord.Embed:
         ]
         footer = f"{date_label} · карты: " + " · ".join(map_bits)
 
+    footer += " · время: только прослушиваемый канал; — нет замера"
     if len(full) <= 4090:
         embed.description = full
         embed.set_footer(text=footer)
@@ -3011,6 +2982,8 @@ def _persist_voice_totals() -> None:
         return
     try:
         data = load_db()
+        if data.get("session_date") != _voice_scan.get("match_date") or data.get("kv_finished"):
+            return
         stored = data.setdefault("voice_speak_seconds", {})
         for key, secs in _voice_scan.get("totals", {}).items():
             stored[key] = round(secs, 1)
@@ -3020,8 +2993,9 @@ def _persist_voice_totals() -> None:
 
 
 async def _persist_voice_totals_async() -> None:
-    """Keep synchronous SQLite checkpoint I/O off the Discord event loop."""
-    await asyncio.to_thread(_persist_voice_totals)
+    """Serialize load/modify/save with roster and grenade writes off the event loop."""
+    async with db_lock:
+        await asyncio.to_thread(_persist_voice_totals)
 
 
 def _percentile95(values: list[float]) -> float | None:
@@ -3215,6 +3189,10 @@ async def _voice_scan_poll_loop() -> None:
                 # только как fallback, если decode действительно умер.
                 decode_fallback = bool(discord_flag) and decode_dead
                 counted = gate_active or decode_fallback
+                # Record an observed silence, but never initialize users in other channels.
+                # Unknown decoder/speaking state is not a measurement of zero speech.
+                if not decode_dead or discord_flag is not None:
+                    _voice_scan["totals"].setdefault(key, 0.0)
                 if counted:
                     _voice_scan["totals"][key] = _voice_scan["totals"].get(key, 0.0) + tick_seconds
 
@@ -3354,7 +3332,7 @@ async def start_voice_scan(
     _voice_scan["manual"] = manual
     _voice_scan["totals"] = existing  # продолжаем сессию грен, если рестартовали mid-KV
     _voice_scan["report_channel_id"] = report_channel_id
-    _voice_scan["match_date"] = match_date if manual else None
+    _voice_scan["match_date"] = match_date if manual else data.get("session_date")
     _voice_scan["report_message_id"] = None
     with _voice_loud_lock:
         _voice_scan["noise_floor"] = {}
@@ -3536,7 +3514,7 @@ def voice_seconds_by_nick(
 
 
 def fmt_voice_mmss(secs: float | None) -> str:
-    if not secs:
+    if secs is None:
         return "-"
     m, s = divmod(int(secs), 60)
     return f"{m:02d}:{s:02d}"
@@ -3568,34 +3546,13 @@ def _scan_nicks_from_players(players: dict[str, Any]) -> list[str]:
 
 
 def _forward_fill_step(data: dict[str, Any], step_name: str) -> int:
-    """
-    Пропущенный mid-этап: скопировать последний снапшот gre в step_name.
-    Дельта этапа = 0, следующие этапы считаются от корректной базы.
-    """
+    """Mark an expired stage without fabricating lifetime-counter measurements."""
     if step_name not in STEP_ORDER:
         return 0
-    idx = STEP_ORDER.index(step_name)
-    history = data.setdefault("grenade_history", {})
-    n = 0
-    for nick, s in list(history.items()):
-        if not isinstance(s, dict):
-            continue
-        if step_name in s:
-            continue
-        prev_gre = None
-        for j in range(idx - 1, -1, -1):
-            k = STEP_ORDER[j]
-            if k in s and s[k] is not None:
-                prev_gre = s[k]
-                break
-        if prev_gre is None:
-            continue
-        s[step_name] = prev_gre
-        n += 1
     skipped = data.setdefault("skipped_grenade_steps", [])
     if step_name not in skipped:
         skipped.append(step_name)
-    return n
+    return 0
 
 
 async def fill_skipped_grenade_step(step_name: str) -> None:
@@ -3615,11 +3572,10 @@ async def fill_skipped_grenade_step(step_name: str) -> None:
     )
 
 
-async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
-    """
-    Скан gre-thr. API вне db_lock.
-    Если API totally fail — этап НЕ закрываем (можно /scan_now).
-    """
+async def run_grenade_step(
+    step_name: str, prev_step: str | None, *, close_incomplete: bool = False,
+) -> None:
+    """Retry only missing players; close incomplete data only when its window expires."""
     step_title = STEP_TITLES.get(step_name, step_name)
     nicks: list[str] = []
     empty_done = False
@@ -3639,9 +3595,12 @@ async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
         if _step_already_done(data.get("last_grenade_step"), step_name):
             return
 
-        nicks = _scan_nicks_from_players(data.get("players") or {})
+        session_day = data.get("session_date")
+        all_nicks = _scan_nicks_from_players(data.get("players") or {})
+        history = data.get("grenade_history") or {}
+        nicks = [nick for nick in all_nicks if (_hist_get(history, nick) or {}).get(step_name) is None]
 
-        if not nicks:
+        if not all_nicks:
             log(f"грены · {step_title} · нет ников в отрядах 1–6/Чемпионы", "warn")
             data["last_grenade_step"] = step_name
             if step_name == final_id:
@@ -3657,15 +3616,13 @@ async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
             await upsert_status_messages(data_snap, force=True)
         return
 
-    if not nicks:
-        return
-
-    # ---- API без lock ----
-    results = await scan_grenades(nicks)
+    # ---- API без lock; already successful samples retain their original value ----
+    results = await scan_grenades(nicks) if nicks else {}
     ok_n = sum(1 for gre in results.values() if gre is not None)
-    fail_n = len(results) - ok_n
+    fail_n = len(nicks) - ok_n
+    complete = fail_n == 0 or close_incomplete
 
-    if ok_n == 0:
+    if ok_n == 0 and not complete:
         log(
             f"скан · {step_title} · API fail у всех ({fail_n}) — этап НЕ закрыт, повтори /scan_now",
             "err",
@@ -3682,6 +3639,7 @@ async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
     )
     if (
         step_name == kv_final_step_id(session_dt)
+        and complete
         and voice_scan_is_active()
         and not _voice_scan.get("manual")
     ):
@@ -3691,6 +3649,9 @@ async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
     data_for_log: dict[str, Any] | None = None
     async with db_lock:
         data = load_db()
+        if data.get("session_date") != session_day:
+            log("гранаты: ответ предыдущей сессии отброшен", "warn")
+            return
         if _step_already_done(data.get("last_grenade_step"), step_name):
             return
         final_id = kv_final_step_id(
@@ -3705,12 +3666,15 @@ async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
                 continue
             if nick not in history:
                 history[nick] = {}
-            history[nick][step_name] = int(gre)
+            history[nick].setdefault(step_name, int(gre))
 
-        data["last_grenade_step"] = step_name
+        if complete:
+            data["last_grenade_step"] = step_name
+            if fail_n:
+                _forward_fill_step(data, step_name)
         if not data.get("grenade_date"):
             data["grenade_date"] = data.get("session_date") or today_msk_str()
-        if step_name == final_id:
+        if step_name == final_id and complete:
             data["kv_finished"] = True
         # save_db writes the normalized live checkpoint and, on the final step,
         # atomically publishes historical grenade/voice rows and closes live state.
@@ -3720,7 +3684,11 @@ async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
     if data_for_log is None:
         return
 
-    await upsert_status_messages(data_for_log, force=True)
+    # Database publication must not depend on Discord or text-file availability.
+    if not complete:
+        log(f"скан · {step_title} · сохранено {ok_n}, ждут повтора {fail_n}", "warn")
+        await upsert_status_messages(data_for_log, force=True)
+        return
 
     try:
         path = save_grenade_scan(data_for_log, step_name)
@@ -3728,6 +3696,7 @@ async def run_grenade_step(step_name: str, prev_step: str | None) -> None:
         log(f"скан · {step_title} · ok {ok_n}/{len(nicks)}{extra} · {path.name}", "kv")
     except Exception as e:
         log(f"скан файл: {e}", "err")
+    await upsert_status_messages(data_for_log, force=True)
 
 
 def _grenade_raw(s: dict[str, Any], key: str) -> int | None:
@@ -3749,35 +3718,10 @@ def _stage_diff(a: int | None, b: int | None) -> int | None:
 def _grenade_stage_values(
     s: dict[str, Any],
 ) -> tuple:
-    """v0..v4 raw + e1..e4 + total."""
-    v0 = _grenade_raw(s, "20:00")
-    v1 = _grenade_raw(s, "20:25")
-    v2 = _grenade_raw(s, "20:50")
-    v3 = _grenade_raw(s, "21:20")
-    v4 = _grenade_raw(s, "21:40")
-
-    def diff(a: int | None, b: int | None) -> int | None:
-        return _stage_diff(a, b)
-
-    def prev_snap(*vals: int | None) -> int | None:
-        for v in vals:
-            if v is not None:
-                return v
-        return None
-
-    e1 = diff(v1, v0)
-    e2 = diff(v2, prev_snap(v1, v0))
-    e3 = diff(v3, prev_snap(v2, v1, v0))
-    e4 = diff(v4, prev_snap(v3, v2, v1, v0))
-    parts = [x for x in (e1, e2, e3, e4) if x is not None]
-    if parts:
-        total: int | None = sum(parts)
-    elif v0 is not None and all(x is None for x in (v1, v2, v3, v4)):
-        total = 0
-    else:
-        last = prev_snap(v4, v3, v2, v1)
-        total = diff(last, v0) if last is not None else None
-    return v0, v1, v2, v3, v4, e1, e2, e3, e4, total
+    """v0..v4 raw + measured adjacent deltas + endpoint total."""
+    values = [_grenade_raw(s, key) for key in player_store.GRENADE_STEPS]
+    stages, total = player_store.grenade_summary(dict(zip(player_store.GRENADE_STEPS, values)), 4)
+    return (*values, *stages, total)
 
 
 def _saved_log_player_name(nick: str, player: dict[str, Any] | None) -> str:
@@ -3829,7 +3773,10 @@ def save_grenade_scan(data: dict[str, Any], step_name: str) -> Path:
             return (has, sq_n, sl_n, low)
         return (1, 999, 999, nick.lower())
 
-    nicks_sorted = sorted(history.keys(), key=sort_key)
+    nicks_sorted = sorted(set(history) | {
+        str(p["game_nick"]) for p in players.values()
+        if p.get("game_nick") and is_scan_roster_player(p)
+    }, key=sort_key)
 
     try:
         y, m, d0 = map(int, str(day).split("-")[:3])
@@ -3901,7 +3848,10 @@ def save_grenade_scan(data: dict[str, Any], step_name: str) -> Path:
             last_sq = sq
             lines.append(squad_label(data, sq))
 
-        e1, e2, e3, e4, total = _grenade_row_stats(history, nick, four_stages=four)
+        stages, total = player_store.grenade_summary(
+            _hist_get(history, nick) or {}, 4 if four else 3, final=is_final,
+        )
+        e1, e2, e3, e4 = stages if four else [*stages, None]
         nick_show = log_names[nick]
         if four:
             line = (
@@ -3914,45 +3864,14 @@ def save_grenade_scan(data: dict[str, Any], step_name: str) -> Path:
                 f"{_cols(cell(e1, cw), cell(e2, cw), cell(e3, cw), with_total=cell(total, cw))}"
             )
         if is_final:
-            # Ноль выводим явно, чтобы игроки без разговоров не выпадали из итога.
-            voice_time = fmt_voice_mmss(voice_secs.get(nick.lower(), 0.0))
-            if voice_time == "-":
-                voice_time = "00:00"
+            voice_time = fmt_voice_mmss(voice_secs.get(nick.lower()))
             line += f"{time_gap}{voice_time:>{time_w}}"
         lines.append(line)
 
     lines.append("")
 
-    if is_final:
-        guild_id = get_guild_id(data)
-        if guild_id is None:
-            raise ValueError("Нельзя сохранить итог КВ без guild_id")
-        report_rows: list[dict[str, Any]] = []
-        for nick in nicks_sorted:
-            player = nick_players.get(nick) or nick_players.get(nick.lower()) or {}
-            e1, e2, e3, e4, total = _grenade_row_stats(
-                history, nick, four_stages=four
-            )
-            report_rows.append(
-                {
-                    "raw_nick": nick,
-                    "discord_username": player.get("discord_username"),
-                    "squad_label": squad_label(data, player.get("squad")),
-                    "stages": [e1, e2, e3, e4] if four else [e1, e2, e3],
-                    "total_grenades": total,
-                    "voice_seconds": max(0, round(voice_secs.get(nick.lower(), 0.0))),
-                }
-            )
-        player_store.save_kv_daily_report(
-            PLAYER_DB_PATH,
-            day,
-            guild_id,
-            report_rows,
-            4 if four else 3,
-            source_key=f"runtime:{guild_id}:{day}",
-            generated_at_text=now.isoformat(),
-        )
-
+    # The authoritative report is published by save_db in the same transaction
+    # as finalization. This text export never rewrites it or later admin edits.
     text = "\n".join(lines) + "\n"
     out.write_text(text, encoding="utf-8")
 
@@ -4957,14 +4876,14 @@ _STATS_SCORE_WIDTH = 6
 _STATS_EFF_WIDTH = 5
 _STATS_TABLE_HEADER = (
     f"{'Ник':<{_STATS_NICK_WIDTH}} {'У':>3} {'С':>3} {'П':>3} "
-    f"{'СЧЁТ':>{_STATS_SCORE_WIDTH}} {'ГРЕНЫ':>5} {'ВРЕМЯ':>6} {'ЭФФ':>{_STATS_EFF_WIDTH}}"
+    f"{'СЧЁТ':>{_STATS_SCORE_WIDTH}} {'ГРЕНЫ':>5} {'ВРЕМЯ':>6} {'N':>7} {'ЭФФ':>{_STATS_EFF_WIDTH}}"
 )
 _STATS_TABLE_RULE = "─" * len(_STATS_TABLE_HEADER)
 _STATS_EFF_WEIGHTS = {
     "KD": 0.35,
     "assists": 0.15,
     "grenades": 0.20,
-    "voice_seconds": 0.20,
+    # Voice is displayed separately: a single channel cannot represent all squads.
     "score": 0.10,
 }
 _STATS_EFF_SQUADS = frozenset(range(1, 7))
@@ -4991,11 +4910,11 @@ def calc_stats_efficiencies(
     *,
     round_result: bool = True,
 ) -> list[float | None]:
-    """Calculate adaptive min-max EFF for roster rows in squads 1..6.
+    """Relative min-max EFF from unrounded means and a complete combat dataset.
 
-    ``rows`` contains (squad, metrics).  Deliberately use the rounded numeric
-    cells shown by /stats, so the rating can be reproduced from the table.
-    Squad 5 time is physically unavailable even if stale voice data exists.
+    All ranked players share the same metric weights. Missing values are not
+    zeros and do not increase the weight of a player's remaining metrics.
+    Voice is observational only, not a proxy for contribution.
     """
     prepared: list[dict[str, float | None] | None] = []
     for raw_squad, metrics in rows:
@@ -5006,16 +4925,15 @@ def calc_stats_efficiencies(
         if squad not in _STATS_EFF_SQUADS:
             prepared.append(None)
             continue
-        values = _stats_display_values(metrics)
+        values = {key: _stats_average(metrics.get(key)) for key in
+                  ("kills", "deaths", "assists", "score", "grenades", "voice_seconds")}
         kills, deaths = values.pop("kills"), values.pop("deaths")
         values["KD"] = (
             None if kills is None or deaths is None
             else kills / deaths if deaths > 0
             else kills
         )
-        if squad == 5:
-            values["voice_seconds"] = None
-        prepared.append(values)
+        prepared.append(values if all(values.get(key) is not None for key in _STATS_EFF_WEIGHTS) else None)
 
     bounds: dict[str, tuple[float, float] | None] = {}
     for key in _STATS_EFF_WEIGHTS:
@@ -5062,9 +4980,10 @@ def _fmt_stats_row(
     eff = "—" if efficiency is None else f"{efficiency:.1f}"
     grenades = _fmt_stats_number(_stats_average(metrics.get("grenades")))
     voice_time = _fmt_stats_time(_stats_average(metrics.get("voice_seconds")))
+    sample_count = f"{int((metrics.get('kills') or [0, 0])[1])}/{int((metrics.get('grenades') or [0, 0])[1])}"
     return (
         f"{_fmt_stats_nick(nick)} {kills:>3} {deaths:>3} {assists:>3} "
-        f"{score:>{_STATS_SCORE_WIDTH}} {grenades:>5} {voice_time:>6} {eff:>{_STATS_EFF_WIDTH}}"
+        f"{score:>{_STATS_SCORE_WIDTH}} {grenades:>5} {voice_time:>6} {sample_count:>7} {eff:>{_STATS_EFF_WIDTH}}"
     )
 
 
@@ -5077,45 +4996,23 @@ def build_stats_embeds(
     bindings: dict[str, int] = collected.get("bindings") or {}
     completed_dates = set(collected.get("completed_dates") or set())
 
-    # Add only the unfinished/current JSON session for an undated query. Final
-    # logs are authoritative, while dated queries must stay within SQLite dates.
-    session_date = str(data.get("session_date") or "").strip()
+    # Ongoing counters stay in the live grenade table, not in completed-KV averages.
     dated_query = bool(collected.get("date_from") or collected.get("date_to"))
-    if not dated_query and (not session_date or session_date not in completed_dates):
-        history = data.get("grenade_history") or {}
-        voice = data.get("voice_speak_seconds") or {}
-        for did, player in (data.get("players") or {}).items():
-            player_id = bindings.get(str(did))
-            if player_id is None:
-                continue
-            bucket = samples.setdefault(player_id, {})
 
-            def add(metric: str, value: float) -> None:
-                pair = bucket.setdefault(metric, [0.0, 0.0])
-                pair[0] += float(value)
-                pair[1] += 1.0
-
-            nick = str(player.get("game_nick") or "").strip()
-            stats = _hist_get(history, nick)
-            if isinstance(stats, dict):
-                total = _grenade_stage_values(stats)[-1]
-                if total is not None:
-                    add("grenades", total)
-            if str(did) in voice:
-                raw_seconds = voice.get(str(did))
-                if isinstance(raw_seconds, (int, float)) and not isinstance(raw_seconds, bool):
-                    add("voice_seconds", float(raw_seconds))
-
-    players = [
-        (did, player)
-        for did, player in (data.get("players") or {}).items()
-        if str(player.get("game_nick") or "").strip()
-    ]
+    historical_roster = collected.get("historical_roster")
+    if dated_query and historical_roster is not None:
+        players = [(str(p["player_id"]), p) for p in historical_roster]
+    else:
+        players = [
+            (did, player)
+            for did, player in (data.get("players") or {}).items()
+            if str(player.get("game_nick") or "").strip()
+        ]
     players.sort(key=player_squad_sort_key)
 
     roster_rows: list[tuple[str, dict[str, Any], dict[str, list[float]]]] = []
     for did, player in players:
-        player_id = bindings.get(str(did))
+        player_id = player.get("player_id", bindings.get(str(did)))
         metrics = samples.get(player_id, {}) if player_id is not None else {}
         roster_rows.append((str(player.get("game_nick") or "?"), player, metrics))
     efficiencies = calc_stats_efficiencies([
@@ -5144,10 +5041,11 @@ def build_stats_embeds(
 
     for (nick, player, metrics), efficiency in zip(roster_rows, efficiencies):
         squad = player.get("squad")
-        if squad != current_key:
+        title = (player.get("squad_label") or squad_label(data, squad)).rstrip(":")
+        if (squad, title) != current_key:
             flush_group()
-            current_key = squad
-            current_title = squad_label(data, squad).rstrip(":")
+            current_key = (squad, title)
+            current_title = title
         current_rows.append((nick, metrics, efficiency))
     flush_group()
 
@@ -5191,7 +5089,7 @@ def build_stats_embeds(
             timestamp=now_msk(),
         )
         embed.set_footer(
-            text="У/С/П/СЧЁТ — за скан таблицы · гранаты/время — за завершённую КВ-сессию · — нет данных"
+            text="N = табы/КВ с замером гранат · ЭФФ относительный, без войса; нужны все боевые метрики · время только в прослушиваемом канале · — нет данных"
         )
         result.append(embed)
     return result
@@ -5227,7 +5125,7 @@ async def cmd_stats(interaction: discord.Interaction, date: str | None = None, d
     embeds = build_stats_embeds(data, collected)
     if start:
         for embed in embeds:
-            embed.set_footer(text=f"У/С/П/СЧЁТ, ЭФФ и дневные ГРЕНЫ/ВРЕМЯ: данные SQLite за {start}…{end}.")
+            embed.set_footer(text=f"{start}…{end} · отряды на последний КВ игрока в периоде · N: табы/КВ с замером гранат · ЭФФ без войса; все боевые метрики обязательны · время только в прослушиваемом канале")
     await interaction.followup.send(embeds=embeds)
 
 
@@ -6097,6 +5995,8 @@ async def schedule_loop():
         # Проверяется каждые 20 секунд независимо от флагов выполненных этапов.
         scan_window_open = steps[0][1] <= t < steps[-1][1]
         data_watch = load_db()
+        if t >= steps[-1][1] and voice_scan_is_active() and not _voice_scan.get("manual"):
+            await stop_voice_scan()  # API retries must not extend the speech interval
         scan_expected = (
             scan_window_open
             and data_watch.get("session_date") == today_msk_str()
@@ -6196,7 +6096,7 @@ async def schedule_loop():
                     else:
                         log(f"voice_scan · авто-старт не удался: {msg}", "warn")
 
-            await run_grenade_step(step_name, prev)
+            await run_grenade_step(step_name, prev, close_incomplete=late > 5)
             after = load_db()
             after_last = after.get("last_grenade_step")
             if _step_already_done(after_last, step_name):
@@ -6435,12 +6335,14 @@ def main():
         raise SystemExit("  ✗  нет DISCORD_TOKEN в .env")
     if not CLIENT_SECRET:
         log("STALCRAFT_CLIENT_SECRET пуст — грены не будут сканиться", "warn")
+    player_store.recover_daily_reports(PLAYER_DB_PATH)
     start_admin_panel()
 
     _orig_close = bot.close
 
     async def _close_with_http() -> None:
         await stop_sheet_watcher()
+        await stop_voice_scan()
         await close_http()
         await _orig_close()
 

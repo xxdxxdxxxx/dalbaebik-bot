@@ -164,7 +164,7 @@ def main() -> None:
         assert bot._fmt_stats_number(bot._stats_average(unicode_metrics['score'])) == '3521'
         unicode_row = bot._fmt_stats_row('Стальной_алекс_очень_длинный', unicode_metrics)
         assert 'Стальной_алек…' in unicode_row and '  3521 ' in unicode_row
-        assert bot._STATS_TABLE_HEADER.split() == ['Ник', 'У', 'С', 'П', 'СЧЁТ', 'ГРЕНЫ', 'ВРЕМЯ', 'ЭФФ']
+        assert bot._STATS_TABLE_HEADER.split() == ['Ник', 'У', 'С', 'П', 'СЧЁТ', 'ГРЕНЫ', 'ВРЕМЯ', 'N', 'ЭФФ']
         assert len(bot._STATS_TABLE_RULE) == len(bot._STATS_TABLE_HEADER)
         # A dated /stats view is DB-only: current JSON snapshot must not leak into it.
         dated_collected = player_store.collect_stats_samples(
@@ -176,8 +176,8 @@ def main() -> None:
                       'grenade_history': {dated_nick: {'20:00': 1, '20:25': 9}},
                       'voice_speak_seconds': {'777': 123.0}}
         dated_text = '\n'.join(embed.description or '' for embed in bot.build_stats_embeds(dated_data, dated_collected))
-        dated_line = next(line for line in dated_text.splitlines() if line.startswith(dated_nick))
-        assert dated_line.split()[1:] == ['\u2014'] * 7
+        assert dated_nick not in dated_text  # no current roster is fabricated for a historical day
+        assert not dated_collected['historical_roster']
 
         # EFF: displayed rounded averages feed KD/min-max; missing values never become zero.
         def eff_metrics(k, d, a, score, gren, seconds):
@@ -195,19 +195,19 @@ def main() -> None:
             (None, eff_metrics(999, 1, 999, 999, 999, 999)),
         ]
         efficiencies = bot.calc_stats_efficiencies(eff_rows)
-        assert efficiencies[0] == 0.0 and efficiencies[1] == 82.5
-        assert efficiencies[2] == 64.0 and efficiencies[3] == 0.0
-        assert efficiencies[4] == 78.1 and efficiencies[5] == 0.0
+        assert efficiencies[0] == 0.0 and efficiencies[1] == 78.1
+        assert efficiencies[2] == 67.5 and efficiencies[3] is None
+        assert efficiencies[4] == 78.1 and efficiencies[5] is None
         assert efficiencies[6:] == [None, None]
         # Identical min=max produces neutral 50 for every available metric.
-        tied = bot.calc_stats_efficiencies([(1, eff_metrics(5, 0, 2, None, None, None))])
+        tied = bot.calc_stats_efficiencies([(1, eff_metrics(5, 0, 2, 100, 10, None))])
         assert tied == [50.0]
-        # A value available only to one player has neutral norm=50 and is absent from others' weights.
+        # Incomplete players cannot get a rating by redistributing missing weights.
         partial = bot.calc_stats_efficiencies([
             (1, eff_metrics(1, 1, None, None, None, None)),
             (2, eff_metrics(3, 1, 8, None, None, None)),
         ])
-        assert partial == [0.0, 85.0]
+        assert partial == [None, None]
         # Half-up EFF rounding is explicit at an exact x.x5 boundary.
         original_weights = bot._STATS_EFF_WEIGHTS
         try:
@@ -233,10 +233,10 @@ def main() -> None:
         sort_collected = {
             'bindings': {did: i for i, did in enumerate(sort_data['players'], start=1)},
             'samples': {
-                1: eff_metrics(1, 1, None, None, None, None),
-                2: eff_metrics(3, 1, None, None, None, None),
-                4: eff_metrics(3, 1, None, None, None, None),
-                5: eff_metrics(2, 1, None, None, None, None),
+                1: eff_metrics(1, 1, 2, 100, 10, None),
+                2: eff_metrics(3, 1, 2, 100, 10, None),
+                4: eff_metrics(3, 1, 2, 100, 10, None),
+                5: eff_metrics(2, 1, 2, 100, 10, None),
             },
             'completed_dates': set(),
         }
@@ -553,7 +553,9 @@ def main() -> None:
             bot.DISCORD_TOKEN = 'test-token-not-a-real-secret'
             bot.CLIENT_SECRET = 'test-client-secret'
             bot.bot.run = lambda token, **kwargs: run_calls.append((token, kwargs))
-            bot.main()
+            from unittest.mock import patch
+            with patch.object(bot, 'start_admin_panel'):
+                bot.main()
         finally:
             (bot.PLAYER_DB_PATH, bot.LEGACY_JSON_PATH, bot.DISCORD_TOKEN,
              bot.CLIENT_SECRET, bot.bot.run, bot.bot.close) = original_values

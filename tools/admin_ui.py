@@ -542,7 +542,7 @@ def day_save(date: str):
             con.execute("COMMIT")
             return redirect(url_for("day", date=date, deleted=1, mode=mode))
 
-        report = one(con, """SELECT id FROM kv_daily_reports WHERE match_date=?
+        report = one(con, """SELECT id,stage_count FROM kv_daily_reports WHERE match_date=?
                              ORDER BY id DESC LIMIT 1""", (date,))
 
         # удаление строки игрока (гранаты+войс за день)
@@ -581,7 +581,7 @@ def day_save(date: str):
             for key, value in form.items():
                 if key.startswith("v") and key[1:].isdigit():
                     num = _to_int(value)
-                    if num is not None and num >= 0:
+                    if not str(value).strip() or (num is not None and num >= 0):
                         con.execute("""UPDATE kv_daily_players SET voice_seconds=?
                                        WHERE report_id=? AND row_no=?""",
                                     (num, rid, int(key[1:])))
@@ -596,7 +596,7 @@ def day_save(date: str):
                 row_no = int(key[1:])
                 cur = one(con, """SELECT total_grenades FROM kv_daily_players
                                   WHERE report_id=? AND row_no=?""", (rid, row_no))
-                if cur is None or (cur["total_grenades"] or 0) == num:
+                if cur is None or cur["total_grenades"] == num:
                     continue
                 con.execute("""DELETE FROM kv_daily_grenade_stages
                                WHERE report_id=? AND row_no=?""", (rid, row_no))
@@ -609,8 +609,18 @@ def day_save(date: str):
                 row_str, stage_str = key[1:].split("_", 1)
                 if not row_str.isdigit() or not stage_str.isdigit():
                     continue
-                stage_updates.setdefault(int(row_str), {})[int(stage_str)] = _to_int(value)
+                val = _to_int(value)
+                if not 1 <= int(stage_str) <= report["stage_count"]:
+                    continue
+                if str(value).strip() and (val is None or val < 0):
+                    continue
+                stage_updates.setdefault(int(row_str), {})[int(stage_str)] = val
             for row_no, stages in stage_updates.items():
+                existing = {r["stage_no"]: r["grenades"] for r in con.execute(
+                    "SELECT stage_no,grenades FROM kv_daily_grenade_stages WHERE report_id=? AND row_no=?",
+                    (rid, row_no))}
+                if all(existing.get(stage_no) == val for stage_no, val in stages.items()):
+                    continue  # retain an independently measured endpoint total
                 for stage_no, val in stages.items():
                     if val is None:
                         con.execute("""DELETE FROM kv_daily_grenade_stages
@@ -622,10 +632,11 @@ def day_save(date: str):
                                        ON CONFLICT(report_id,row_no,stage_no)
                                        DO UPDATE SET grenades=excluded.grenades""",
                                     (rid, row_no, stage_no, val))
-                # «Всего» = сумма этапов
-                total = one(con, """SELECT COALESCE(SUM(grenades),0) t
+                # A partial set of stages cannot define a complete daily total.
+                aggregate = one(con, """SELECT SUM(grenades) t,COUNT(grenades) n
                                     FROM kv_daily_grenade_stages
-                                    WHERE report_id=? AND row_no=?""", (rid, row_no))["t"]
+                                    WHERE report_id=? AND row_no=?""", (rid, row_no))
+                total = aggregate["t"] if aggregate["n"] == report["stage_count"] else None
                 con.execute("""UPDATE kv_daily_players SET total_grenades=?
                                WHERE report_id=? AND row_no=?""", (total, rid, row_no))
         con.execute("COMMIT")

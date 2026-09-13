@@ -12,7 +12,38 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
+
+GRENADE_STEPS = ("20:00", "20:25", "20:50", "21:20", "21:40")
+
+
+def grenade_summary(stats: dict[str, Any], stage_count: int, *, final: bool = False):
+    """Only adjacent measurements define a stage; endpoints define the total."""
+    values = [stats.get(key) for key in GRENADE_STEPS[:stage_count + 1]]
+
+    def difference(left, right):
+        if left is None or right is None:
+            return None
+        delta = int(right) - int(left)
+        return delta if delta >= 0 else None
+
+    stages = [difference(a, b) for a, b in zip(values, values[1:])]
+    measured = [value for value in values if value is not None]
+    end = values[-1] if final else next((v for v in reversed(values[1:]) if v is not None), None)
+    total = difference(values[0], end)
+    if any(b < a for a, b in zip(measured, measured[1:])):
+        total = None  # a reset of the lifetime counter invalidates the interval
+    return stages, total
+
+
+def validate_grenade_total(stages, total) -> None:
+    known = [v for v in stages if v is not None]
+    if len(known) == len(stages):
+        if total != sum(known):
+            raise ValueError("ИТОГ does not equal stage deltas")
+    elif total is not None and total < sum(known):
+        raise ValueError("ИТОГ is smaller than known stage deltas")
+
 
 def parse_match_date(value: str) -> str:
     """Parse a KV date without relying on the system locale."""
@@ -206,6 +237,16 @@ CREATE TABLE IF NOT EXISTS runtime_sessions(
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_sessions_current
  ON runtime_sessions(guild_id, session_date DESC);
+CREATE TABLE IF NOT EXISTS session_roster(
+ session_id INTEGER NOT NULL REFERENCES runtime_sessions(id) ON DELETE CASCADE,
+ player_id INTEGER NOT NULL REFERENCES players(id),
+ discord_id TEXT,
+ game_nick TEXT NOT NULL,
+ squad_id INTEGER,
+ slot INTEGER,
+ squad_label TEXT,
+ PRIMARY KEY(session_id, player_id)
+);
 CREATE TABLE IF NOT EXISTS attendance(
  session_id INTEGER NOT NULL REFERENCES runtime_sessions(id) ON DELETE CASCADE,
  player_id INTEGER NOT NULL REFERENCES players(id),
@@ -880,7 +921,7 @@ def _json_text(value: Any) -> str:
 # Keep every key present even while upgrading an older/partially-created database.
 STATUS_COUNT_TABLES = (
     "players", "discord_bindings", "player_aliases", "player_guilds",
-    "roster_memberships", "roster_removals", "runtime_sessions", "attendance", "discord_message_refs",
+    "roster_memberships", "roster_removals", "runtime_sessions", "session_roster", "attendance", "discord_message_refs",
     "session_maps", "absent_dm_deliveries", "live_grenade_state", "voice_checkpoints",
     "bot_kv_state", "grenade_stats", "grenade_session_stats", "voice_stats",
     "scans", "scan_players", "kv_daily_reports", "kv_daily_players",
@@ -1051,6 +1092,61 @@ def load_bot_snapshot(db_path: Path | str, guild_id: int | None = None) -> dict[
         return data
 
 
+def _ensure_final_daily_report(con: sqlite3.Connection, session_id: int) -> None:
+    """Publish once inside the finalization transaction; retain later manual edits."""
+    session = con.execute("SELECT * FROM runtime_sessions WHERE id=?", (session_id,)).fetchone()
+    gid, day = int(session["guild_id"]), str(session["session_date"])
+    if con.execute("SELECT 1 FROM kv_daily_reports WHERE guild_id=? AND match_date=?", (gid, day)).fetchone():
+        return
+    source = f"runtime-kv:{gid}:{day}"
+    stage_count = 4 if datetime.fromisoformat(day).weekday() == 6 else 3
+    history: dict[int, dict[str, int]] = {}
+    for row in con.execute("SELECT player_id,stat_key,value FROM grenade_session_stats WHERE source_key=?", (source,)):
+        history.setdefault(int(row["player_id"]), {})[row["stat_key"]] = row["value"]
+    voice = {int(r[0]): float(r[1]) for r in con.execute(
+        "SELECT player_id,SUM(seconds) FROM voice_stats WHERE source_key=? AND player_id IS NOT NULL GROUP BY player_id",
+        (source,))}
+    roster = {int(r["player_id"]): dict(r) for r in con.execute(
+        "SELECT * FROM session_roster WHERE session_id=?", (session_id,))}
+    ids = set(history) | set(voice) | set(roster)
+    rows = []
+    for pid in sorted(ids):
+        nick = con.execute("SELECT canonical_nick FROM players WHERE id=?", (pid,)).fetchone()[0]
+        member = roster.get(pid, {})
+        stages, total = grenade_summary(history.get(pid, {}), stage_count, final=True)
+        rows.append((pid, member.get("game_nick", nick), member.get("squad_label"),
+                     None if pid not in voice else int(voice[pid] + 0.5), stages, total))
+    digest = hashlib.sha256(_json_text(rows).encode("utf-8")).hexdigest()
+    rid = con.execute("""INSERT INTO kv_daily_reports
+        (match_date,guild_id,source_path,source_sha256,stage_count,format_version)
+        VALUES(?,?,?,?,?,2)""", (day, gid, f"runtime:{gid}:{day}", digest, stage_count)).lastrowid
+    for row_no, (pid, nick, label, seconds, stages, total) in enumerate(rows, 1):
+        con.execute("""INSERT INTO kv_daily_players
+            (report_id,row_no,player_id,raw_nick,squad_label,voice_seconds,total_grenades)
+            VALUES(?,?,?,?,?,?,?)""", (rid, row_no, pid, nick, label, seconds, total))
+        con.executemany("""INSERT INTO kv_daily_grenade_stages
+            (report_id,row_no,stage_no,grenades) VALUES(?,?,?,?)""",
+            [(rid, row_no, i, value) for i, value in enumerate(stages, 1)])
+
+
+def recover_daily_reports(db_path: Path | str) -> int:
+    """Recover missing reports after older non-atomic finalizations, not existing edits."""
+    ensure_schema(db_path)
+    with closing(connect(db_path)) as con:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            missing = list(con.execute("""SELECT id FROM runtime_sessions s WHERE finished=1
+                AND NOT EXISTS (SELECT 1 FROM kv_daily_reports r
+                    WHERE r.guild_id=s.guild_id AND r.match_date=s.session_date)"""))
+            for row in missing:
+                _ensure_final_daily_report(con, int(row[0]))
+            con.commit()
+            return len(missing)
+        except Exception:
+            con.rollback()
+            raise
+
+
 def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int | None = None) -> int:
     """Transactionally persist the legacy-shaped runtime object to SQLite only."""
     ensure_schema(db_path)
@@ -1141,6 +1237,19 @@ def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int |
                      _json_text(data.get("skipped_grenade_steps") or [])))
                 sid = int(con.execute("SELECT id FROM runtime_sessions WHERE guild_id=? AND session_date=?",
                                       (gid, day)).fetchone()[0])
+                if data.get("kv_session_active") and not data.get("kv_finished"):
+                    for did, pid in current.items():
+                        member = data["players"][did]
+                        squad = member.get("squad")
+                        label = ("Без отряда" if squad is None else "Чемпионы" if squad == 99
+                                 else f"Отряд {squad}")
+                        name = (data.get("squad_names") or {}).get(str(squad))
+                        if name and name != label:
+                            label += f" · {name}"
+                        con.execute("""INSERT OR IGNORE INTO session_roster
+                            (session_id,player_id,discord_id,game_nick,squad_id,slot,squad_label)
+                            VALUES(?,?,?,?,?,?,?)""",
+                            (sid, pid, did, member["game_nick"], squad, member.get("slot"), label))
                 for table in ("attendance", "session_maps", "absent_dm_deliveries", "live_grenade_state", "voice_checkpoints"):
                     con.execute(f"DELETE FROM {table} WHERE session_id=?", (sid,))
                 con.executemany("INSERT INTO attendance(session_id,player_id,came,in_voice) VALUES(?,?,?,?)",
@@ -1192,6 +1301,7 @@ def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int |
                             (source_key,discord_id,player_id,seconds,session_date)
                             SELECT ?,discord_id,player_id,seconds,? FROM voice_checkpoints
                             WHERE session_id=?""", (voice_source, day, sid))
+                    _ensure_final_daily_report(con, sid)
                     con.execute("UPDATE runtime_sessions SET active=0 WHERE id=?", (sid,))
                     con.execute("DELETE FROM live_grenade_state WHERE session_id=?", (sid,))
                     con.execute("DELETE FROM voice_checkpoints WHERE session_id=?", (sid,))
@@ -1432,6 +1542,7 @@ def finalize_runtime_session(db_path: Path | str, guild_id: int, session_date: s
                 "SELECT COUNT(*) FROM voice_checkpoints WHERE session_id=?", (sid,)
             ).fetchone()[0])
             if not grenade_count and not voice_count and bool(session["finished"]):
+                _ensure_final_daily_report(con, sid)
                 con.commit()
                 return {"grenades": 0, "voice": 0}
 
@@ -1445,6 +1556,7 @@ def finalize_runtime_session(db_path: Path | str, guild_id: int, session_date: s
                 (source_key,discord_id,player_id,seconds,session_date)
                 SELECT ?,discord_id,player_id,seconds,? FROM voice_checkpoints
                 WHERE session_id=?""", (voice_source, day, sid))
+            _ensure_final_daily_report(con, sid)
             con.execute("""UPDATE runtime_sessions SET active=0,finished=1,
                 updated_at=CURRENT_TIMESTAMP WHERE id=?""", (sid,))
             con.execute("DELETE FROM live_grenade_state WHERE session_id=?", (sid,))
@@ -1633,7 +1745,7 @@ def parse_kv_daily_report(path: Path | str) -> dict[str, Any]:
     cell = r"(?:—|-|\d+)"
     row_re = re.compile(
         rf"^(?P<name>.+?)\s+(?P<values>{cell}(?:\s+{cell}){{{stage_count}}})"
-        + (r"\s+(?P<voice>\d+:\d{2})" if has_voice else "") + r"\s*$"
+        + (r"\s+(?P<voice>\d+:\d{2}|—|-)" if has_voice else "") + r"\s*$"
     )
     for line_no, line in enumerate(lines[header_index + 1:], start=header_index + 2):
         stripped = line.strip()
@@ -1654,13 +1766,9 @@ def parse_kv_daily_report(path: Path | str) -> dict[str, Any]:
         tokens = match.group("values").split()
         values = [None if token in ("—", "-") else int(token) for token in tokens]
         stages, total = values[:-1], values[-1]
-        known = [value for value in stages if value is not None]
-        if known and total != sum(known):
-            raise ValueError(f"ИТОГ does not equal stage deltas at {source}:{line_no}")
-        if not known and total not in (None, 0):
-            raise ValueError(f"ИТОГ exists without stage values at {source}:{line_no}")
+        validate_grenade_total(stages, total)
         voice_seconds = None
-        if has_voice:
+        if has_voice and match.group("voice") not in ("—", "-"):
             minutes, seconds = map(int, match.group("voice").split(":"))
             if seconds >= 60:
                 raise ValueError(f"invalid voice duration at {source}:{line_no}")
@@ -1797,10 +1905,7 @@ def save_kv_daily_report(
         known = [value for value in clean_stages if value is not None]
         total = row.get("total_grenades")
         clean_total = None if total is None else max(0, int(total))
-        if known and clean_total != sum(known):
-            raise ValueError(f"{nick}: total_grenades does not equal stage deltas")
-        if not known and clean_total not in (None, 0):
-            raise ValueError(f"{nick}: total_grenades exists without stage deltas")
+        validate_grenade_total(clean_stages, clean_total)
         voice = row.get("voice_seconds")
         normalized_rows.append(
             {
@@ -1876,6 +1981,7 @@ def collect_kv_daily_stats(db_path, date_from=None, date_to=None, guild_id=None)
         raise ValueError("Дата «с» не может быть позже даты «по»")
     samples: dict[int, dict[str, list[float]]] = {}
     completed_dates: set[str] = set()
+    historical: dict[int, dict[str, Any]] = {}
 
     def add(player_id, metric, value):
         if player_id is None or value is None:
@@ -1924,17 +2030,42 @@ def collect_kv_daily_stats(db_path, date_from=None, date_to=None, guild_id=None)
             report_filters.append("r.guild_id=?")
             report_params.append(int(guild_id))
         report_where = " WHERE " + " AND ".join(report_filters) if report_filters else ""
-        report_sql = """SELECT r.match_date,p.player_id,p.total_grenades,p.voice_seconds
+        report_sql = """SELECT r.match_date,p.player_id,p.raw_nick,p.squad_label,p.total_grenades,p.voice_seconds
                         FROM kv_daily_reports r
-                        JOIN kv_daily_players p ON p.report_id=r.id""" + report_where
+                        JOIN kv_daily_players p ON p.report_id=r.id""" + report_where + " ORDER BY r.match_date,r.id"
         for row in con.execute(report_sql, report_params):
             completed_dates.add(str(row["match_date"]))
             add(row["player_id"], "grenades", row["total_grenades"])
             add(row["player_id"], "voice_seconds", row["voice_seconds"])
+            if row["player_id"] is not None:
+                label = row["squad_label"] or "Отряд неизвестен"
+                squad_match = re.match(r"Отряд (\d+)\b", label)
+                squad = int(squad_match[1]) if squad_match else (99 if label.startswith("Чемпионы") else None)
+                historical[int(row["player_id"])] = {
+                    "player_id": int(row["player_id"]), "game_nick": row["raw_nick"],
+                    "squad": squad, "slot": None, "squad_label": label,
+                }
+        if start:
+            for row in con.execute("SELECT id,canonical_nick FROM players"):
+                if int(row["id"]) in samples:
+                    historical.setdefault(int(row["id"]), {
+                        "player_id": int(row["id"]), "game_nick": row["canonical_nick"],
+                        "squad": None, "slot": None, "squad_label": "Отряд неизвестен",
+                    })
+            scope = " AND s.guild_id=?" if guild_id is not None else ""
+            params = [start, end] + ([int(guild_id)] if guild_id is not None else [])
+            for row in con.execute("""SELECT sr.* FROM session_roster sr
+                    JOIN runtime_sessions s ON s.id=sr.session_id
+                    WHERE s.session_date>=? AND s.session_date<=?""" + scope + " ORDER BY s.session_date,s.id", params):
+                historical[int(row["player_id"])] = {
+                    "player_id": int(row["player_id"]), "game_nick": row["game_nick"],
+                    "squad": row["squad_id"], "slot": row["slot"], "squad_label": row["squad_label"],
+                }
     return {
         "samples": samples,
         "bindings": bindings,
         "completed_dates": completed_dates,
         "date_from": start,
         "date_to": end,
+        "historical_roster": list(historical.values()) if start else None,
     }
