@@ -94,14 +94,14 @@ def stage_label(n: Any) -> str:
 PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} · Clan Analytics</title><style>
 :root{{--bg:#f7f7f5;--panel:#fff;--soft:#f1f1ef;--line:#e5e5e2;--text:#242424;--dim:#787774;--blue:#2783de;--blue2:#e5f2fc;--green:#46a171;--red:#e56458}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#191919;--panel:#202020;--soft:#292928;--line:#3b3b39;--text:#fff;--dim:#aaa;--blue:#5e9fe8;--blue2:#253343;--green:#72bc8f;--red:#e97366}}}}
-*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}}a{{color:inherit;text-decoration:none}}a:hover{{color:var(--blue)}}
-.top{{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line)}}.topin,.wrap{{width:min(1180px,calc(100% - 32px));margin:auto}}.topin{{height:64px;display:flex;align-items:center;justify-content:space-between}}.brand{{font-weight:750;display:flex;align-items:center;gap:9px}}.logo{{width:30px;height:30px;border-radius:8px;background:var(--text);color:var(--bg);display:grid;place-items:center;font-size:12px}}.nav{{display:flex;gap:4px;padding:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px}}.nav a{{min-height:36px;padding:0 13px;display:flex;align-items:center;border-radius:7px;color:var(--dim);font-weight:650}}.nav a.active{{background:var(--blue2);color:var(--blue)}}
-.wrap{{padding:34px 0 70px}}h1{{font-size:30px;line-height:1.15;letter-spacing:-.025em;margin:0 0 6px}}h2{{font-size:18px;margin:30px 0 12px}}.pagehead{{display:flex;justify-content:space-between;align-items:end;gap:16px;margin-bottom:24px}}.subtitle,.hint,.dim,.chips{{color:var(--dim)}}
-.metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 26px}}.metric,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.panel{{overflow:auto}}.metric{{padding:16px}}.metric label{{display:block;color:var(--dim);font-size:13px;font-weight:650}}.metric b{{display:block;font-size:26px;letter-spacing:-.03em;margin-top:5px}}.panel{{padding:14px;margin-bottom:14px}}
-.actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:40px;padding:0 13px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 14px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
-.scroll{{overflow:auto;max-height:68vh;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 11px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:var(--blue2)}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:38px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:70px;text-align:center}}input#flt{{width:min(100%,300px)}}
-.chips{{margin:10px 0 18px}}.chip{{padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:3px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:4px 0 14px}}.seg a,.seg b{{min-height:34px;padding:0 12px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:14px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:10px 0}}nav.days{{margin:12px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:12px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;margin:20px 0 7px}}
-@media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px)}}.topin{{height:58px}}.brand .txt{{display:none}}.wrap{{padding-top:24px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:25px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
+*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}}a{{color:inherit;text-decoration:none}}a:hover{{color:var(--blue)}}
+.top{{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line)}}.topin,.wrap{{width:min(1180px,calc(100% - 32px));margin:auto}}.topin{{height:50px;display:flex;align-items:center;justify-content:space-between}}.brand{{font-weight:750;display:flex;align-items:center;gap:9px}}.logo{{width:26px;height:26px;border-radius:8px;background:var(--text);color:var(--bg);display:grid;place-items:center;font-size:12px}}.nav{{display:flex;gap:4px;padding:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px}}.nav a{{min-height:30px;padding:0 10px;display:flex;align-items:center;border-radius:7px;color:var(--dim);font-weight:650}}.nav a.active{{background:var(--blue2);color:var(--blue)}}
+.wrap{{padding:20px 0 48px}}h1{{font-size:24px;line-height:1.15;letter-spacing:-.02em;margin:0 0 4px}}h2{{font-size:15px;margin:18px 0 8px}}.pagehead{{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-bottom:14px}}.subtitle,.hint,.dim,.chips{{color:var(--dim)}}
+.metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 16px}}.metric,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.panel{{overflow:auto}}.metric{{padding:10px 12px}}.metric label{{display:block;color:var(--dim);font-size:11px;font-weight:650}}.metric b{{display:block;font-size:20px;letter-spacing:-.03em;margin-top:2px}}.panel{{padding:8px;margin-bottom:10px}}
+.actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 12px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
+.scroll{{overflow:auto;max-height:68vh;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:var(--blue2)}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}input#flt{{width:min(100%,300px)}}
+.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}
+@media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px)}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
 </style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a></nav></div></header><main class="wrap">{body}</main></body></html>"""
 
 
@@ -141,7 +141,7 @@ def index():
         m = month_ru(r["date"])
         if m != cur_month:
             cur_month = m
-            out.append(f"<div class='month'>{esc(m)}</div>")
+            out.append(f"<tr><td class='month' colspan='5'>{esc(m)}</td></tr>")
         out.append(
             f"<tr><td class='nick'><a href='{url_for('day', date=r['date'])}'>"
             f"{fmt_date_ru(r['date'])}</a></td>"
@@ -162,7 +162,7 @@ def index():
             + (f"<a class='button primary' href='{url_for('day',date=latest)}'>Последний КВ</a>" if latest else "")
             + "</div>" + summary
             + "<div class='panel'><table><thead><tr><th>Дата</th><th>Табов</th>"
-            "<th>Игроков</th><th>💣 Гранат</th><th>🎙 Войс</th></tr></thead>"
+            "<th>Игроков</th><th>Гранаты</th><th>Войс</th></tr></thead>"
             f"<tbody>{''.join(out)}</tbody></table></div>"
             f"<div class='actions'><a class='button' href='{url_for('players')}'>Все игроки</a></div>")
     return render("Дни", body)
@@ -444,11 +444,11 @@ def day(date: str):
         banner = "<div class='banner ok-pill'>🗑 Удалено</div>"
 
     chips = ("<div class='chips'>"
-             f"<span class='chip'>📄 табов: {len(scans)}</span>"
-             f"<span class='chip'>👤 игроков: {len(krows)}</span>"
-             f"<span class='chip'>💣 гранат: {sum(k['total_grenades'] or 0 for k in krows)}"
+             f"<span class='chip'>Табов: {len(scans)}</span>"
+             f"<span class='chip'>Игроков: {len(krows)}</span>"
+             f"<span class='chip'>Гранат: {sum(k['total_grenades'] or 0 for k in krows)}"
              "</span>"
-             "<span class='chip'>🎙 войс: "
+             "<span class='chip'>Войс: "
              + fmt_sec(sum(k["voice_seconds"] or 0 for k in krows)) + "</span></div>")
 
     tab_head = ("<th>У</th><th>С</th><th>П</th><th>Счёт</th><th>K/D</th><th>Ср/таб</th><th>Табы</th>"
@@ -456,7 +456,7 @@ def day(date: str):
     toggle = ("<div class='seg'>" + ("<b>Всего</b>" if mode == "total" else f"<a href='{url_for('day',date=date,mode='total')}'>Всего</a>") + (f"<a href='{url_for('day',date=date,mode='stages')}'>По этапам</a>" if mode == "total" else "<b>По этапам</b>") + "</div>")
 
     kv_block = (
-        "<h2>💣 Гранаты · 🎙 войс" + (" · 📄 итог табов" if has_tabs else "") + "</h2>"
+        "<h2>Гранаты · Войс" + (" · 📄 итог табов" if has_tabs else "") + "</h2>"
         + toggle
         + ("<p class='hint'>У/С/П/СЧЁТ — итог дня по табам (наведи курсор — покажет "
            "разбивку по табам).</p>" if has_tabs else "")
