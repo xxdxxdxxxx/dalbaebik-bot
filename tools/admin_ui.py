@@ -99,9 +99,9 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name=
 .wrap{{padding:20px 0 48px}}h1{{font-size:24px;line-height:1.15;letter-spacing:-.02em;margin:0 0 4px}}h2{{font-size:15px;margin:18px 0 8px}}.pagehead{{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-bottom:14px}}.subtitle,.hint,.dim,.chips{{color:var(--dim)}}
 .metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 16px}}.metric,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.panel{{overflow:auto}}.metric{{padding:10px 12px}}.metric label{{display:block;color:var(--dim);font-size:11px;font-weight:650}}.metric b{{display:block;font-size:20px;letter-spacing:-.03em;margin-top:2px}}.panel{{padding:8px;margin-bottom:10px}}
 .actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 12px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
-.scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}input#flt{{width:min(100%,300px)}}
-.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}
-@media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
+.scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}.source-badge{{display:inline-block;margin-left:5px;padding:1px 4px;border:1px solid var(--line);border-radius:4px;color:var(--dim);font-size:9px;vertical-align:1px}}input#flt{{width:min(100%,300px)}}
+.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.squad-card{{background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden}}.squad-card h2{{display:flex;justify-content:space-between;align-items:center;margin:0;padding:7px 9px;background:var(--soft);font-size:13px}}.squad-card h2 span{{color:var(--dim);font-size:10px;font-weight:500}}.squad-card table{{font-size:12px}}.squad-card th,.squad-card td{{padding:4px 6px}}
+@media(max-width:760px){{.squad-grid{{grid-template-columns:1fr}}.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
 </style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a></nav></div></header><main class="wrap {layout}">{body}</main></body></html>"""
 
 
@@ -189,20 +189,29 @@ def players():
             GROUP BY p.id, rm.squad_id
             ORDER BY CASE WHEN rm.squad_id=99 THEN 0 ELSE rm.squad_id END,
                      p.canonical_nick COLLATE NOCASE""")
-    trs = "".join(
-        f"<tr><td class='nick'><a href='{url_for('player', player_id=r['id'])}'>"
-        f"{esc(r['canonical_nick'])}</a></td>"
-        f"<td>{'Чемпионы' if r['squad_id'] == 99 else 'Отряд ' + str(r['squad_id'])}</td>"
-        f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td>"
-        f"<td>{fmt_date_ru(r['last_day']) if r['last_day'] else '—'}</td></tr>"
-        for r in rows)
-    body = (f"<div class='pagehead'><div><h1>Игроки</h1><p class='subtitle'>История, гранаты и быстрый поиск по составу.</p></div></div>"
-            "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput="
-            "\"[...document.querySelectorAll('tbody tr')].forEach(tr=>tr.style.display"
-            "=tr.textContent.toLowerCase().includes(this.value.toLowerCase())?'':'none')\">"
-            "<div class='panel'><table><thead><tr><th>Ник</th><th>Отряд</th><th>Дней</th>"
-            "<th>Гранат всего</th><th>Последний день</th></tr></thead>"
-            f"<tbody>{trs}</tbody></table></div>")
+    groups: dict[int, list[dict[str, Any]]] = {99: [], **{i: [] for i in range(1, 7)}}
+    for row in rows:
+        groups[int(row["squad_id"])].append(row)
+    cards = []
+    for squad_id in [99, 1, 2, 3, 4, 5, 6]:
+        members = groups[squad_id]
+        if not members:
+            continue
+        label = "Чемпионы" if squad_id == 99 else f"Отряд {squad_id}"
+        member_rows = "".join(
+            f"<tr class='player-row'><td class='nick'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
+            f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td>"
+            f"<td>{fmt_date_ru(r['last_day']) if r['last_day'] else '—'}</td></tr>"
+            for r in members)
+        cards.append(
+            f"<section class='squad-card'><h2>{label}<span>{len(members)} чел.</span></h2>"
+            "<table><thead><tr><th class='nick'>Ник</th><th>Дни</th><th>Грены</th><th>Последний КВ</th></tr></thead>"
+            f"<tbody>{member_rows}</tbody></table></section>")
+    body = ("<div class='pagehead'><div><h1>Игроки</h1>"
+            "<p class='subtitle'>Активный состав по отрядам.</p></div></div>"
+            "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
+            f"<div class='squad-grid'>{''.join(cards)}</div>"
+            "<script>function filterPlayers(value){const q=value.toLowerCase();document.querySelectorAll('.squad-card').forEach(card=>{let n=0;card.querySelectorAll('.player-row').forEach(row=>{const show=row.textContent.toLowerCase().includes(q);row.style.display=show?'':'none';if(show)n++});card.style.display=n?'':'none'})}</script>")
     return render("Игроки", body)
 
 
@@ -342,6 +351,23 @@ def day(date: str):
         scans, report, krows = _day_data(con, date)
         dates = all_dates(con)
     tab_sum = _tab_totals(scans)
+    # A player may exist in a screenshot but be absent from the grenade/voice report
+    # (substitution, stale roster, or partial import). Keep those combat stats visible.
+    report_player_ids = {k["player_id"] for k in krows if k["player_id"] is not None}
+    scan_names: dict[int, str] = {}
+    for scan in scans:
+        for row in scan["players"]:
+            if row["player_id"] is not None:
+                scan_names.setdefault(int(row["player_id"]), row["canonical_nick"] or row["nick"])
+    for player_id in sorted(set(tab_sum) - report_player_ids,
+                            key=lambda pid: scan_names.get(pid, "").casefold()):
+        nick = scan_names.get(player_id, f"Игрок {player_id}")
+        krows.append({
+            "row_no": None, "player_id": player_id, "raw_nick": nick,
+            "canonical_nick": nick, "total_grenades": None,
+            "voice_seconds": None, "attended": None, "stages": {},
+            "scan_only": True,
+        })
     has_tabs = bool(scans)
     max_stage = max((max(k["stages"], default=0) for k in krows), default=0)
     max_stage = max(max_stage, report["stage_count"] if report else 0)
@@ -352,8 +378,9 @@ def day(date: str):
 
     # ── сводная строка игрока: итог табов + гранаты + войс ────────────────
     rows_html = []
-    for k in krows:
+    for display_no, k in enumerate(krows, 1):
         nick = k["canonical_nick"] or k["raw_nick"] or "—"
+        scan_only = bool(k.get("scan_only"))
         tab_cells = ""
         if has_tabs:
             t = tab_sum.get(k["player_id"]) if k["player_id"] else None
@@ -370,29 +397,40 @@ def day(date: str):
                 tab_cells = ("<td class='dim'>—</td><td class='dim'>—</td>"
                              "<td class='dim'>—</td><td class='dim'>—</td>"
                              "<td class='dim'>—</td><td class='dim'>—</td>")
-        if mode == "stages":
-            gcells = ""
-            for i in range(1, max_stage + 1):
-                val = k["stages"].get(i)
-                shown = "" if val is None else val
-                gcells += (f"<td class='gcol'><input type='number' min='0' "
-                           f"name='g{k['row_no']}_{i}' value='{shown}' placeholder='·'></td>")
-            total_cell = f"<td class='total'>{k['total_grenades'] or 0}</td>"
+
+        if scan_only:
+            gcells = "".join("<td class='dim'>—</td>" for _ in range(max_stage)) if mode == "stages" else ""
+            total_cell = "<td class='dim'>—</td>"
+            voice_cell = "<td class='dim'>—</td>"
+            action_cell = "<td></td>"
+            source_badge = " <span class='source-badge' title='Есть в табе, но нет в отчёте гранат/войса'>только таб</span>"
         else:
-            gcells = ""
-            total_cell = (f"<td class='gcol'><input type='number' min='0' "
-                          f"name='w{k['row_no']}' value='{k['total_grenades'] or 0}' "
-                          f"title='гранат за день (всего)'></td>")
+            row_no = int(k["row_no"])
+            if mode == "stages":
+                gcells = ""
+                for i in range(1, max_stage + 1):
+                    val = k["stages"].get(i)
+                    shown = "" if val is None else val
+                    gcells += (f"<td class='gcol'><input type='number' min='0' "
+                               f"name='g{row_no}_{i}' value='{shown}' placeholder='·'></td>")
+                total_cell = f"<td class='total'>{k['total_grenades'] or 0}</td>"
+            else:
+                gcells = ""
+                total_cell = (f"<td class='gcol'><input type='number' min='0' "
+                              f"name='w{row_no}' value='{k['total_grenades'] or 0}' "
+                              f"title='гранат за день (всего)'></td>")
+            voice_cell = (f"<td><input type='text' inputmode='numeric' name='v{row_no}' "
+                          f"value='{fmt_sec(k['voice_seconds'] or 0)}' title='минуты:секунды'></td>")
+            action_cell = (f"<td><button class='danger' name='__del_row' value='{row_no}' "
+                           f"formaction='{save_url}' onclick=\"return confirm('Удалить гранаты и войс "
+                           f"{esc(nick)} за {fmt_date_ru(date)}?')\">✕</button></td>")
+            source_badge = ""
+
         link = (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(nick)}</a>"
                 if k["player_id"] else esc(nick))
         rows_html.append(
-            f"<tr><td class='dim'>{k['row_no']}</td><td class='nick'>{link}</td>"
-            f"{tab_cells}{gcells}{total_cell}"
-            f"<td><input type='text' inputmode='numeric' name='v{k['row_no']}' "
-            f"value='{fmt_sec(k['voice_seconds'] or 0)}' title='минуты:секунды'></td>"
-            f"<td><button class='danger' name='__del_row' value='{k['row_no']}' "
-            f"formaction='{save_url}' onclick=\"return confirm('Удалить гранаты и войс "
-            f"{esc(nick)} за {fmt_date_ru(date)}?')\">✕</button></td></tr>")
+            f"<tr><td class='dim'>{display_no}</td><td class='nick'>{link}{source_badge}</td>"
+            f"{tab_cells}{gcells}{total_cell}{voice_cell}{action_cell}</tr>")
 
     # ── исходные табы: правка У/С/П/СЧЁТ по каждому табу ──────────────────
     scan_tables = []
