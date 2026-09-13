@@ -100,7 +100,7 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name=
 .metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 16px}}.metric,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.panel{{overflow:auto}}.metric{{padding:10px 12px}}.metric label{{display:block;color:var(--dim);font-size:11px;font-weight:650}}.metric b{{display:block;font-size:20px;letter-spacing:-.03em;margin-top:2px}}.panel{{padding:8px;margin-bottom:10px}}
 .actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 12px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
 .scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}.source-badge{{display:inline-block;margin-left:5px;padding:1px 4px;border:1px solid var(--line);border-radius:4px;color:var(--dim);font-size:9px;vertical-align:1px}}input#flt{{width:min(100%,300px)}}
-.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--text);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}
+.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--text);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}.sortable{{cursor:pointer;user-select:none}}.sortable::after{{content:" ↕";color:var(--dim);font-size:9px}}.sortable[data-dir="desc"]::after{{content:" ↓";color:var(--blue)}}.sortable[data-dir="asc"]::after{{content:" ↑";color:var(--blue)}}
 @media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
 </style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a></nav></div></header><main class="wrap {layout}">{body}</main></body></html>"""
 
@@ -248,7 +248,7 @@ def player(player_id: int):
                 stages[int(sn)] = val if val != "" else "·"
         r["stages"] = stages
         max_stage = max([max_stage, *stages.keys()])
-    stage_cols = "".join(f"<th class='gcol'>{stage_label(i)}</th>"
+    stage_cols = "".join(f"<th class='gcol sortable' data-sort='number'>{stage_label(i)}</th>"
                          for i in range(1, max_stage + 1))
     max_total = max((r["total"] or 0) for r in days) if days else 0
     trs = []
@@ -429,7 +429,7 @@ def day(date: str):
         link = (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(nick)}</a>"
                 if k["player_id"] else esc(nick))
         rows_html.append(
-            f"<tr><td class='dim'>{display_no}</td><td class='nick'>{link}{source_badge}</td>"
+            f"<tr><td class='dim rank'>{display_no}</td><td class='nick'>{link}{source_badge}</td>"
             f"{tab_cells}{gcells}{total_cell}{voice_cell}{action_cell}</tr>")
 
     # ── исходные табы: правка У/С/П/СЧЁТ по каждому табу ──────────────────
@@ -504,16 +504,42 @@ def day(date: str):
              "<span class='chip'>Войс: "
              + fmt_sec(sum(k["voice_seconds"] or 0 for k in krows)) + "</span></div>")
 
-    tab_head = ("<th>У</th><th>С</th><th>П</th><th>Счёт</th><th>K/D</th><th>Ср/таб</th>"
+    tab_head = ("<th class='sortable' data-sort='number'>У</th>"
+                "<th class='sortable' data-sort='number'>С</th>"
+                "<th class='sortable' data-sort='number'>П</th>"
+                "<th class='sortable' data-sort='number'>Счёт</th>"
+                "<th class='sortable' data-sort='number'>K/D</th>"
+                "<th class='sortable' data-sort='number' title='Средний счёт за один таб'>Счёт/таб</th>"
                 if has_tabs else "")
     toggle = ("<div class='seg'>" + ("<b>Всего</b>" if mode == "total" else f"<a href='{url_for('day',date=date,mode='total')}'>Всего</a>") + (f"<a href='{url_for('day',date=date,mode='stages')}'>По этапам</a>" if mode == "total" else "<b>По этапам</b>") + "</div>")
 
+    sort_script = """<script>
+function sortDayTable(th){
+  const table=document.getElementById('day-table'), body=table.tBodies[0], col=th.cellIndex;
+  const type=th.dataset.sort, old=th.dataset.dir;
+  const dir=old==='desc'?'asc':old==='asc'?'desc':type==='text'?'asc':'desc';
+  table.querySelectorAll('th.sortable').forEach(x=>delete x.dataset.dir); th.dataset.dir=dir;
+  const value=row=>{const cell=row.cells[col], input=cell.querySelector('input'); let raw=(input?input.value:cell.textContent).trim();
+    if(!raw||raw==='—')return null; if(type==='text')return raw.toLocaleLowerCase('ru');
+    if(type==='time'){const parts=raw.split(':').map(Number); return parts.reduce((v,n)=>v*60+n,0)}
+    const n=Number(raw.replace(',','.')); return Number.isFinite(n)?n:null};
+  const rows=[...body.rows];
+  rows.sort((a,b)=>{const av=value(a),bv=value(b); if(av===null||bv===null)return av===bv?0:av===null?1:-1;
+    const cmp=type==='text'?av.localeCompare(bv,'ru'):(av-bv); return dir==='asc'?cmp:-cmp});
+  rows.forEach((row,i)=>{body.appendChild(row); row.querySelector('.rank').textContent=i+1});
+}
+document.addEventListener('click',e=>{const th=e.target.closest('#day-table th.sortable');if(th)sortDayTable(th)});
+</script>"""
+
     kv_block = (
         toggle
-        + "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th>"
+        + "<div class='scroll'><table id='day-table'><thead><tr>"
+        "<th class='sortable' data-sort='number'>#</th>"
+        "<th class='sortable' data-sort='text'>Ник</th>"
         + tab_head + stage_cols
-        + "<th>Гранаты</th><th>Войс</th><th></th></tr></thead>"
-        + f"<tbody>{''.join(rows_html)}</tbody></table></div>"
+        + "<th class='sortable' data-sort='number'>Гранаты</th>"
+        "<th class='sortable' data-sort='time'>Войс</th><th></th></tr></thead>"
+        + f"<tbody>{''.join(rows_html)}</tbody></table></div>" + sort_script
         if krows else
         "<p class='hint'>Дневной отчёт за эту дату не найден "
         "(гранаты за этот день не импортировались).</p>")
