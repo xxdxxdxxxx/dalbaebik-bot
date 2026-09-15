@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from tools.runtime_source_cleanup import clean_source
+from tools.runtime_source_finalize import finalize_source
 
 ROOT = Path(__file__).resolve().parent
 SOURCE_COMMIT = "3f60b0581ce5e56d75f93cabdb7ccf5c7b14f960"
@@ -18,4 +19,5 @@ try:
 except (OSError, subprocess.CalledProcessError) as exc:
     raise RuntimeError("Не удалось загрузить исходник bot.py из локальной истории Git") from exc
 
-exec(compile(clean_source(original), str(Path(__file__)), "exec"), globals(), globals())
+source = finalize_source(clean_source(original))
+exec(compile(source, str(Path(__file__)), "exec"), globals(), globals())
