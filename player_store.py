@@ -1,4 +1,4 @@
-"""Unified SQLite player identity store and idempotent legacy migration."""
+"""Unified SQLite player identity, roster, scan, and statistics store."""
 from __future__ import annotations
 
 import hashlib
@@ -305,15 +305,6 @@ CREATE TABLE IF NOT EXISTS bot_kv_state(
  value_json TEXT NOT NULL CHECK(json_valid(value_json)),
  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  PRIMARY KEY(guild_id, state_key)
-);
-CREATE TABLE IF NOT EXISTS legacy_imports(
- source_path TEXT NOT NULL,
- source_sha256 TEXT NOT NULL,
- imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
- schema_version INTEGER NOT NULL,
- guild_id INTEGER NOT NULL,
- row_counts_json TEXT NOT NULL CHECK(json_valid(row_counts_json)),
- PRIMARY KEY(source_path, source_sha256)
 );
 """
 
@@ -944,45 +935,6 @@ def _table_counts(con: sqlite3.Connection) -> dict[str, int]:
     }
 
 
-def backup_cutover_files(db_path: Path | str, legacy_json: Path | str) -> list[str]:
-    """Create durable, timestamped JSON and transaction-consistent SQLite backups."""
-    db_path, legacy_json = Path(db_path), Path(legacy_json)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
-    made: list[str] = []
-    if legacy_json.exists():
-        target = legacy_json.with_name(legacy_json.name + f".{stamp}.pre-sqlite.bak")
-        shutil.copy2(legacy_json, target)
-        made.append(str(target))
-    if db_path.exists():
-        target = db_path.with_name(db_path.name + f".{stamp}.pre-sqlite.bak")
-        source_con = sqlite3.connect(str(db_path), timeout=10)
-        target_con = sqlite3.connect(str(target))
-        try:
-            source_con.backup(target_con)
-        finally:
-            target_con.close()
-            source_con.close()
-        made.append(str(target))
-    return made
-
-
-def legacy_cutover_complete(db_path: Path | str) -> bool:
-    """Return whether the one-time legacy import marker exists."""
-    ensure_schema(db_path)
-    with closing(connect(db_path)) as con:
-        return con.execute(
-            "SELECT 1 FROM schema_meta WHERE key='legacy_cutover_complete'"
-        ).fetchone() is not None
-
-
-def ensure_legacy_cutover(db_path: Path | str, legacy_json: Path | str) -> dict[str, Any]:
-    """Import JSON exactly once; after the marker it is never read as a fallback."""
-    if legacy_cutover_complete(db_path):
-        with closing(connect(db_path)) as con:
-            return {"skipped": True, "reason": "legacy cutover complete", "counts": _table_counts(con)}
-    return migrate(db_path, legacy_json, backup=False)
-
-
 def _runtime_guild_id(con: sqlite3.Connection, preferred: int | None = None) -> int:
     if preferred:
         return int(preferred)
@@ -1184,9 +1136,8 @@ def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int |
                 if binding is None:
                     pid = _player_id(con, nick)
                 else:
-                    # A Discord binding is the stable identity.  In particular, an
-                    # Excel nickname edit must rename that player instead of creating
-                    # a second identity and moving the binding away from its history.
+                    # A Discord binding is the stable identity. A roster nickname edit
+                    # renames that player instead of creating a second identity.
                     pid = int(binding[0])
                     owner_ids = _identity_ids(con, nick)
                     if owner_ids and owner_ids != {pid}:
@@ -1575,20 +1526,16 @@ def finalize_runtime_session(db_path: Path | str, guild_id: int, session_date: s
             raise
 
 
-def reconciliation_status(db_path: Path | str, legacy_json: Path | str | None = None) -> dict[str, Any]:
+def reconciliation_status(db_path: Path | str) -> dict[str, Any]:
+    """Return SQLite integrity and row counts for operational diagnostics."""
     ensure_schema(db_path)
     with closing(connect(db_path)) as con:
-        status = {"schema_version": int(con.execute("PRAGMA user_version").fetchone()[0]),
-                  "integrity": str(con.execute("PRAGMA integrity_check").fetchone()[0]),
-                  "foreign_key_violations": [tuple(r) for r in con.execute("PRAGMA foreign_key_check")],
-                  "counts": _table_counts(con)}
-        if legacy_json is not None and Path(legacy_json).exists():
-            digest = hashlib.sha256(Path(legacy_json).read_bytes()).hexdigest()
-            status["legacy_sha256"] = digest
-            status["legacy_imported"] = con.execute(
-                "SELECT 1 FROM legacy_imports WHERE source_path=? AND source_sha256=?",
-                (str(Path(legacy_json).resolve()), digest)).fetchone() is not None
-        return status
+        return {
+            "schema_version": int(con.execute("PRAGMA user_version").fetchone()[0]),
+            "integrity": str(con.execute("PRAGMA integrity_check").fetchone()[0]),
+            "foreign_key_violations": [tuple(r) for r in con.execute("PRAGMA foreign_key_check")],
+            "counts": _table_counts(con),
+        }
 
 
 def export_snapshot(db_path: Path | str, guild_id: int, session_date: str | None = None) -> dict[str, Any]:
@@ -1606,123 +1553,6 @@ def export_snapshot(db_path: Path | str, guild_id: int, session_date: str | None
     if session_date:
         result["session"] = load_runtime_session(db_path, guild_id, session_date)
     return result
-
-
-def migrate(db_path: Path | str, legacy_json: Path | str, *, backup: bool = True) -> dict[str, Any]:
-    """One-time, transactional import. A completed cutover is never replayed automatically."""
-    db_path, legacy_json = Path(db_path), Path(legacy_json)
-    ensure_schema(db_path)
-    raw = legacy_json.read_bytes() if legacy_json.exists() else b"{}"
-    digest = hashlib.sha256(raw).hexdigest()
-    source_path = str(legacy_json.resolve())
-    data = json.loads(raw.decode("utf-8-sig")) if raw else {}
-    with closing(connect(db_path)) as con:
-        existing = con.execute("SELECT row_counts_json FROM legacy_imports WHERE source_path=?",
-                               (source_path,)).fetchone()
-        if existing is not None:
-            counts = _table_counts(con)
-            return {"backups": [], "skipped": True, "reason": "legacy source already imported",
-                    "counts": counts, "imported_bindings": counts.get("discord_bindings", 0),
-                    "voice_values_seen": 0, "grenade_values_seen": 0,
-                    "scan_rows_linked_now": 0, "safe_example_alias_added": False}
-    backups = backup_cutover_files(db_path, legacy_json) if backup else []
-    cfg = data.get("config") or {}
-    guild_id = int(cfg.get("guild_id") or 0)
-    with closing(connect(db_path)) as con:
-        con.execute("BEGIN IMMEDIATE")
-        try:
-            con.execute("INSERT OR IGNORE INTO bot_guild_config(guild_id,log_channel_id) VALUES(?,?)",
-                        (guild_id, cfg.get("log_channel_id")))
-            con.execute("DELETE FROM guild_voice_channels WHERE guild_id=?", (guild_id,))
-            con.executemany("INSERT INTO guild_voice_channels(guild_id,channel_id,position) VALUES(?,?,?)",
-                            [(guild_id, int(v), i) for i, v in enumerate(dict.fromkeys(cfg.get("voice_channel_ids") or []))])
-            con.execute("DELETE FROM guild_access_roles WHERE guild_id=?", (guild_id,))
-            con.executemany("INSERT INTO guild_access_roles(guild_id,role_id) VALUES(?,?)",
-                            [(guild_id, int(v)) for v in dict.fromkeys(cfg.get("access_role_ids") or [])])
-            player_ids: dict[str, int] = {}
-            for discord_id, record in (data.get("players") or {}).items():
-                nick = str(record.get("game_nick") or "").strip()
-                if not nick:
-                    continue
-                pid = _player_id(con, nick)
-                player_ids[str(discord_id)] = pid
-                con.execute("""INSERT INTO discord_bindings(discord_id,player_id,discord_name,discord_username)
-                    VALUES(?,?,?,?) ON CONFLICT(discord_id) DO UPDATE SET player_id=excluded.player_id,
-                    discord_name=excluded.discord_name,discord_username=excluded.discord_username,
-                    updated_at=CURRENT_TIMESTAMP""", (str(discord_id), pid,
-                    str(record.get("discord_name") or ""), str(record.get("discord_username") or "")))
-                con.execute("INSERT OR IGNORE INTO player_guilds(player_id,guild_id) VALUES(?,?)", (pid, guild_id))
-                con.execute("""INSERT INTO roster_memberships(guild_id,player_id,squad_id,slot,active)
-                    VALUES(?,?,?,?,1) ON CONFLICT(guild_id,player_id) DO NOTHING""",
-                    (guild_id, pid, record.get("squad"), record.get("slot")))
-            con.executemany("""INSERT INTO squad_names(guild_id,squad_id,name) VALUES(?,?,?)
-                ON CONFLICT(guild_id,squad_id) DO UPDATE SET name=excluded.name,updated_at=CURRENT_TIMESTAMP""",
-                [(guild_id, int(k), str(v)) for k, v in (data.get("squad_names") or {}).items()])
-            session_day = str(data.get("session_date") or data.get("grenade_date") or "").strip()
-            sid = None
-            if session_day:
-                session_day = parse_match_date(session_day)
-                con.execute("""INSERT INTO runtime_sessions
-                    (guild_id,session_date,grenade_date,active,finished,last_grenade_step,skipped_grenade_steps_json)
-                    VALUES(?,?,?,?,?,?,?) ON CONFLICT(guild_id,session_date) DO NOTHING""",
-                    (guild_id, session_day, data.get("grenade_date"), int(bool(data.get("kv_session_active")) and not bool(data.get("kv_finished"))),
-                     int(bool(data.get("kv_finished"))), data.get("last_grenade_step"),
-                     _json_text(data.get("skipped_grenade_steps") or [])))
-                sid = int(con.execute("SELECT id FROM runtime_sessions WHERE guild_id=? AND session_date=?",
-                                      (guild_id, session_day)).fetchone()[0])
-                for did, record in (data.get("players") or {}).items():
-                    pid = player_ids.get(str(did))
-                    if pid is not None:
-                        con.execute("INSERT OR IGNORE INTO attendance(session_id,player_id,came,in_voice) VALUES(?,?,?,?)",
-                                    (sid, pid, int(bool(record.get("came"))), int(bool(record.get("in_voice")))))
-                maps = data.get("kv_maps") or {}
-                if not maps.get("date") or str(maps.get("date")) == session_day:
-                    con.executemany("INSERT OR IGNORE INTO session_maps(session_id,position,map_name) VALUES(?,?,?)",
-                                    [(sid, i, str(v)) for i, v in enumerate(maps.get("maps") or [])])
-                for did in data.get("absent_dm_sent") or []:
-                    con.execute("INSERT OR IGNORE INTO absent_dm_deliveries(session_id,discord_id,player_id) VALUES(?,?,?)",
-                                (sid, str(did), player_ids.get(str(did))))
-                for did, seconds in (data.get("voice_speak_seconds") or {}).items():
-                    if not isinstance(seconds, bool) and isinstance(seconds, (int, float)) and seconds >= 0:
-                        con.execute("INSERT OR IGNORE INTO voice_checkpoints(session_id,discord_id,player_id,seconds) VALUES(?,?,?,?)",
-                                    (sid, str(did), player_ids.get(str(did)), float(seconds)))
-                        con.execute("""INSERT INTO voice_stats(source_key,discord_id,player_id,seconds,session_date)
-                            VALUES(?,?,?,?,?) ON CONFLICT(source_key,discord_id) DO NOTHING""",
-                            (f"legacy-kv:{session_day}", str(did), player_ids.get(str(did)), float(seconds), session_day))
-                for nick, values in (data.get("grenade_history") or {}).items():
-                    if not isinstance(values, dict):
-                        continue
-                    ids = _identity_ids(con, str(nick))
-                    pid = next(iter(ids)) if len(ids) == 1 else _player_id(con, str(nick))
-                    for step, value in values.items():
-                        if not isinstance(value, bool) and isinstance(value, (int, float)) and value >= 0:
-                            con.execute("INSERT OR IGNORE INTO live_grenade_state(session_id,player_id,step_id,value) VALUES(?,?,?,?)",
-                                        (sid, pid, str(step), int(value)))
-                            con.execute("""INSERT INTO grenade_stats(player_id,stat_key,value) VALUES(?,?,?)
-                                ON CONFLICT(player_id,stat_key) DO UPDATE SET value=MAX(value,excluded.value)""",
-                                (pid, str(step), int(value)))
-            for kind, mid in (data.get("message_ids") or {}).items():
-                con.execute("INSERT OR IGNORE INTO discord_message_refs(guild_id,ref_kind,message_id) VALUES(?,?,?)",
-                            (guild_id, str(kind), mid))
-            con.execute("INSERT OR IGNORE INTO bot_kv_state(guild_id,state_key,value_json) VALUES(?,?,?)",
-                        (guild_id, "legacy_import_sha256", _json_text(digest)))
-            counts = _table_counts(con)
-            con.execute("""INSERT INTO legacy_imports
-                (source_path,source_sha256,schema_version,guild_id,row_counts_json) VALUES(?,?,?,?,?)""",
-                (source_path, digest, SCHEMA_VERSION, guild_id, _json_text(counts)))
-            con.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('legacy_cutover_complete',?)", (digest,))
-            con.commit()
-        except Exception:
-            con.rollback()
-            raise
-    linked = link_scan_rows(db_path)
-    with closing(connect(db_path)) as con:
-        counts = _table_counts(con)
-    return {"backups": backups, "skipped": False, "imported_bindings": len(player_ids),
-            "voice_values_seen": len(data.get("voice_speak_seconds") or {}),
-            "voice_source_key": f"legacy-kv:{session_day}" if session_day else "legacy-kv:undated-current",
-            "grenade_values_seen": sum(len(v) for v in (data.get("grenade_history") or {}).values() if isinstance(v, dict)),
-            "scan_rows_linked_now": linked, "safe_example_alias_added": False, "counts": counts}
 
 
 def parse_kv_daily_report(path: Path | str) -> dict[str, Any]:

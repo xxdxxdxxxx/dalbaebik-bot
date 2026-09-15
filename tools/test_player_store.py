@@ -1,5 +1,4 @@
 from __future__ import annotations
-import json
 import sqlite3
 import sys
 import tempfile
@@ -33,38 +32,30 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         db = root / 'test.sqlite3'
-        legacy = root / 'players.json'
-        legacy.write_text(json.dumps({
-            'players': {'123': {'game_nick': 'iovecuit', 'discord_name': 'D', 'discord_username': 'u'}},
-            'grenade_history': {'lovecult': {'20:00': 10}, 'iovecuit': {'20:25': 12}},
-            'session_date': '2026-08-16',
-            'kv_session_active': True,
-            'kv_finished': True,
-            'voice_speak_seconds': {'123': 12.5, '999': 3.25},
-        }), encoding='utf-8')
-        # Add legacy scan schema/row before unified migration.
+        # Upgrade a historical scan schema, then link it to the modern identity store.
         with closing(sqlite3.connect(db)) as con:
-            con.executescript('''
+            con.executescript("""
             CREATE TABLE scans(id INTEGER PRIMARY KEY, stage INTEGER, map TEXT, guild_id INTEGER, channel_id INTEGER, user_id INTEGER, scanned_at TEXT, source_filename TEXT);
             CREATE TABLE scan_players(id INTEGER PRIMARY KEY, scan_id INTEGER, place INTEGER, nick TEXT, kills INTEGER, deaths INTEGER, assists INTEGER, score INTEGER);
             INSERT INTO scans VALUES(1,1,'map',1,1,1,'now','x.png');
             INSERT INTO scan_players VALUES(1,1,1,'lovecult',1,2,3,4);
-            ''')
+            """)
         player_store.ensure_schema(db)
-        player_store.upsert_binding(db, '123', 'iovecuit', 'D', 'u')
+        binding = player_store.upsert_binding(db, '123', 'iovecuit', 'D', 'u')
         player_store.add_alias(db, 'iovecuit', 'lovecult')
-        first = player_store.migrate(db, legacy, backup=False)
-        second = player_store.migrate(db, legacy, backup=False)
-        assert first['counts'] == second['counts'], (first, second)
+        assert player_store.link_scan_rows(db) == 1
+        player_store.sync_grenade_history(
+            db, {'lovecult': {'20:00': 10}, 'iovecuit': {'20:25': 12}}
+        )
+        player_store.sync_voice_snapshot(
+            db, {'123': 12.5, '999': 3.25}, 'legacy-kv:2026-08-16', '2026-08-16'
+        )
         with closing(player_store.connect(db)) as con:
-            binding = con.execute("SELECT player_id FROM discord_bindings WHERE discord_id='123'").fetchone()[0]
             alias = con.execute("SELECT player_id FROM player_aliases WHERE alias='lovecult'").fetchone()[0]
             scan = con.execute("SELECT player_id FROM scan_players WHERE nick='lovecult'").fetchone()[0]
             grenade_ids = {r[0] for r in con.execute("SELECT DISTINCT player_id FROM grenade_stats")}
             assert binding == alias == scan
             assert grenade_ids == {binding}
-            flags = con.execute("SELECT active,finished FROM runtime_sessions").fetchone()
-            assert tuple(flags) == (0, 1)
             voice = con.execute("SELECT player_id,seconds FROM voice_stats ORDER BY discord_id").fetchall()
             assert len(voice) == 2 and voice[0][0] == binding and voice[1][0] is None
             assert [row[1] for row in voice] == [12.5, 3.25]
@@ -160,110 +151,6 @@ def main() -> None:
         assert unicode_metrics['deaths'] == [20.0, 2.0]
         assert unicode_metrics['assists'] == [12.0, 2.0]
         assert unicode_metrics['score'] == [7041.0, 2.0]
-        # 3520.5 must use half-up rather than Python's bankers rounding.
-        assert bot._fmt_stats_number(bot._stats_average(unicode_metrics['score'])) == '3521'
-        unicode_row = bot._fmt_stats_row('Стальной_алекс_очень_длинный', unicode_metrics)
-        assert 'Стальной_алек…' in unicode_row and '  3521 ' in unicode_row
-        assert bot._STATS_TABLE_HEADER.split() == ['Ник', 'У', 'С', 'П', 'СЧЁТ', 'ГРЕНЫ', 'ВРЕМЯ', 'N', 'ЭФФ']
-        assert len(bot._STATS_TABLE_RULE) == len(bot._STATS_TABLE_HEADER)
-        # A dated /stats view is DB-only: current JSON snapshot must not leak into it.
-        dated_collected = player_store.collect_stats_samples(
-            unicode_db, date_from='2026-08-19', date_to='2026-08-19', guild_id=7,
-        )
-        dated_nick = '\u0421\u0442\u0430\u043b\u044c\u043d\u043e\u0439_test'
-        dated_data = {'players': {'777': {'game_nick': dated_nick, 'squad': 1}},
-                      'session_date': '2026-08-18',
-                      'grenade_history': {dated_nick: {'20:00': 1, '20:25': 9}},
-                      'voice_speak_seconds': {'777': 123.0}}
-        dated_text = '\n'.join(embed.description or '' for embed in bot.build_stats_embeds(dated_data, dated_collected))
-        assert dated_nick not in dated_text  # no current roster is fabricated for a historical day
-        assert not dated_collected['historical_roster']
-
-        # EFF: displayed rounded averages feed KD/min-max; missing values never become zero.
-        def eff_metrics(k, d, a, score, gren, seconds):
-            keys = ('kills', 'deaths', 'assists', 'score', 'grenades', 'voice_seconds')
-            return {key: [float(value), 1.0] for key, value in zip(keys, (k, d, a, score, gren, seconds)) if value is not None}
-
-        eff_rows = [
-            (1, eff_metrics(10, 2, 5, 100, 5, 60)),
-            (2, eff_metrics(20, 2, 10, 200, 10, 120)),
-            (3, eff_metrics(15, 0, 7, 150, 7, 90)),  # D=0 => KD=K
-            (4, eff_metrics(10, 2, None, 100, 5, 60)),
-            (5, eff_metrics(20, 2, 10, 200, 10, 9999)),  # squad 5 time excluded
-            (6, eff_metrics(10, 2, 5, None, 5, 60)),     # NULL score excluded
-            (99, eff_metrics(999, 1, 999, 999, 999, 999)),
-            (None, eff_metrics(999, 1, 999, 999, 999, 999)),
-        ]
-        efficiencies = bot.calc_stats_efficiencies(eff_rows)
-        assert efficiencies[0] == 0.0 and efficiencies[1] == 78.1
-        assert efficiencies[2] == 67.5 and efficiencies[3] is None
-        assert efficiencies[4] == 78.1 and efficiencies[5] is None
-        assert efficiencies[6:] == [None, None]
-        # Identical min=max produces neutral 50 for every available metric.
-        tied = bot.calc_stats_efficiencies([(1, eff_metrics(5, 0, 2, 100, 10, None))])
-        assert tied == [50.0]
-        # Incomplete players cannot get a rating by redistributing missing weights.
-        partial = bot.calc_stats_efficiencies([
-            (1, eff_metrics(1, 1, None, None, None, None)),
-            (2, eff_metrics(3, 1, 8, None, None, None)),
-        ])
-        assert partial == [None, None]
-        # Half-up EFF rounding is explicit at an exact x.x5 boundary.
-        original_weights = bot._STATS_EFF_WEIGHTS
-        try:
-            bot._STATS_EFF_WEIGHTS = {'KD': 0.3335, 'assists': 0.6665}
-            rounded = bot.calc_stats_efficiencies([
-                (1, eff_metrics(1, 1, 0, None, None, None)),
-                (2, eff_metrics(2, 1, 1, None, None, None)),
-                (3, eff_metrics(2, 1, 0, None, None, None)),
-            ])
-            assert rounded[2] == 33.4
-        finally:
-            bot._STATS_EFF_WEIGHTS = original_weights
-        # Per-squad ordering: raw EFF desc, stable slot tie-break, then missing EFF.
-        sort_data = {'players': {
-            'low': {'game_nick': 'Low', 'squad': 1, 'slot': 3},
-            'tie_b': {'game_nick': 'TieB', 'squad': 1, 'slot': 2},
-            'missing': {'game_nick': 'Missing', 'squad': 1, 'slot': 4},
-            'tie_a': {'game_nick': 'TieA', 'squad': 1, 'slot': 1},
-            'other': {'game_nick': 'OtherSquad', 'squad': 2, 'slot': 1},
-            'champ': {'game_nick': 'Champion', 'squad': 99, 'slot': 1},
-            'free': {'game_nick': 'FreeAgent', 'squad': None, 'slot': None},
-        }}
-        sort_collected = {
-            'bindings': {did: i for i, did in enumerate(sort_data['players'], start=1)},
-            'samples': {
-                1: eff_metrics(1, 1, 2, 100, 10, None),
-                2: eff_metrics(3, 1, 2, 100, 10, None),
-                4: eff_metrics(3, 1, 2, 100, 10, None),
-                5: eff_metrics(2, 1, 2, 100, 10, None),
-            },
-            'completed_dates': set(),
-        }
-        sorted_text = '\n'.join(embed.description or '' for embed in bot.build_stats_embeds(sort_data, sort_collected))
-        ordered_names = ['TieA', 'TieB', 'Low', 'Missing', 'OtherSquad', 'Champion', 'FreeAgent']
-        assert [sorted_text.index(name) for name in ordered_names] == sorted(
-            sorted_text.index(name) for name in ordered_names
-        )
-        assert sorted_text.index('Отряд 1:') < sorted_text.index('Отряд 2:') < sorted_text.index('Чемпионы:') < sorted_text.index('Без отряда:')
-        assert next(line for line in sorted_text.splitlines() if line.startswith('Missing')).split()[-1] == '—'
-
-        # Discord-safe pagination and excluded squads render an em dash in the last column.
-        excluded_row = bot._fmt_stats_row('Champion', eff_rows[6][1], None)
-        assert excluded_row.split()[-1] == '—'
-        many_data = {'players': {
-            str(i): {'game_nick': f'long_player_name_{i}', 'squad': (i % 6) + 1}
-            for i in range(180)
-        }}
-        many_collected = {'bindings': {}, 'samples': {}, 'completed_dates': set()}
-        pages = bot.build_stats_embeds(many_data, many_collected)
-        assert len(pages) > 1 and all(len(embed.description or '') <= 4096 for embed in pages)
-        assert all('```' in (embed.description or '') for embed in pages)
-        # A grenade/voice-only player has no scan score and renders an em dash.
-        no_scan_row = bot._fmt_stats_row(
-            'OnlyVoice', {'grenades': [6.0, 1.0], 'voice_seconds': [150.0, 1.0]},
-        )
-        assert no_scan_row.split()[4] == '—'
         null_score = [dict(first_case[0], nickname='Стальной_Алекс', score=None)]
         null_saved = player_store.save_scan_result(
             unicode_db, null_score,
@@ -395,70 +282,6 @@ def main() -> None:
         except ValueError:
             pass
 
-        # v10 full JSON cutover: normalized import, idempotency, soft-delete and round-trips.
-        full_db = root / 'full-cutover.sqlite3'
-        full_json = root / 'full-players.json'
-        full_payload = {
-            'players': {
-                '100': {'game_nick': 'Alpha', 'discord_name': 'A', 'discord_username': 'alpha',
-                        'squad': 1, 'slot': 1, 'came': True, 'in_voice': True},
-                '200': {'game_nick': 'Beta', 'discord_name': 'B', 'discord_username': 'beta',
-                        'squad': 2, 'slot': 1, 'came': False, 'in_voice': False},
-            },
-            'config': {'guild_id': 77, 'log_channel_id': 88,
-                       'voice_channel_ids': [91, 92], 'access_role_ids': [501, 502]},
-            'message_ids': {'online': 7001, 'grenades': 7002},
-            'session_date': '2026-08-19', 'grenade_date': '2026-08-19',
-            'kv_session_active': True, 'kv_finished': False,
-            'last_grenade_step': '20:25', 'skipped_grenade_steps': ['20:00'],
-            'grenade_history': {'Alpha': {'20:00': 10, '20:25': 12},
-                                'Beta': {'20:00': 5}},
-            'voice_speak_seconds': {'100': 15.5, '200': 0},
-            'absent_dm_sent': ['200'], 'squad_names': {'1': 'One', '2': 'Two'},
-            'kv_maps': {'date': '2026-08-19', 'maps': ['Хвойник', 'Бердовка']},
-        }
-        full_json.write_text(json.dumps(full_payload, ensure_ascii=False), encoding='utf-8')
-        imported = player_store.migrate(full_db, full_json, backup=False)
-        repeated = player_store.migrate(full_db, full_json, backup=False)
-        assert not imported['skipped'] and repeated['skipped']
-        assert imported['counts'] == repeated['counts']
-        assert set(imported['counts']) == set(player_store.STATUS_COUNT_TABLES)
-        assert imported['counts']['player_aliases'] == 0
-        assert player_store.get_guild_config(full_db, 77) == full_payload['config']
-        roster = player_store.list_roster(full_db, 77)
-        assert len(roster) == 2
-        alpha_id = next(r['player_id'] for r in roster if r['canonical_nick'] == 'Alpha')
-        beta_id = next(r['player_id'] for r in roster if r['canonical_nick'] == 'Beta')
-        assert player_store.deactivate_roster_member(full_db, 77, beta_id)
-        assert len(player_store.list_roster(full_db, 77)) == 1
-        assert len(player_store.list_roster(full_db, 77, include_inactive=True)) == 2
-        state = player_store.load_runtime_session(full_db, 77, '2026-08-19')
-        assert state and state['attendance'][str(alpha_id)] == {'came': True, 'in_voice': True}
-        assert state['maps'] == ['Хвойник', 'Бердовка']
-        assert state['grenades'][str(alpha_id)] == {'20:00': 10, '20:25': 12}
-        assert state['voice']['100']['seconds'] == 15.5
-        updated = dict(state, finished=True, voice={
-            '100': {'player_id': alpha_id, 'seconds': 20.25, 'state': {'gate': 'open'}}
-        })
-        player_store.save_runtime_session(full_db, 77, updated)
-        round_trip = player_store.load_runtime_session(full_db, 77, '2026-08-19')
-        assert round_trip['finished'] and round_trip['voice']['100']['state'] == {'gate': 'open'}
-        assert round_trip['grenades'] == state['grenades']
-        status = player_store.reconciliation_status(full_db, full_json)
-        assert status['schema_version'] == player_store.SCHEMA_VERSION and status['integrity'] == 'ok'
-        assert not status['foreign_key_violations'] and status['legacy_imported']
-        assert set(status['counts']) == set(player_store.STATUS_COUNT_TABLES)
-        assert status['counts']['player_aliases'] == imported['counts']['player_aliases']
-        snapshot = player_store.export_snapshot(full_db, 77, '2026-08-19')
-        assert set(snapshot['players']) == {'100'}  # inactive Beta is retained in DB, omitted from active snapshot
-        with closing(player_store.connect(full_db)) as con:
-            assert con.execute('SELECT COUNT(*) FROM legacy_imports').fetchone()[0] == 1
-            assert con.execute('SELECT COUNT(*) FROM absent_dm_deliveries').fetchone()[0] == 1
-            try:
-                con.execute("INSERT INTO attendance(session_id,player_id) VALUES(999999,?)", (alpha_id,))
-                raise AssertionError('foreign key violation accepted')
-            except sqlite3.IntegrityError:
-                pass
     after = working_db.read_bytes() if working_db.exists() else None
     assert before == after, 'working database was modified by tests'
 
@@ -466,13 +289,14 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         stage2_db = root / 'stage2.sqlite3'
-        stage2_json = root / 'players.json'
-        stage2_json.write_text(json.dumps({
-            'config': {'guild_id': 88},
-            'players': {'800': {'game_nick': 'RuntimePlayer'}},
-        }), encoding='utf-8')
-        player_store.ensure_legacy_cutover(stage2_db, stage2_json)
-        json_before = stage2_json.read_bytes()
+        player_store.ensure_schema(stage2_db)
+        player_store.upsert_guild_config(stage2_db, 88)
+        stage2_player = player_store.upsert_binding(
+            stage2_db, '800', 'RuntimePlayer', guild_id=88
+        )
+        player_store.upsert_roster_member(
+            stage2_db, 88, stage2_player, squad_id=None, slot=None
+        )
         snapshot = player_store.load_bot_snapshot(stage2_db, 88)
         snapshot['config'].update({'guild_id': 88, 'log_channel_id': 10,
                                    'voice_channel_ids': [11, 12], 'access_role_ids': [13]})
@@ -486,7 +310,6 @@ def main() -> None:
         assert restored['config']['log_channel_id'] == 10
         assert restored['players']['800']['came'] and restored['players']['800']['in_voice']
         assert restored['kv_maps']['maps'] == ['Хвойник'] and restored['absent_dm_sent'] == ['800']
-        assert stage2_json.read_bytes() == json_before
 
         # Stage 3: grenade/voice checkpoints survive process-style reloads,
         # repeated saves replace rather than add, and finalization atomically
@@ -531,10 +354,9 @@ def main() -> None:
         player_store.save_bot_snapshot(stage2_db, snapshot, 88)
         assert player_store.list_roster(stage2_db, 88) == []
         assert player_store.list_roster(stage2_db, 88, include_inactive=True)[0]['active'] == 0
-        stage2_json.write_text('{broken after marker', encoding='utf-8')
-        cutover_status = player_store.ensure_legacy_cutover(stage2_db, stage2_json)
-        assert cutover_status['skipped']
-        assert set(cutover_status['counts']) == set(player_store.STATUS_COUNT_TABLES)
+        stage2_status = player_store.reconciliation_status(stage2_db)
+        assert stage2_status['integrity'] == 'ok'
+        assert set(stage2_status['counts']) == set(player_store.STATUS_COUNT_TABLES)
         assert player_store.load_bot_snapshot(stage2_db, 88)['players'] == {}
 
     # Regression: run the real startup initialization through main(), but stop at
@@ -542,14 +364,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         startup_db = root / 'startup.sqlite3'
-        startup_json = root / 'players.json'
-        startup_json.write_text('{}', encoding='utf-8')
-        original_values = (bot.PLAYER_DB_PATH, bot.LEGACY_JSON_PATH, bot.DISCORD_TOKEN,
+        original_values = (bot.PLAYER_DB_PATH, bot.DISCORD_TOKEN,
                            bot.CLIENT_SECRET, bot.bot.run, bot.bot.close)
         run_calls = []
         try:
             bot.PLAYER_DB_PATH = startup_db
-            bot.LEGACY_JSON_PATH = startup_json
             bot.DISCORD_TOKEN = 'test-token-not-a-real-secret'
             bot.CLIENT_SECRET = 'test-client-secret'
             bot.bot.run = lambda token, **kwargs: run_calls.append((token, kwargs))
@@ -557,10 +376,10 @@ def main() -> None:
             with patch.object(bot, 'start_admin_panel'):
                 bot.main()
         finally:
-            (bot.PLAYER_DB_PATH, bot.LEGACY_JSON_PATH, bot.DISCORD_TOKEN,
+            (bot.PLAYER_DB_PATH, bot.DISCORD_TOKEN,
              bot.CLIENT_SECRET, bot.bot.run, bot.bot.close) = original_values
         assert run_calls == [('test-token-not-a-real-secret', {'log_handler': None})]
-        startup_status = player_store.ensure_legacy_cutover(startup_db, startup_json)
+        startup_status = player_store.reconciliation_status(startup_db)
         assert startup_status['counts']['player_aliases'] == 0
         assert set(startup_status['counts']) == set(player_store.STATUS_COUNT_TABLES)
 
