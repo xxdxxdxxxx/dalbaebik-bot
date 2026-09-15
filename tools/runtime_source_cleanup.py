@@ -1,5 +1,6 @@
-"""Build the cleaned runtime from the last full pre-cleanup bot source."""
+"""Build the SQLite-only runtime from the last full bot source snapshot."""
 from __future__ import annotations
+
 import ast
 
 REMOVE_FUNCTIONS = {
@@ -17,6 +18,7 @@ REMOVE_FUNCTIONS = {
     "_auto_sheet_sync_once", "start_sheet_watcher", "stop_sheet_watcher",
     "cmd_sheet_sync", "cmd_squad_list", "cmd_sheet_path",
 }
+
 REFRESH = '''@bot.tree.command(name="refresh", description="Обновить сообщения явки и гранат")
 async def cmd_refresh(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -29,6 +31,7 @@ async def cmd_refresh(interaction: discord.Interaction):
         return
     await interaction.followup.send(embed=make_reply_embed("🔄  Обновлено", "Сообщения **ЯВКА** и **ГРАНАТЫ** перерисованы; войсы перепроверены.", color=COLOR_OK), ephemeral=True)
 '''
+
 HELP = '''@bot.tree.command(name="help", description="Список команд бота")
 async def cmd_help(interaction: discord.Interaction):
     text = (
@@ -43,6 +46,7 @@ async def cmd_help(interaction: discord.Interaction):
     await interaction.response.send_message(embed=make_reply_embed("📖  Команды", text, color=COLOR_INFO), ephemeral=True)
 '''
 
+
 def clean_source(text: str) -> str:
     tree = ast.parse(text)
     lines = text.splitlines(keepends=True)
@@ -50,7 +54,7 @@ def clean_source(text: str) -> str:
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        start = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1
+        start = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list]) - 1
         end = node.end_lineno
         if node.name in REMOVE_FUNCTIONS:
             replacements.append((start, end, ""))
@@ -61,19 +65,31 @@ def clean_source(text: str) -> str:
     for start, end, replacement in sorted(replacements, reverse=True):
         lines[start:end] = [replacement] if replacement else []
     text = "".join(lines)
+
     text = text.replace("from sheet_watcher import watch_file\n", "")
     text = text.replace("from openpyxl import load_workbook\n", "")
     start = text.index("# Excel-таблица отрядов (OneDrive-путь или файл в корне проекта)")
     end = text.index("MSK = pytz.timezone", start)
     text = text[:start] + text[end:]
-    for line in ("_sheet_last_mtime: float | None = None\n", "_sheet_last_sig: tuple | None = None\n", "_sheet_last_error: str | None = None\n", '_TECH_SHEET_NAMES = ("tech", "ids", "id", "база", "discord", "mapping", "привязки", "nicks")\n', "_tech_pending: bool = False\n", "_tech_lock_warned: bool = False\n", "_sheet_watcher_task: asyncio.Task | None = None\n"):
+    for line in (
+        "_sheet_last_mtime: float | None = None\n",
+        "_sheet_last_sig: tuple | None = None\n",
+        "_sheet_last_error: str | None = None\n",
+        '_TECH_SHEET_NAMES = ("tech", "ids", "id", "база", "discord", "mapping", "привязки", "nicks")\n',
+        "_tech_pending: bool = False\n",
+        "_tech_lock_warned: bool = False\n",
+        "_sheet_watcher_task: asyncio.Task | None = None\n",
+    ):
         text = text.replace(line, "")
+
     changes = {
         "- отряды + синк из Excel (SHEET_PATH)\n": "- состав и отряды управляются через локальную админ-панель\n",
-        "/dm_absent": "/ls_send", 'name="dm_absent"': 'name="ls_send"',
+        "/dm_absent": "/ls_send",
+        'name="dm_absent"': 'name="ls_send"',
         "async def cmd_dm_absent(": "async def cmd_ls_send(",
         '    for name in ("add", "remove", "list"):': '    for name in ("add", "remove"):',
-        "    start_sheet_watcher()\n": "", "        await stop_sheet_watcher()\n": "",
+        "    start_sheet_watcher()\n": "",
+        "        await stop_sheet_watcher()\n": "",
         '            f"excel {SHEET_PATH.name}",\n': '            "состав: админ-панель + Clan Map",\n',
         'status = "finished · /reset_session?"': 'status = "КВ сегодня завершён"',
         'status = f"⏳ День КВ · сессия не открыта (жди тик или `/reset_session`)"': 'status = "⏳ День КВ · сессия откроется автоматически"',
@@ -90,5 +106,40 @@ def clean_source(text: str) -> str:
     }
     for old, new in changes.items():
         text = text.replace(old, new)
+
+    text = text.replace('LEGACY_JSON_PATH = ROOT / "players.json"\n', '')
+    text = text.replace(
+        '    migration = player_store.ensure_legacy_cutover(PLAYER_DB_PATH, LEGACY_JSON_PATH)\n',
+        '    player_store.ensure_schema(PLAYER_DB_PATH)\n'
+        '    migration = player_store.reconciliation_status(PLAYER_DB_PATH)\n',
+    )
+    text = text.replace(
+        '    player_store.ensure_legacy_cutover(PLAYER_DB_PATH, LEGACY_JSON_PATH)\n',
+        '    player_store.ensure_schema(PLAYER_DB_PATH)\n',
+    )
+    text = text.replace(
+        '"""Load the compatibility snapshot from SQLite after one-time legacy import."""',
+        '"""Load the runtime snapshot from authoritative SQLite storage."""',
+    )
+    text = text.replace(
+        '"""Transactionally save runtime state to SQLite; players.json is never written."""',
+        '"""Transactionally save runtime state to SQLite."""',
+    )
+    text = text.replace(
+        '# Реальный startup-path: схема и legacy import выполняются до подключения к Discord.',
+        '# Схема SQLite проверяется до подключения к Discord.',
+    )
+
+    entry = 'if __name__ == "__main__":\n    main()\n'
+    installed_entry = (
+        'if __name__ == "__main__":\n'
+        '    import tools\n'
+        '    tools.install_runtime(sys.modules.get("__main__"))\n'
+        '    main()\n'
+    )
+    if entry not in text:
+        raise RuntimeError("runtime entry point was not found")
+    text = text.replace(entry, installed_entry, 1)
+
     ast.parse(text)
     return text
