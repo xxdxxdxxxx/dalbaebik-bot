@@ -5,7 +5,7 @@ import ast
 
 
 def finalize_source(text: str) -> str:
-    """Make SQLite authoritative and remove all runtime reads of players.json."""
+    """Make SQLite authoritative and attach extensions after runtime construction."""
     text = text.replace('LEGACY_JSON_PATH = ROOT / "players.json"\n', '')
     text = text.replace(
         '    migration = player_store.ensure_legacy_cutover(PLAYER_DB_PATH, LEGACY_JSON_PATH)\n',
@@ -28,5 +28,15 @@ def finalize_source(text: str) -> str:
         '# Реальный startup-path: схема и legacy import выполняются до подключения к Discord.',
         '# Схема SQLite проверяется до подключения к Discord.',
     )
+    entry = 'if __name__ == "__main__":\n    main()\n'
+    installed_entry = (
+        'if __name__ == "__main__":\n'
+        '    import tools\n'
+        '    tools.install_runtime(sys.modules.get("__main__"))\n'
+        '    main()\n'
+    )
+    if entry not in text:
+        raise RuntimeError("runtime entry point was not found")
+    text = text.replace(entry, installed_entry, 1)
     ast.parse(text)
     return text
