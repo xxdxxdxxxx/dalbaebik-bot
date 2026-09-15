@@ -169,6 +169,67 @@ def index():
     return render("Дни", body)
 
 
+def average_player_efficiencies(con: Any) -> dict[int, float]:
+    """Average the existing relative day EFF over completed KV days."""
+    rows = q(con, """
+        WITH tabs AS (
+            SELECT s.match_date date, sp.player_id,
+                   COUNT(*) tabs,
+                   SUM(sp.kills) kills,
+                   SUM(sp.deaths) deaths,
+                   SUM(sp.assists) assists,
+                   COALESCE(SUM(sp.score), 0) score
+            FROM scans s
+            JOIN scan_players sp ON sp.scan_id=s.id
+            WHERE s.match_date IS NOT NULL AND sp.player_id IS NOT NULL
+            GROUP BY s.match_date, sp.player_id
+        ), grenades AS (
+            SELECT r.match_date date, k.player_id,
+                   MAX(k.total_grenades) grenades
+            FROM kv_daily_reports r
+            JOIN kv_daily_players k ON k.report_id=r.id
+            WHERE k.player_id IS NOT NULL AND k.total_grenades IS NOT NULL
+            GROUP BY r.match_date, k.player_id
+        )
+        SELECT t.date, t.player_id, t.tabs, t.kills, t.deaths,
+               t.assists, t.score, g.grenades
+        FROM tabs t
+        JOIN grenades g ON g.date=t.date AND g.player_id=t.player_id
+        ORDER BY t.date, t.player_id
+    """)
+    weights = {"kills_per_tab": 0.25, "kda": 0.25,
+               "score_per_tab": 0.20, "grenades": 0.20}
+    by_day: dict[str, dict[int, dict[str, float]]] = {}
+    for row in rows:
+        tabs = max(int(row["tabs"]), 1)
+        deaths = int(row["deaths"] or 0)
+        kills = int(row["kills"] or 0)
+        assists = int(row["assists"] or 0)
+        by_day.setdefault(str(row["date"]), {})[int(row["player_id"])] = {
+            "kills_per_tab": kills / tabs,
+            "kda": ((kills + assists) / deaths) if deaths else float(kills + assists),
+            "score_per_tab": float(row["score"] or 0) / tabs,
+            "grenades": float(row["grenades"]),
+        }
+    samples: dict[int, list[float]] = {}
+    for values_by_player in by_day.values():
+        bounds = {
+            key: (min(values[key] for values in values_by_player.values()),
+                  max(values[key] for values in values_by_player.values()))
+            for key in weights
+        }
+        for player_id, values in values_by_player.items():
+            normalized = {}
+            for key, value in values.items():
+                minimum, maximum = bounds[key]
+                normalized[key] = (50.0 if maximum == minimum
+                                   else (value - minimum) / (maximum - minimum) * 100.0)
+            score = sum(normalized[key] * weight for key, weight in weights.items()) / sum(weights.values())
+            samples.setdefault(player_id, []).append(score)
+    return {player_id: round(sum(values) / len(values), 1)
+            for player_id, values in samples.items()}
+
+
 @app.get("/players")
 def players():
     with closing(player_store.connect(DB_PATH)) as con:
@@ -189,6 +250,7 @@ def players():
             GROUP BY p.id, rm.squad_id
             ORDER BY CASE WHEN rm.squad_id=99 THEN 0 ELSE rm.squad_id END,
                      p.canonical_nick COLLATE NOCASE""")
+        eff_by_player = average_player_efficiencies(con)
     groups: dict[int, list[dict[str, Any]]] = {99: [], **{i: [] for i in range(1, 7)}}
     for row in rows:
         groups[int(row["squad_id"])].append(row)
@@ -201,15 +263,16 @@ def players():
         member_rows = "".join(
             f"<tr class='player-row'><td class='nick'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
             f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td>"
+            f"<td class='eff'>{esc(eff_by_player.get(int(r['id']), '—'))}</td>"
             "</tr>"
             for r in members)
         bodies.append(
-            f"<tbody class='squad-group'><tr class='squad-title'><td colspan='3'>{label}</td></tr>"
+            f"<tbody class='squad-group'><tr class='squad-title'><td colspan='4'>{label}</td></tr>"
             f"{member_rows}</tbody>")
     body = ("<div class='pagehead'><div><h1>Игроки</h1>"
             "</div></div>"
             "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
-            "<div class='panel'><table><thead><tr><th class='nick'>Ник</th><th>Дни</th><th>Грены</th></tr></thead>"
+            "<div class='panel'><table><thead><tr><th class='nick'>Ник</th><th>Дни</th><th>Грены</th><th title='Среднее текущего EFF по дням КВ'>EFF</th></tr></thead>"
             f"{''.join(bodies)}</table></div>"
             "<script>function filterPlayers(value){const q=value.toLowerCase();document.querySelectorAll('.squad-group').forEach(group=>{let n=0;group.querySelectorAll('.player-row').forEach(row=>{const show=row.textContent.toLowerCase().includes(q);row.style.display=show?'':'none';if(show)n++});group.style.display=n?'':'none'})}</script>")
     return render("Игроки", body)
