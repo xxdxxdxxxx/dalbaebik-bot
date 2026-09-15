@@ -9,6 +9,7 @@ import threading
 from contextlib import closing
 from functools import wraps
 from urllib.parse import quote
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 LOG = logging.getLogger(__name__)
@@ -39,8 +40,12 @@ def _request(method: str, path: str, payload=None):
             "Prefer": "return=representation",
         },
     )
-    with urlopen(request, timeout=15) as response:
-        raw = response.read()
+    try:
+        with urlopen(request, timeout=15) as response:
+            raw = response.read()
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        raise RuntimeError(f"Supabase HTTP {exc.code}: {detail}") from exc
     return json.loads(raw.decode("utf-8")) if raw else None
 
 
@@ -77,7 +82,7 @@ def _desired_roster(db_path) -> dict[tuple[int, int], str]:
 
 
 def sync_now(db_path) -> bool:
-    """Synchronize six squads by preserving cloud player IDs where possible."""
+    """Replace the cloud roster with the six five-slot SQLite squads."""
     if not os.getenv("CLANMAP_SUPABASE_SECRET_KEY", "").strip():
         return False
     with _SYNC_LOCK:
@@ -98,46 +103,16 @@ def sync_now(db_path) -> bool:
         if set(squad_ids) != set(range(1, 7)):
             raise RuntimeError("Clan Map must contain squads 1-6")
         ids_csv = ",".join(squad_ids[index] for index in range(1, 7))
-        current = _request(
-            "GET", f"players?select=id,squad_id,nickname,slot&squad_id=in.({ids_csv})"
-        ) or []
-        squad_index = {value: key for key, value in squad_ids.items()}
-        by_nick = {_clean(row["nickname"]).casefold(): row for row in current if _clean(row["nickname"])}
-        by_pos = {
-            (squad_index.get(str(row["squad_id"])), int(row["slot"])): row
-            for row in current
-            if str(row["squad_id"]) in squad_index
-        }
-        wanted_nicks = {nick.casefold() for nick in desired.values() if nick}
-
-        for number, row in enumerate(current, 1):
-            _request("PATCH", "players?id=eq." + quote(str(row["id"]), safe="-"), {"slot": 10000 + number})
-
-        used: set[str] = set()
-        for (squad, slot), nickname in sorted(desired.items()):
-            if not nickname:
-                continue
-            row = by_nick.get(nickname.casefold())
-            if row is None:
-                candidate = by_pos.get((squad, slot))
-                if candidate is not None and str(candidate["id"]) not in used:
-                    old_nick = _clean(candidate["nickname"]).casefold()
-                    if old_nick not in wanted_nicks:
-                        row = candidate
-            payload = {"squad_id": squad_ids[squad], "nickname": nickname, "slot": slot}
-            if row is None:
-                created = _request("POST", "players", payload) or []
-                if created:
-                    used.add(str(created[0]["id"]))
-            else:
-                player_id = str(row["id"])
-                _request("PATCH", "players?id=eq." + quote(player_id, safe="-"), payload)
-                used.add(player_id)
-
-        for row in current:
-            player_id = str(row["id"])
-            if player_id not in used:
-                _request("DELETE", "players?id=eq." + quote(player_id, safe="-"))
+        rows = [
+            {"squad_id": squad_ids[squad], "nickname": nickname, "slot": slot}
+            for (squad, slot), nickname in sorted(desired.items())
+            if nickname
+        ]
+        # Player rows are roster-only data. Replacing them avoids the database's
+        # 1..5 slot constraint while keeping the six squad records themselves stable.
+        _request("DELETE", f"players?squad_id=in.({ids_csv})")
+        if rows:
+            _request("POST", "players", rows)
 
         _request(
             "PATCH",
