@@ -87,8 +87,18 @@ def install(runtime):
     def save_bot_snapshot(db_path, data, guild_id=None):
         configured = (data.get("config") or {}).get("guild_id")
         gid = int(guild_id or configured or 0)
+        preserved = []
         if gid:
             with closing(runtime.player_store.connect(db_path)) as con:
+                preserved = [
+                    tuple(row)
+                    for row in con.execute(
+                        """SELECT r.player_id,r.squad_id,r.slot FROM roster_memberships r
+                           LEFT JOIN discord_bindings d ON d.player_id=r.player_id
+                           WHERE r.guild_id=? AND r.active=1 AND d.discord_id IS NULL""",
+                        (gid,),
+                    )
+                ]
                 for record in (data.get("players") or {}).values():
                     nickname = str(record.get("game_nick") or "").strip()
                     if not nickname or (record.get("squad") is not None and record.get("slot") is not None):
@@ -104,7 +114,29 @@ def install(runtime):
                     if position is not None and position[0] is not None and position[1] is not None:
                         record["squad"] = int(position[0])
                         record["slot"] = int(position[1])
-        return original_save_snapshot(db_path, data, guild_id)
+        result = original_save_snapshot(db_path, data, guild_id)
+        if gid and preserved:
+            with closing(runtime.player_store.connect(db_path)) as con:
+                for player_id, squad_id, slot in preserved:
+                    if con.execute(
+                        "SELECT 1 FROM discord_bindings WHERE player_id=?", (player_id,)
+                    ).fetchone() is not None:
+                        continue
+                    occupied = con.execute(
+                        """SELECT 1 FROM roster_memberships WHERE guild_id=? AND squad_id=? AND slot=?
+                           AND active=1 AND player_id<>?""",
+                        (gid, squad_id, slot, player_id),
+                    ).fetchone()
+                    if occupied is not None:
+                        continue
+                    con.execute(
+                        """INSERT INTO roster_memberships(guild_id,player_id,squad_id,slot,active,deactivated_at)
+                           VALUES(?,?,?,?,1,NULL) ON CONFLICT(guild_id,player_id) DO UPDATE SET
+                           squad_id=excluded.squad_id,slot=excluded.slot,active=1,deactivated_at=NULL,
+                           updated_at=CURRENT_TIMESTAMP""",
+                        (gid, player_id, squad_id, slot),
+                    )
+        return result
 
     runtime.format_online_embed = format_online_embed
     runtime.format_grenades_embed = format_grenades_embed
