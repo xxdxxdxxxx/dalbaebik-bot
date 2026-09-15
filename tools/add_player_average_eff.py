@@ -83,7 +83,7 @@ def main() -> None:
     text = replace_one(
         text,
         '    groups: dict[int, list[dict[str, Any]]] = {99: [], **{i: [] for i in range(1, 7)}}\n',
-        '    eff_by_player = average_player_efficiencies(con)\n'
+        '        eff_by_player = average_player_efficiencies(con)\n'
         '    groups: dict[int, list[dict[str, Any]]] = {99: [], **{i: [] for i in range(1, 7)}}\n',
         "players EFF load",
     )
