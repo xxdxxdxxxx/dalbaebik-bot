@@ -1748,6 +1748,8 @@ async def ensure_session_reset(
     today = today_msk_str()
     finished = is_kv_finished(data)
     has_scans = bool(data.get("grenade_history"))
+    if data.get("session_date") != today and n.time() > kv_final_time(n):
+        return data
 
     # Уже открыли сегодняшнее окно и КВ ещё не закончен — не трогаем
     if (
@@ -3318,6 +3320,17 @@ def format_settings_embed(data: dict[str, Any]) -> discord.Embed:
     return embed
 
 
+async def require_bot_admin(interaction: discord.Interaction) -> bool:
+    actor = await resolve_member(interaction)
+    if is_bot_admin(actor):
+        return True
+    await interaction.response.send_message(
+        embed=make_reply_embed("❌  Нет прав", "Только администратор или Manage Server.", color=COLOR_ERR),
+        ephemeral=True,
+    )
+    return False
+
+
 @bot.tree.command(name="setup", description="Настроить канал логов и войс-каналы КВ")
 @app_commands.describe(
     log_channel="Текстовый канал, куда бот пишет явку и гранаты",
@@ -3336,10 +3349,7 @@ async def cmd_setup(
     voice4: discord.VoiceChannel | None = None,
     voice5: discord.VoiceChannel | None = None,
 ):
-    try:
-        day = player_store.parse_match_date(match_date)
-    except ValueError as exc:
-        await interaction.response.send_message(str(exc), ephemeral=True)
+    if not await require_bot_admin(interaction):
         return
     if interaction.guild is None:
         await interaction.response.send_message(
@@ -3403,6 +3413,8 @@ async def cmd_setup(
 @bot.tree.command(name="set_log", description="Указать текстовый канал для логов бота")
 @app_commands.describe(channel="Куда писать явку и гранаты")
 async def cmd_set_log(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_bot_admin(interaction):
+        return
     if interaction.guild is None:
         await interaction.response.send_message(
             embed=make_reply_embed("❌  Ошибка", "Команда только на сервере.", COLOR_ERR),
@@ -3448,6 +3460,8 @@ async def cmd_set_log(interaction: discord.Interaction, channel: discord.TextCha
 @bot.tree.command(name="voice_add", description="Добавить войс-канал для отслеживания явки")
 @app_commands.describe(channel="Войс, в котором отмечаем «пришёл»")
 async def cmd_voice_add(interaction: discord.Interaction, channel: discord.VoiceChannel):
+    if not await require_bot_admin(interaction):
+        return
     if interaction.guild is None:
         await interaction.response.send_message(
             embed=make_reply_embed("❌  Ошибка", "Команда только на сервере.", COLOR_ERR),
@@ -3491,6 +3505,8 @@ async def cmd_voice_add(interaction: discord.Interaction, channel: discord.Voice
 @bot.tree.command(name="voice_remove", description="Убрать войс-канал из отслеживания")
 @app_commands.describe(channel="Какой войс больше не считать")
 async def cmd_voice_remove(interaction: discord.Interaction, channel: discord.VoiceChannel):
+    if not await require_bot_admin(interaction):
+        return
     await interaction.response.defer(ephemeral=True)
 
     async with db_lock:
@@ -3530,6 +3546,8 @@ async def cmd_voice_remove(interaction: discord.Interaction, channel: discord.Vo
 
 @bot.tree.command(name="voice_clear", description="Очистить весь список войс-каналов")
 async def cmd_voice_clear(interaction: discord.Interaction):
+    if not await require_bot_admin(interaction):
+        return
     await interaction.response.defer(ephemeral=True)
 
     async with db_lock:
@@ -4242,6 +4260,10 @@ async def cmd_help(interaction: discord.Interaction):
 
 @bot.tree.command(name="refresh", description="Обновить сообщения явки и гранат")
 async def cmd_refresh(interaction: discord.Interaction):
+    actor = await resolve_member(interaction)
+    if not can_manage_kv(actor):
+        await interaction.response.send_message(embed=deny_embed(), ephemeral=True)
+        return
     await interaction.response.defer(ephemeral=True)
     await refresh_voice_presence()
     async with db_lock:
@@ -4454,6 +4476,17 @@ async def cmd_alias_add(interaction: discord.Interaction, canonical_nick: str, a
     map_name=[app_commands.Choice(name=name, value=name) for name in SCAN_MAP_CHOICES]
 )
 async def cmd_scan(interaction: discord.Interaction, match_date: str, map_name: app_commands.Choice[str], attachment: discord.Attachment):
+    actor = await resolve_member(interaction)
+    if not can_manage_kv(actor):
+        await interaction.response.send_message(embed=deny_embed(), ephemeral=True)
+        return
+    content_type = (attachment.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        await interaction.response.send_message("❌ Нужен файл изображения.", ephemeral=True)
+        return
+    if attachment.size > 10 * 1024 * 1024:
+        await interaction.response.send_message("❌ Изображение больше 10 МБ.", ephemeral=True)
+        return
     try:
         normalized_date = player_store.parse_match_date(match_date)
     except ValueError as exc:
@@ -4601,7 +4634,6 @@ async def schedule_loop():
             return
 
         t = now.time().replace(second=0, microsecond=0)
-        minute_key = now.strftime("%Y-%m-%d %H:%M")
         start_t = kv_start(now)
         absent_t = kv_absent_dm(now)
         steps = kv_grenade_steps(now)
@@ -4657,9 +4689,10 @@ async def schedule_loop():
                 await refresh_voice_presence()
                 log(f"явка открыта · {now.strftime('%H:%M')} МСК", "kv")
 
-        # ЛС неявившимся
-        if t == absent_t and f"{minute_key}:absent_dm" not in done:
-            done.add(f"{minute_key}:absent_dm")
+        # ЛС неявившимся: догон до закрытия явки, без дублей.
+        absent_key = f"{now.strftime('%Y-%m-%d')}:absent_dm"
+        if absent_t <= t < kv_attendance_end(now) and absent_key not in done:
+            done.add(absent_key)
             await refresh_voice_presence()
             guild = bot.get_guild(get_guild_id()) if get_guild_id() else None
             result = await dm_never_came_players(guild, force_resend=False)

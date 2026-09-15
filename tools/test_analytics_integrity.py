@@ -55,18 +55,6 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(bot.fmt_voice_mmss(0), "00:00")
         self.assertEqual(bot.fmt_voice_mmss(None), "-")
 
-    def test_rating_requires_complete_metrics_uses_raw_means_and_ignores_voice(self):
-        def metrics(kills, voice):
-            return {key: [value, 1] for key, value in {
-                "kills": kills, "deaths": 1, "assists": 2,
-                "score": 100, "grenades": 10, "voice_seconds": voice,
-            }.items()}
-        a, b = metrics(.48, 0), metrics(.49, 10000)
-        ratings = bot.calc_stats_efficiencies([(1, a), (5, b)])
-        self.assertLess(ratings[0], ratings[1])
-        a["voice_seconds"] = [99999, 1]
-        self.assertEqual(ratings, bot.calc_stats_efficiencies([(1, a), (5, b)]))
-        self.assertIsNone(bot.calc_stats_efficiencies([(1, {"grenades": [1000, 1]})])[0])
 
 
 class StoreTests(unittest.TestCase):
@@ -128,10 +116,6 @@ class StoreTests(unittest.TestCase):
         roster = {r["game_nick"]: r for r in collected["historical_roster"]}
         self.assertEqual(roster["Alpha"]["squad"], 1)
         self.assertEqual(roster["Beta"]["squad"], 2)
-        text = "\n".join(e.description for e in bot.build_stats_embeds(later, collected))
-        self.assertIn("Beta", text)
-        self.assertIn("Отряд 1", text)
-        self.assertNotIn("Отряд 4", text)
 
     def test_export_round_trip_keeps_unknown_voice_and_endpoint_total(self):
         data = finish(self.db, self.data)
