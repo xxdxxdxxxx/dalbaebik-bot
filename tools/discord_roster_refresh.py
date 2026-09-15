@@ -1,4 +1,4 @@
-"""Refresh the two fixed Discord status messages after admin roster edits."""
+"""Refresh the two fixed Discord status messages after roster-board edits."""
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +35,7 @@ def _submit(runtime) -> None:
 
 
 def schedule(runtime, delay: float = 2.5) -> None:
-    """Collapse rapid cell edits into one edit of each Discord message."""
+    """Collapse rapid roster edits into one update of each fixed message."""
     global _TIMER
     with _TIMER_LOCK:
         if _TIMER is not None:
@@ -49,8 +49,7 @@ def install(admin, runtime) -> None:
     if getattr(admin.app, "_discord_roster_refresh_installed", False):
         return
     admin.app._discord_roster_refresh_installed = True
-    endpoints = ("roster_cell", "roster_cells_swap", "roster_swap", "roster_add", "roster_save", "roster_remove")
-    for endpoint in endpoints:
+    for endpoint in ("roster_cell", "roster_cells_swap"):
         original = admin.app.view_functions.get(endpoint)
         if original is None:
             continue
