@@ -5,7 +5,7 @@ import ast
 REMOVE_FUNCTIONS = {
     "cmd_list", "cmd_reset_session", "cmd_voice_scan_start", "cmd_voice_scan_stop",
     "cmd_stats", "cmd_stats_dates", "cmd_scan_dates", "cmd_scan_view",
-    "cmd_say", "cmd_fix_slash",
+    "cmd_fix_slash",
     "format_voice_scan_live_table", "_update_manual_voice_scan_report", "format_voice_scan_report",
     "_stats_average", "_round_stats_value", "_fmt_stats_number", "_fmt_stats_time",
     "_fmt_stats_nick", "_stats_display_values", "calc_stats_efficiencies",
@@ -38,7 +38,7 @@ async def cmd_help(interaction: discord.Interaction):
         "**Настройка**\\n· `/setup` · `/set_log` · `/settings`\\n"
         "· `/voice_add` · `/voice_remove` · `/voice_clear`\\n"
         "· `/access_add` · `/access_remove` · `/access_list`\\n\\n"
-        "**Служебное**\\n· `/help`"
+        "**Служебное**\\n· `/say` · `/help`"
     )
     await interaction.response.send_message(embed=make_reply_embed("📖  Команды", text, color=COLOR_INFO), ephemeral=True)
 '''
