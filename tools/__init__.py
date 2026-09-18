@@ -2,9 +2,11 @@
 import sys
 
 from . import admin_ui as admin_ui
-from . import clanmap_sync, discord_roster_refresh, roster_board, status_messages, unbound_roster
+from . import clanmap_sync, discord_roster_refresh, roster_board, roster_consistency, status_messages, unbound_roster
 
+roster_consistency.install_player_store()
 roster_board.install(admin_ui)
+roster_consistency.install_roster_board(roster_board)
 clanmap_sync.install(admin_ui)
 
 
