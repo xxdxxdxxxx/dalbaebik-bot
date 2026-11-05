@@ -16,22 +16,233 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import html
+import os
+import secrets
 import sys
+import threading
+import time
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import player_store  # noqa: E402
-from flask import Flask, redirect, request, url_for  # noqa: E402
+from flask import Flask, Response, redirect, request, url_for  # noqa: E402
 
 app = Flask(__name__)
 
 DB_PATH = ROOT / "scan_stats.sqlite3"
+
+# ---------------------------------------------------------------------------
+# Доступ.
+#   ADMIN_PASSWORD=...    включает вход по паролю — панель можно открывать из интернета;
+#   ADMIN_TRUST_PROXY=1   панель стоит за reverse-proxy с HTTPS (Caddy / Cloudflare / Tailscale):
+#                         берём IP клиента из X-Forwarded-For, cookie ставится с флагом Secure;
+#   ADMIN_SESSION_DAYS=7  сколько дней живёт вход (по умолчанию 7).
+# Без ADMIN_PASSWORD панель отвечает только на localhost (SSH-туннель), всё остальное — 403.
+# ---------------------------------------------------------------------------
+AUTH_COOKIE = "admin_auth"
+LOGIN_MAX_FAILS = 5          # неверных паролей с одного IP ...
+LOGIN_WINDOW = 15 * 60       # ... за это число секунд → блокировка до конца окна
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_FORWARD_HEADERS = ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded",
+                    "X-Real-Ip", "Cf-Connecting-Ip")
+_fails: dict[str, list[float]] = {}
+_fails_lock = threading.Lock()
+_secret_cache: bytes | None = None
+
+
+def _password() -> str:
+    return os.getenv("ADMIN_PASSWORD", "").strip()
+
+
+def _trust_proxy() -> bool:
+    return os.getenv("ADMIN_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _session_seconds() -> int:
+    try:
+        return max(1, int(os.getenv("ADMIN_SESSION_DAYS", "7"))) * 86400
+    except ValueError:
+        return 7 * 86400
+
+
+def _client_ip() -> str:
+    if _trust_proxy():
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[-1].strip() or (request.remote_addr or "?")
+    return request.remote_addr or "?"
+
+
+def _is_https() -> bool:
+    if _trust_proxy():
+        return request.headers.get("X-Forwarded-Proto", "").split(",")[-1].strip().lower() == "https"
+    return request.is_secure
+
+
+def _is_local_request() -> bool:
+    host = (urlsplit("//" + request.host).hostname or "").lower()
+    return host in _LOCAL_HOSTS and not any(h in request.headers for h in _FORWARD_HEADERS)
+
+
+def _signing_key() -> bytes:
+    """Случайный секрет хранится в .admin_secret; пароль подмешан, поэтому смена пароля
+    сразу разлогинивает всех."""
+    global _secret_cache
+    if _secret_cache is None:
+        path = ROOT / ".admin_secret"
+        try:
+            _secret_cache = bytes.fromhex(path.read_text().strip())
+        except (OSError, ValueError):
+            _secret_cache = secrets.token_bytes(32)
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(_secret_cache.hex())
+            except OSError:
+                pass  # не смогли сохранить — секрет живёт до перезапуска бота
+    return hashlib.sha256(_secret_cache + b"|" + _password().encode("utf-8")).digest()
+
+
+def _sign(expires: int) -> str:
+    mac = hmac.new(_signing_key(), f"v1|{expires}".encode(), hashlib.sha256).hexdigest()
+    return f"{expires}.{mac}"
+
+
+def _cookie_valid(value: str | None) -> bool:
+    try:
+        expires_s, mac = (value or "").split(".", 1)
+        expires = int(expires_s)
+    except ValueError:
+        return False
+    return expires > time.time() and hmac.compare_digest(_sign(expires), f"{expires}.{mac}")
+
+
+def _password_ok(given: str) -> bool:
+    return hmac.compare_digest(hashlib.sha256(given.encode("utf-8")).digest(),
+                               hashlib.sha256(_password().encode("utf-8")).digest())
+
+
+def _retry_after(ip: str) -> int:
+    """Секунд до конца блокировки (0 — можно пробовать)."""
+    now = time.time()
+    with _fails_lock:
+        recent = [t for t in _fails.get(ip, []) if now - t < LOGIN_WINDOW]
+        if recent:
+            _fails[ip] = recent
+        else:
+            _fails.pop(ip, None)
+        if len(recent) >= LOGIN_MAX_FAILS:
+            return int(LOGIN_WINDOW - (now - recent[0])) + 1
+    return 0
+
+
+def _safe_next(target: str | None) -> str:
+    parts = urlsplit(target or "")
+    if parts.scheme or parts.netloc or not (target or "").startswith("/") or (target or "").startswith("//"):
+        return "/"
+    return target  # type: ignore[return-value]
+
+
+LOGIN_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Вход · Clan Analytics</title><style>
+:root{--bg:#f7f7f5;--panel:#fff;--line:#e5e5e2;--text:#242424;--dim:#787774;--blue:#2783de;--red:#e56458}
+@media(prefers-color-scheme:dark){:root{--bg:#191919;--panel:#202020;--line:#3b3b39;--text:#fff;--dim:#aaa;--blue:#5e9fe8;--red:#e97366}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);
+font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+form{width:min(340px,calc(100% - 32px));background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}
+h1{font-size:18px;margin:0 0 4px}p{margin:0 0 14px;color:var(--dim);font-size:12px}
+input{width:100%;height:38px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+button{width:100%;height:38px;margin-top:10px;border:0;border-radius:8px;background:var(--blue);color:#fff;font:650 14px inherit;cursor:pointer}
+.err{color:var(--red);font-size:12px;margin:8px 0 0}
+</style></head><body><form method="post" action="/login">
+<h1>Clan Analytics</h1><p>Админ-панель клана. Введите пароль.</p>
+<input type="hidden" name="next" value="@@NEXT@@">
+<input type="password" name="password" placeholder="Пароль" autocomplete="current-password" autofocus required>
+@@ERR@@<button type="submit">Войти</button></form></body></html>"""
+
+
+def _login_page(next_url: str, error: str = "", status: int = 200) -> Response:
+    body = LOGIN_PAGE.replace("@@NEXT@@", html.escape(next_url, quote=True)).replace(
+        "@@ERR@@", f'<div class="err">{html.escape(error)}</div>' if error else "")
+    return Response(body, status=status, mimetype="text/html")
+
+
+@app.before_request
+def _guard():
+    if not _password():
+        if _is_local_request():
+            return None
+        return Response("Панель доступна только локально. Чтобы открыть её в интернете, "
+                        "задайте ADMIN_PASSWORD в .env бота.\n", status=403, mimetype="text/plain")
+    if request.method not in ("GET", "HEAD", "OPTIONS"):  # защита от CSRF поверх SameSite=Lax
+        origin = request.headers.get("Origin") or request.headers.get("Referer")
+        if origin and urlsplit(origin).netloc != request.host:
+            return Response("Forbidden\n", status=403, mimetype="text/plain")
+    if request.endpoint == "login":
+        return None
+    if _cookie_valid(request.cookies.get(AUTH_COOKIE)):
+        return None
+    if request.method in ("GET", "HEAD"):
+        target = request.full_path.rstrip("?")
+        return redirect(url_for("login", next=target), code=303)
+    return Response("Нужен вход\n", status=401, mimetype="text/plain")
+
+
+@app.after_request
+def _secure_headers(resp):
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    if _password():
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["X-Robots-Tag"] = "noindex"
+        if _is_https():
+            resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return resp
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not _password():
+        return redirect("/")
+    next_url = _safe_next(request.values.get("next"))
+    if request.method == "GET":
+        return redirect(next_url) if _cookie_valid(request.cookies.get(AUTH_COOKIE)) else _login_page(next_url)
+    ip = _client_ip()
+    wait = _retry_after(ip)
+    if wait:
+        resp = _login_page(next_url, f"Слишком много попыток. Подождите {wait // 60 + 1} мин.", 429)
+        resp.headers["Retry-After"] = str(wait)
+        return resp
+    if not _password_ok(request.form.get("password", "")):
+        with _fails_lock:
+            _fails.setdefault(ip, []).append(time.time())
+        time.sleep(0.7)
+        return _login_page(next_url, "Неверный пароль.", 401)
+    with _fails_lock:
+        _fails.pop(ip, None)
+    resp = redirect(next_url, code=303)
+    resp.set_cookie(AUTH_COOKIE, _sign(int(time.time()) + _session_seconds()), max_age=_session_seconds(),
+                    httponly=True, secure=_is_https(), samesite="Lax", path="/")
+    return resp
+
+
+@app.post("/logout")
+def logout():
+    resp = redirect(url_for("login") if _password() else "/", code=303)
+    resp.delete_cookie(AUTH_COOKIE, path="/")
+    return resp
+
 
 RU_MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль",
              "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
@@ -102,13 +313,16 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name=
 .scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}.source-badge{{display:inline-block;margin-left:5px;padding:1px 4px;border:1px solid var(--line);border-radius:4px;color:var(--dim);font-size:9px;vertical-align:1px}}input#flt{{width:min(100%,300px)}}
 .chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--dim);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}.sortable{{cursor:pointer;user-select:none}}.sortable::after{{content:" ↕";color:var(--dim);font-size:9px}}.sortable[data-dir="desc"]::after{{content:" ↓";color:var(--blue)}}.sortable[data-dir="asc"]::after{{content:" ↑";color:var(--blue)}}.eff{{font-weight:800;color:var(--blue)}}
 @media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
-</style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a></nav></div></header><main class="wrap {layout}">{body}</main></body></html>"""
+</style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a>{logout}</nav></div></header><main class="wrap {layout}">{body}</main></body></html>"""
+
+
+LOGOUT_FORM = '<form method="post" action="/logout" style="margin:0 0 0 8px"><button type="submit">Выйти</button></form>'
 
 
 def render(title: str, body: str) -> str:
     path=request.path
     layout = "layout-day" if path.startswith("/day/") else ("layout-players" if path.startswith("/player") else "layout-overview")
-    return PAGE.format(title=html.escape(title),body=body,home=url_for("index"),players=url_for("players"),layout=layout,ov="active" if path=="/" or path.startswith("/day/") else "",pl="active" if path.startswith("/player") else "")
+    return PAGE.format(title=html.escape(title),body=body,home=url_for("index"),players=url_for("players"),layout=layout,ov="active" if path=="/" or path.startswith("/day/") else "",pl="active" if path.startswith("/player") else "",logout=LOGOUT_FORM if _password() else "")
 
 
 def all_dates(con: Any) -> list[str]:
