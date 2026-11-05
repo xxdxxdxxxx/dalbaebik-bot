@@ -129,7 +129,8 @@ def log_banner(lines: list[str]) -> None:
 # Настройки (.env — только токен и API; каналы задаются командами в Discord)
 # ---------------------------------------------------------------------------
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
-# Локальная админ-панель базы (http://127.0.0.1:ADMIN_PORT); ADMIN_UI=0 — выключить
+# Админ-панель базы (слушает 127.0.0.1:ADMIN_PORT; в интернет — через reverse-proxy + ADMIN_PASSWORD,
+# см. README); ADMIN_UI=0 — выключить
 ADMIN_PANEL_ENABLED = os.getenv("ADMIN_UI", "1").strip().lower() not in {"0", "false", "no", "off"}
 try:
     ADMIN_PANEL_PORT = int(os.getenv("ADMIN_PORT", "8787") or 8787)
@@ -4970,7 +4971,10 @@ def start_admin_panel() -> None:
         return
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     threading.Thread(target=server.serve_forever, name="admin-ui", daemon=True).start()
-    log(f"админ-панель базы: http://127.0.0.1:{ADMIN_PANEL_PORT}", "ok")
+    if os.getenv("ADMIN_PASSWORD", "").strip():
+        log(f"админ-панель базы: http://127.0.0.1:{ADMIN_PANEL_PORT} · вход по паролю включён", "ok")
+    else:
+        log(f"админ-панель базы: http://127.0.0.1:{ADMIN_PANEL_PORT} · только локально (задайте ADMIN_PASSWORD для доступа из интернета)", "ok")
 
 
 def main():
