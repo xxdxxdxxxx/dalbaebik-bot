@@ -4630,6 +4630,90 @@ async def voice_time_refresh_loop():
         log(f"voice_scan live-refresh: {e}", "err")
 
 
+_DB_FAIL: dict[str, float] = {"count": 0, "last": 0.0, "warned_policy": 0}
+DB_FAIL_RESTART_AFTER = 12  # подряд идущих сбоев расписания (шаг 20 с → ≈4 минуты)
+
+
+def db_failure_report() -> str:
+    """Что именно мешает открыть базу: файлы, место, права, лимит дескрипторов."""
+    parts: list[str] = []
+    try:
+        import resource
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        parts.append(f"открытых файлов={len(os.listdir('/proc/self/fd'))}/{soft}")
+    except Exception:  # not Linux / no /proc
+        pass
+    try:
+        import shutil
+        usage = shutil.disk_usage(PLAYER_DB_PATH.parent)
+        parts.append(f"свободно={usage.free / 1024 ** 3:.1f} ГБ")
+    except OSError as e:
+        parts.append(f"диск: {e}")
+    try:
+        parts.append(f"uid={os.getuid()}")
+    except AttributeError:
+        pass
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        path = PLAYER_DB_PATH.with_name(PLAYER_DB_PATH.name + suffix)
+        try:
+            st = path.stat()
+            parts.append(f"{path.name}: владелец={st.st_uid} права={oct(st.st_mode & 0o777)}")
+        except FileNotFoundError:
+            if suffix == "":
+                parts.append(f"{path.name}: НЕТ ФАЙЛА")
+        except OSError as e:
+            parts.append(f"{path.name}: {e}")
+    try:
+        parts.append(f"cwd={os.getcwd()}")
+    except OSError as e:
+        parts.append(f"cwd недоступен ({e})")
+    return " · ".join(parts)
+
+
+def _systemd_restarts_on_failure() -> bool:
+    """True, если сервис под systemd и у него Restart=always/on-failure."""
+    if os.environ.get("DB_WATCHDOG_RESTART", "1") == "0" or not os.environ.get("INVOCATION_ID"):
+        return False
+    try:
+        import subprocess
+        unit = ""
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            name = line.rsplit("/", 1)[-1]
+            if name.endswith(".service"):
+                unit = name
+        if not unit:
+            return False
+        policy = subprocess.run(["systemctl", "show", "-p", "Restart", "--value", unit],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+        return policy in {"always", "on-failure", "on-abnormal"}
+    except Exception:
+        return False
+
+
+def note_db_failure(exc: BaseException) -> None:
+    """Сбои базы в расписании: понятный лог сразу, перезапуск процесса при затяжном сбое."""
+    if not isinstance(exc, sqlite3.Error):
+        return
+    now = time.monotonic()
+    if now - _DB_FAIL["last"] > 120:
+        _DB_FAIL["count"] = 0
+    _DB_FAIL["count"] += 1
+    _DB_FAIL["last"] = now
+    count = int(_DB_FAIL["count"])
+    if count in (1, 6):
+        log(f"БД недоступна ({exc}) · {db_failure_report()}", "err")
+    if count < DB_FAIL_RESTART_AFTER:
+        return
+    if _systemd_restarts_on_failure():
+        log("БД недоступна несколько минут подряд — перезапуск процесса (systemd поднимет заново)", "err")
+        logging.shutdown()
+        os._exit(75)
+    if not _DB_FAIL["warned_policy"]:
+        _DB_FAIL["warned_policy"] = 1
+        log("БД недоступна несколько минут подряд. Автоперезапуск не включён: добавьте "
+            "Restart=always в systemd-сервис бота или перезапустите его вручную", "err")
+
+
 @tasks.loop(seconds=20)
 async def schedule_loop():
     """
@@ -4655,6 +4739,7 @@ async def schedule_loop():
         # Проверяется каждые 20 секунд независимо от флагов выполненных этапов.
         scan_window_open = steps[0][1] <= t < steps[-1][1]
         data_watch = load_db()
+        _DB_FAIL["count"] = 0
         if t >= steps[-1][1] and voice_scan_is_active() and not _voice_scan.get("manual"):
             await stop_voice_scan()  # API retries must not extend the speech interval
         scan_expected = (
@@ -4786,6 +4871,7 @@ async def schedule_loop():
 
     except Exception as e:
         log(f"расписание: {e}", "err")
+        note_db_failure(e)
 
 
 @voice_watch_loop.before_loop
