@@ -816,7 +816,15 @@ async def do_roster_add(
                 data["players"][str(target.id)]["in_voice"] = True
                 if can_mark_came(data):
                     data["players"][str(target.id)]["came"] = True
-        save_db(data)
+        try:
+            save_db(data)
+        except player_store.NicknameConflict as exc:
+            owner = f"<@{exc.discord_id}>" if exc.discord_id else "другим игроком"
+            return False, make_reply_embed(
+                "❌  Ник уже занят",
+                f"Ник STALCRAFT `{game_nick}` уже привязан к {owner}.",
+                color=COLOR_ERR,
+            )
         player_id = await asyncio.to_thread(
             player_store.upsert_binding,
             PLAYER_DB_PATH,

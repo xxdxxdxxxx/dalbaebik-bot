@@ -168,6 +168,11 @@ CREATE TABLE IF NOT EXISTS kv_daily_grenade_stages(
  PRIMARY KEY(report_id, row_no, stage_no),
  FOREIGN KEY(report_id, row_no) REFERENCES kv_daily_players(report_id, row_no) ON DELETE CASCADE
 );
+-- Архив дней КВ: день скрыт из списков и статистики, данные остаются и возвращаются кнопкой в панели.
+CREATE TABLE IF NOT EXISTS archived_days(
+ match_date TEXT NOT NULL PRIMARY KEY,
+ archived_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE INDEX IF NOT EXISTS idx_kv_reports_date_guild ON kv_daily_reports(match_date, guild_id);
 CREATE INDEX IF NOT EXISTS idx_kv_players_player ON kv_daily_players(player_id, report_id);
 
@@ -454,6 +459,73 @@ def _merge_player(con: sqlite3.Connection, survivor: int, duplicate: int) -> Non
     con.execute("DELETE FROM players WHERE id=?", (duplicate,))
 
 
+class NicknameConflict(ValueError):
+    """The nickname already belongs to a player bound to a different Discord account."""
+
+    def __init__(self, nickname: str, discord_id: str | int | None = None):
+        super().__init__(f"nickname {nickname!r} belongs to another player")
+        self.nickname = nickname
+        self.discord_id = None if discord_id is None else str(discord_id)
+
+
+def _merge_player_everywhere(con: sqlite3.Connection, survivor: int, duplicate: int,
+                             *, final_nick: str | None = None) -> None:
+    """Merge a duplicate identity including roster-board and live-session rows.
+
+    ``_merge_player`` only moves statistics. A player created from the admin
+    board also owns roster/live rows that would block deleting it (FOREIGN KEY),
+    so those are carried over first and the old spelling stays resolvable.
+    """
+    if survivor == duplicate:
+        return
+    dup = con.execute("SELECT canonical_nick FROM players WHERE id=?", (duplicate,)).fetchone()
+    if dup is None:
+        return
+    keep = con.execute("SELECT canonical_nick FROM players WHERE id=?", (survivor,)).fetchone()
+    skip = {_norm(final_nick or "")}
+    if keep is not None:
+        skip.add(_norm(keep[0]))
+    if _norm(dup[0]) not in skip:
+        con.execute("INSERT OR IGNORE INTO player_aliases(alias,player_id) VALUES(?,?)", (dup[0], survivor))
+
+    # Roster membership is unique per (guild, player): the survivor's own position
+    # wins, the duplicate's position is used only when the survivor has none.
+    for row in list(con.execute(
+            "SELECT id,guild_id,squad_id,slot,active FROM roster_memberships WHERE player_id=?", (duplicate,))):
+        mine = con.execute("SELECT id,squad_id,slot,active FROM roster_memberships WHERE guild_id=? AND player_id=?",
+                           (row["guild_id"], survivor)).fetchone()
+        dup_has_place = bool(row["active"]) and row["squad_id"] is not None and row["slot"] is not None
+        if mine is None:
+            con.execute("UPDATE roster_memberships SET player_id=? WHERE id=?", (survivor, row["id"]))
+            continue
+        mine_has_place = bool(mine["active"]) and mine["squad_id"] is not None and mine["slot"] is not None
+        con.execute("DELETE FROM roster_memberships WHERE id=?", (row["id"],))
+        if dup_has_place and not mine_has_place:
+            con.execute("""UPDATE roster_memberships SET squad_id=?,slot=?,active=1,deactivated_at=NULL,
+                updated_at=CURRENT_TIMESTAMP WHERE id=?""", (row["squad_id"], row["slot"], mine["id"]))
+
+    con.execute("UPDATE OR IGNORE session_roster SET player_id=? WHERE player_id=?", (survivor, duplicate))
+    con.execute("DELETE FROM session_roster WHERE player_id=?", (duplicate,))
+    for row in list(con.execute("SELECT session_id,came,in_voice FROM attendance WHERE player_id=?", (duplicate,))):
+        con.execute("""INSERT INTO attendance(session_id,player_id,came,in_voice) VALUES(?,?,?,?)
+            ON CONFLICT(session_id,player_id) DO UPDATE SET came=MAX(came,excluded.came),
+            in_voice=MAX(in_voice,excluded.in_voice),updated_at=CURRENT_TIMESTAMP""",
+            (row["session_id"], survivor, row["came"], row["in_voice"]))
+    con.execute("DELETE FROM attendance WHERE player_id=?", (duplicate,))
+    con.execute("UPDATE OR IGNORE live_grenade_state SET player_id=? WHERE player_id=?", (survivor, duplicate))
+    con.execute("DELETE FROM live_grenade_state WHERE player_id=?", (duplicate,))
+    con.execute("UPDATE absent_dm_deliveries SET player_id=? WHERE player_id=?", (survivor, duplicate))
+    con.execute("UPDATE voice_checkpoints SET player_id=? WHERE player_id=?", (survivor, duplicate))
+    for row in list(con.execute("""SELECT source_key,stat_key,value,match_date,guild_id
+            FROM grenade_session_stats WHERE player_id=?""", (duplicate,))):
+        con.execute("""INSERT INTO grenade_session_stats(source_key,player_id,stat_key,value,match_date,guild_id)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(source_key,player_id,stat_key) DO UPDATE SET
+            value=MAX(value,excluded.value)""",
+            (row["source_key"], survivor, row["stat_key"], row["value"], row["match_date"], row["guild_id"]))
+    con.execute("DELETE FROM grenade_session_stats WHERE player_id=?", (duplicate,))
+    _merge_player(con, survivor, duplicate)
+
+
 def _reconcile_unicode_identities(con: sqlite3.Connection) -> None:
     """Merge legacy players connected by equal Unicode-casefolded names/aliases."""
     parent: dict[int, int] = {}
@@ -489,7 +561,12 @@ def _reconcile_unicode_identities(con: sqlite3.Connection) -> None:
     for ids in groups.values():
         survivor = min(ids)
         for duplicate in sorted(ids):
-            _merge_player(con, survivor, duplicate)
+            _merge_player_everywhere(con, survivor, duplicate)
+
+
+def not_archived(column: str) -> str:
+    """SQL-условие «этот день КВ не в архиве» (NULL-безопасно, колонка — например s.match_date)."""
+    return f"NOT EXISTS (SELECT 1 FROM archived_days _arch WHERE _arch.match_date={column})"
 
 
 def connect(db_path: Path | str) -> sqlite3.Connection:
@@ -693,9 +770,9 @@ def list_stats_dates(db_path: Path | str, guild_id: int | None = None) -> list[d
     ensure_schema(db_path)
     with closing(connect(db_path)) as con:
         params: tuple[Any, ...] = () if guild_id is None else (int(guild_id),)
-        sw = "match_date IS NOT NULL" + (" AND guild_id=?" if guild_id is not None else "")
-        gw = "match_date IS NOT NULL" + (" AND guild_id=?" if guild_id is not None else "")
-        vw = "v.session_date IS NOT NULL" + (" AND EXISTS (SELECT 1 FROM player_guilds pg WHERE pg.player_id=v.player_id AND pg.guild_id=?)" if guild_id is not None else "")
+        sw = "match_date IS NOT NULL AND " + not_archived("scans.match_date") + (" AND guild_id=?" if guild_id is not None else "")
+        gw = "match_date IS NOT NULL AND " + not_archived("grenade_session_stats.match_date") + (" AND guild_id=?" if guild_id is not None else "")
+        vw = "v.session_date IS NOT NULL AND " + not_archived("v.session_date") + (" AND EXISTS (SELECT 1 FROM player_guilds pg WHERE pg.player_id=v.player_id AND pg.guild_id=?)" if guild_id is not None else "")
         dates: dict[str, dict[str, Any]] = {}
         for source, sql in (("tabs", f"SELECT match_date d,COUNT(DISTINCT id) n FROM scans WHERE {sw} GROUP BY match_date"), ("grenades", f"SELECT match_date d,COUNT(DISTINCT source_key) n FROM grenade_session_stats WHERE {gw} GROUP BY match_date"), ("voice", f"SELECT v.session_date d,COUNT(DISTINCT v.source_key) n FROM voice_stats v WHERE {vw} GROUP BY v.session_date")):
             for row in con.execute(sql, params):
@@ -852,7 +929,7 @@ def list_scan_dates(db_path: Path | str, guild_id: int) -> list[dict[str, Any]]:
     with closing(connect(db_path)) as con:
         return [dict(row) for row in con.execute(
             """SELECT match_date,COUNT(*) AS scan_count FROM scans
-               WHERE guild_id=? AND match_date IS NOT NULL
+               WHERE guild_id=? AND match_date IS NOT NULL AND """ + not_archived("scans.match_date") + """
                GROUP BY match_date ORDER BY match_date DESC""",
             (int(guild_id),),
         )]
@@ -944,6 +1021,17 @@ def _runtime_guild_id(con: sqlite3.Connection, preferred: int | None = None) -> 
     return int(row[0]) if row is not None else 0
 
 
+def _roster_base(players: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(did): {
+            "nick": str(record.get("game_nick") or ""),
+            "squad": record.get("squad"),
+            "slot": record.get("slot"),
+        }
+        for did, record in (players or {}).items()
+    }
+
+
 def load_bot_snapshot(db_path: Path | str, guild_id: int | None = None) -> dict[str, Any]:
     """Build the legacy-shaped runtime object exclusively from normalized SQLite state."""
     ensure_schema(db_path)
@@ -983,6 +1071,10 @@ def load_bot_snapshot(db_path: Path | str, guild_id: int | None = None) -> dict[
             }
         data: dict[str, Any] = {
             "players": players,
+            # What the roster looked like when this snapshot was taken. On save only
+            # the differences from it are written, so a snapshot that stayed in
+            # memory for a few seconds cannot overwrite edits made in the admin board.
+            "_roster_base": _roster_base(players),
             "message_ids": {"online": None, "grenades": None},
             "session_date": None, "grenade_date": None,
             "grenade_history": {}, "voice_speak_seconds": {},
@@ -1106,6 +1198,48 @@ def recover_daily_reports(db_path: Path | str) -> int:
             raise
 
 
+def _merge_roster_changes(con: sqlite3.Connection, gid: int, players: dict[str, Any],
+                          current: dict[str, int], base: dict[str, Any]) -> None:
+    """Three-way merge of the bot's roster snapshot with the live database.
+
+    ``base`` is what the snapshot looked like when it was loaded, ``players`` is
+    what the bot holds now and the database is what is stored right now (admin
+    board edits included). Only what the bot itself changed is written.
+    """
+    # Removed by the bot (e.g. /remove): in the base, gone from the snapshot.
+    for did in base:
+        if did in players:
+            continue
+        row = con.execute("SELECT player_id FROM discord_bindings WHERE discord_id=?", (str(did),)).fetchone()
+        if row is not None:
+            con.execute("""UPDATE roster_memberships SET active=0,
+                deactivated_at=COALESCE(deactivated_at,CURRENT_TIMESTAMP),updated_at=CURRENT_TIMESTAMP
+                WHERE guild_id=? AND player_id=?""", (gid, int(row[0])))
+    for did, pid in current.items():
+        record = players[did]
+        position = (record.get("squad"), record.get("slot"))
+        before = base.get(did)
+        stored = con.execute(
+            "SELECT squad_id,slot,active FROM roster_memberships WHERE guild_id=? AND player_id=?",
+            (gid, pid)).fetchone()
+        untouched = before is not None and (before.get("squad"), before.get("slot")) == position
+        has_place = stored is not None and stored["squad_id"] is not None and stored["slot"] is not None
+        if stored is not None and (untouched or (position == (None, None) and stored["active"] and has_place)):
+            # The bot did not move this player: the database (admin board) decides.
+            if stored["active"]:
+                record["squad"], record["slot"] = stored["squad_id"], stored["slot"]
+            continue
+        if position[0] is not None and position[1] is not None:
+            con.execute("""UPDATE roster_memberships SET active=0,
+                deactivated_at=COALESCE(deactivated_at,CURRENT_TIMESTAMP),updated_at=CURRENT_TIMESTAMP
+                WHERE guild_id=? AND squad_id=? AND slot=? AND active=1 AND player_id<>?""",
+                (gid, position[0], position[1], pid))
+        con.execute("""INSERT INTO roster_memberships(guild_id,player_id,squad_id,slot,active,deactivated_at)
+            VALUES(?,?,?,?,1,NULL) ON CONFLICT(guild_id,player_id) DO UPDATE SET
+            squad_id=excluded.squad_id,slot=excluded.slot,active=1,deactivated_at=NULL,
+            updated_at=CURRENT_TIMESTAMP""", (gid, pid, position[0], position[1]))
+
+
 def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int | None = None) -> int:
     """Transactionally persist the legacy-shaped runtime object to SQLite only."""
     ensure_schema(db_path)
@@ -1124,12 +1258,16 @@ def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int |
             con.executemany("INSERT INTO guild_access_roles(guild_id,role_id) VALUES(?,?)",
                 [(gid, int(rid)) for rid in dict.fromkeys(cfg.get("access_role_ids") or [])])
 
+            base_raw = data.get("_roster_base")
+            base = base_raw if isinstance(base_raw, dict) else None
+            players_now = data.get("players") or {}
             current: dict[str, int] = {}
-            for did, record in (data.get("players") or {}).items():
+            for did, record in players_now.items():
                 nick = str(record.get("game_nick") or "").strip()
                 if not nick:
                     continue
                 did = str(did)
+                base_rec = base.get(did) if base is not None else None
                 binding = con.execute(
                     "SELECT player_id FROM discord_bindings WHERE discord_id=?", (did,)
                 ).fetchone()
@@ -1139,23 +1277,34 @@ def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int |
                     # A Discord binding is the stable identity. A roster nickname edit
                     # renames that player instead of creating a second identity.
                     pid = int(binding[0])
-                    owner_ids = _identity_ids(con, nick)
-                    if owner_ids and owner_ids != {pid}:
-                        raise ValueError(f"nickname {nick!r} belongs to another player")
-                    old_row = con.execute(
-                        "SELECT canonical_nick FROM players WHERE id=?", (pid,)
-                    ).fetchone()
-                    old_nick = str(old_row[0]) if old_row else ""
-                    if old_nick and _norm(old_nick) != _norm(nick):
-                        con.execute("UPDATE players SET canonical_nick=? WHERE id=?", (nick, pid))
-                        # Keep the previous spelling/name resolvable for old scans and
-                        # imported reports without changing their player_id.
-                        con.execute(
-                            "INSERT OR IGNORE INTO player_aliases(alias,player_id) VALUES(?,?)",
-                            (old_nick, pid),
-                        )
-                    elif old_nick != nick:
-                        con.execute("UPDATE players SET canonical_nick=? WHERE id=?", (nick, pid))
+                    nick_untouched = base_rec is not None and _norm(base_rec.get("nick") or "") == _norm(nick)
+                    if not nick_untouched:
+                        others = _identity_ids(con, nick) - {pid}
+                        # The same nickname may already exist as a player nobody bound
+                        # to Discord (typed on the admin board, seen in a scan, an old
+                        # alias). That is the same person: merge instead of failing.
+                        for other in sorted(others):
+                            row = con.execute(
+                                "SELECT discord_id FROM discord_bindings WHERE player_id=? AND discord_id<>? LIMIT 1",
+                                (other, did)).fetchone()
+                            if row is not None:
+                                raise NicknameConflict(nick, row[0])
+                        for other in sorted(others):
+                            _merge_player_everywhere(con, pid, other, final_nick=nick)
+                        old_row = con.execute(
+                            "SELECT canonical_nick FROM players WHERE id=?", (pid,)
+                        ).fetchone()
+                        old_nick = str(old_row[0]) if old_row else ""
+                        if old_nick and _norm(old_nick) != _norm(nick):
+                            con.execute("UPDATE players SET canonical_nick=? WHERE id=?", (nick, pid))
+                            # Keep the previous spelling/name resolvable for old scans and
+                            # imported reports without changing their player_id.
+                            con.execute(
+                                "INSERT OR IGNORE INTO player_aliases(alias,player_id) VALUES(?,?)",
+                                (old_nick, pid),
+                            )
+                        elif old_nick != nick:
+                            con.execute("UPDATE players SET canonical_nick=? WHERE id=?", (nick, pid))
                 current[did] = pid
                 con.execute("""INSERT INTO discord_bindings(discord_id,player_id,discord_name,discord_username)
                     VALUES(?,?,?,?) ON CONFLICT(discord_id) DO UPDATE SET player_id=excluded.player_id,
@@ -1163,16 +1312,21 @@ def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int |
                     updated_at=CURRENT_TIMESTAMP""", (did, pid, str(record.get("discord_name") or ""),
                     str(record.get("discord_username") or "")))
                 con.execute("INSERT OR IGNORE INTO player_guilds(player_id,guild_id) VALUES(?,?)", (pid, gid))
-            # Deactivate first so slot swaps and removals cannot violate the partial unique index.
-            con.execute("""UPDATE roster_memberships SET active=0,
-                deactivated_at=COALESCE(deactivated_at,CURRENT_TIMESTAMP),updated_at=CURRENT_TIMESTAMP
-                WHERE guild_id=?""", (gid,))
-            for did, pid in current.items():
-                record = data["players"][did]
-                con.execute("""INSERT INTO roster_memberships(guild_id,player_id,squad_id,slot,active,deactivated_at)
-                    VALUES(?,?,?,?,1,NULL) ON CONFLICT(guild_id,player_id) DO UPDATE SET
-                    squad_id=excluded.squad_id,slot=excluded.slot,active=1,deactivated_at=NULL,
-                    updated_at=CURRENT_TIMESTAMP""", (gid, pid, record.get("squad"), record.get("slot")))
+            if base is None:
+                # No base snapshot (hand-built data): the object is the whole truth.
+                # Deactivate first so slot swaps and removals cannot violate the partial unique index.
+                con.execute("""UPDATE roster_memberships SET active=0,
+                    deactivated_at=COALESCE(deactivated_at,CURRENT_TIMESTAMP),updated_at=CURRENT_TIMESTAMP
+                    WHERE guild_id=?""", (gid,))
+                for did, pid in current.items():
+                    record = players_now[did]
+                    con.execute("""INSERT INTO roster_memberships(guild_id,player_id,squad_id,slot,active,deactivated_at)
+                        VALUES(?,?,?,?,1,NULL) ON CONFLICT(guild_id,player_id) DO UPDATE SET
+                        squad_id=excluded.squad_id,slot=excluded.slot,active=1,deactivated_at=NULL,
+                        updated_at=CURRENT_TIMESTAMP""", (gid, pid, record.get("squad"), record.get("slot")))
+            else:
+                _merge_roster_changes(con, gid, players_now, current, base)
+                data["_roster_base"] = _roster_base(players_now)
 
             con.execute("DELETE FROM squad_names WHERE guild_id=?", (gid,))
             con.executemany("INSERT INTO squad_names(guild_id,squad_id,name) VALUES(?,?,?)",
@@ -1707,10 +1861,10 @@ def collect_stats_samples(
 
 def list_kv_daily_dates(db_path, guild_id=None):
     ensure_schema(db_path)
-    sql = "SELECT DISTINCT match_date FROM kv_daily_reports"
+    sql = "SELECT DISTINCT match_date FROM kv_daily_reports WHERE " + not_archived("kv_daily_reports.match_date")
     params: list[Any] = []
     if guild_id is not None:
-        sql += " WHERE guild_id=?"
+        sql += " AND guild_id=?"
         params.append(int(guild_id))
     sql += " ORDER BY match_date DESC"
     with closing(connect(db_path)) as con:
@@ -1836,7 +1990,7 @@ def collect_kv_daily_stats(db_path, date_from=None, date_to=None, guild_id=None)
             str(row["discord_id"]): int(row["player_id"])
             for row in con.execute("SELECT discord_id,player_id FROM discord_bindings")
         }
-        scan_filters: list[str] = []
+        scan_filters: list[str] = [not_archived("s.match_date")]
         scan_params: list[Any] = []
         if start:
             scan_filters.append("s.match_date>=?")
@@ -1859,7 +2013,7 @@ def collect_kv_daily_stats(db_path, date_from=None, date_to=None, guild_id=None)
             add(player_id, "assists", row["assists"])
             add(player_id, "score", row["score"])
 
-        report_filters: list[str] = []
+        report_filters: list[str] = [not_archived("r.match_date")]
         report_params: list[Any] = []
         if start:
             report_filters.append("r.match_date>=?")
@@ -1897,7 +2051,7 @@ def collect_kv_daily_stats(db_path, date_from=None, date_to=None, guild_id=None)
             params = [start, end] + ([int(guild_id)] if guild_id is not None else [])
             for row in con.execute("""SELECT sr.* FROM session_roster sr
                     JOIN runtime_sessions s ON s.id=sr.session_id
-                    WHERE s.session_date>=? AND s.session_date<=?""" + scope + " ORDER BY s.session_date,s.id", params):
+                    WHERE s.session_date>=? AND s.session_date<=? AND """ + not_archived("s.session_date") + scope + " ORDER BY s.session_date,s.id", params):
                 historical[int(row["player_id"])] = {
                     "player_id": int(row["player_id"]), "game_nick": row["game_nick"],
                     "squad": row["squad_id"], "slot": row["slot"], "squad_label": row["squad_label"],
