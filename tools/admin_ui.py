@@ -324,7 +324,7 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name=
 .scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}.source-badge{{display:inline-block;margin-left:5px;padding:1px 4px;border:1px solid var(--line);border-radius:4px;color:var(--dim);font-size:9px;vertical-align:1px}}input#flt{{width:min(100%,300px)}}
 .chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--dim);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}.sortable{{cursor:pointer;user-select:none}}.sortable::after{{content:" ↕";color:var(--dim);font-size:9px}}.sortable[data-dir="desc"]::after{{content:" ↓";color:var(--blue)}}.sortable[data-dir="asc"]::after{{content:" ↑";color:var(--blue)}}.eff{{font-weight:800;color:var(--blue)}}
 .meter{{display:inline-block;width:64px;height:6px;border-radius:3px;background:var(--soft);box-shadow:inset 0 0 0 1px var(--line);overflow:hidden;vertical-align:middle;flex:none}}.meter i{{display:block;height:100%;border-radius:3px;background:var(--blue)}}.mcell,.effcell{{display:inline-flex;align-items:center;gap:9px}}.mcell b{{min-width:44px;text-align:right}}.effcell .n{{min-width:34px;text-align:right}}
-table.tight th,table.tight td{{padding-left:11px;padding-right:11px}}table.tight th.grow,table.tight td.grow{{width:100%;padding-left:8px;max-width:none}}td.act{{padding-right:6px;text-align:right}}td.act form{{margin:0}}button.quiet{{min-height:26px;padding:0 10px;border-color:rgba(127,127,127,.16);background:rgba(0,0,0,.09);color:var(--dim);opacity:.55;font-weight:600}}tr:hover button.quiet,button.quiet:focus-visible{{opacity:.8}}tr:hover button.quiet:hover{{opacity:1;background:rgba(0,0,0,.14)}}.day-edit button.danger.wide{{width:auto;padding:0 9px}}.day-edit input[name^="v"]{{width:68px}}
+table.tight th,table.tight td{{padding-left:11px;padding-right:11px}}table.tight th.grow,table.tight td.grow{{width:100%;padding-left:8px;max-width:none}}td.act{{padding-right:6px;text-align:right}}td.act form{{margin:0}}button.quiet{{min-height:26px;padding:0 10px;border-color:rgba(127,127,127,.16);background:rgba(0,0,0,.09);color:var(--dim);opacity:.55;font-weight:600}}tr:hover button.quiet,button.quiet:focus-visible{{opacity:.8}}tr:hover button.quiet:hover{{opacity:1;background:rgba(0,0,0,.14)}}.day-edit button.danger.wide{{width:auto;padding:0 9px}}.day-edit input[name^="v"]{{width:68px}}.period{{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:0 0 8px}}.period .seg{{margin:0;flex-wrap:wrap}}.period .seg a:hover{{color:var(--blue)}}.subtitle{{margin-top:2px;font-size:12px}}
 @media(max-width:640px){{.hide-sm{{display:none}}.meter{{width:40px}}.mcell,.effcell{{gap:6px}}table.tight th,table.tight td{{padding-left:7px;padding-right:7px}}}}
 @media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
 </style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a><!--navx-->{logout}</nav></div></header><main class="wrap {layout}">{body}</main><script>document.addEventListener('click',function(e){{var b=e.target.closest('[data-confirm]');if(b&&b.tagName!=='FORM'&&!confirm(b.getAttribute('data-confirm')))e.preventDefault()}});document.addEventListener('submit',function(e){{var f=e.target;if(f.tagName==='FORM'&&f.hasAttribute('data-confirm')&&!confirm(f.getAttribute('data-confirm')))e.preventDefault()}});</script></body></html>"""
@@ -439,9 +439,62 @@ def index():
     return render("Дни", body)
 
 
-def average_player_efficiencies(con: Any) -> dict[int, float]:
-    """Average the existing relative day EFF over completed KV days (archived days excluded)."""
+# Веса EFF. Войс в EFF не входит. Гранаты — самая «шумная» часть (их часто не успевают
+# отсканировать), поэтому их вес снижен; остальное — бой по табу.
+EFF_WEIGHTS = {"kills_per_tab": 0.30, "kda": 0.30, "score_per_tab": 0.25, "grenades": 0.15}
+
+
+def tab_metrics(tabs: Any, kills: Any, deaths: Any, assists: Any, score: Any,
+                grenades: Any = None) -> dict[str, float | None]:
+    """Показатели игрока за день из сумм по его табам (+ гранаты, если они известны)."""
+    n = max(int(tabs or 0), 1)
+    k, d, a = int(kills or 0), int(deaths or 0), int(assists or 0)
+    return {
+        "kills_per_tab": k / n,
+        "kda": ((k + a) / d) if d else float(k + a),
+        "score_per_tab": float(score or 0) / n,
+        "grenades": None if grenades is None else float(grenades),
+    }
+
+
+def day_efficiency(stats: dict[int, dict[str, float | None]]) -> dict[int, float]:
+    """EFF каждого игрока внутри одного дня КВ, шкала 0–100.
+
+    Каждый показатель нормируется по min–max среди игроков этого дня. Игрок получает EFF,
+    если у него есть таб. Если гранат нет (не отсканировали, не попал в отчёт), EFF считается
+    по табу, а веса остальных показателей пересчитываются. Гранаты участвуют, только когда за
+    день есть из чего сравнивать: у двух и более игроков и не у всех одно и то же число
+    (иначе, например, единственный отсканированный получил бы условные 50 и просел).
+    """
+    bounds: dict[str, tuple[float, float]] = {}
+    for key in EFF_WEIGHTS:
+        values = [v[key] for v in stats.values() if v.get(key) is not None]
+        if not values or (key == "grenades" and max(values) == min(values)):
+            continue
+        bounds[key] = (min(values), max(values))
+    result: dict[int, float] = {}
+    for player_id, values in stats.items():
+        total = weight_sum = 0.0
+        for key, (low, high) in bounds.items():
+            value = values.get(key)
+            if value is None:
+                continue
+            normalized = 50.0 if high == low else (value - low) / (high - low) * 100.0
+            total += normalized * EFF_WEIGHTS[key]
+            weight_sum += EFF_WEIGHTS[key]
+        if weight_sum:
+            result[int(player_id)] = total / weight_sum
+    return result
+
+
+def average_player_efficiencies(con: Any, only_dates: Any = None) -> dict[int, float]:
+    """Средний EFF игрока по дням КВ (архивные дни не учитываются).
+
+    only_dates — набор дат, по которым считать среднее (например, последние N дней КВ);
+    None — за всё время. EFF каждого дня считается по табу, гранаты — только если есть.
+    """
     _ensure_archive_table(con)
+    allowed = None if only_dates is None else {str(d) for d in only_dates}
     rows = q(con, """
         WITH tabs AS (
             SELECT s.match_date date, sp.player_id,
@@ -465,39 +518,22 @@ def average_player_efficiencies(con: Any) -> dict[int, float]:
         SELECT t.date, t.player_id, t.tabs, t.kills, t.deaths,
                t.assists, t.score, g.grenades
         FROM tabs t
-        JOIN grenades g ON g.date=t.date AND g.player_id=t.player_id
+        LEFT JOIN grenades g ON g.date=t.date AND g.player_id=t.player_id
         WHERE NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=t.date)
         ORDER BY t.date, t.player_id
     """)
-    weights = {"kills_per_tab": 0.25, "kda": 0.25,
-               "score_per_tab": 0.20, "grenades": 0.20}
-    by_day: dict[str, dict[int, dict[str, float]]] = {}
+    by_day: dict[str, dict[int, dict[str, float | None]]] = {}
     for row in rows:
-        tabs = max(int(row["tabs"]), 1)
-        deaths = int(row["deaths"] or 0)
-        kills = int(row["kills"] or 0)
-        assists = int(row["assists"] or 0)
-        by_day.setdefault(str(row["date"]), {})[int(row["player_id"])] = {
-            "kills_per_tab": kills / tabs,
-            "kda": ((kills + assists) / deaths) if deaths else float(kills + assists),
-            "score_per_tab": float(row["score"] or 0) / tabs,
-            "grenades": float(row["grenades"]),
-        }
+        date = str(row["date"])
+        if allowed is not None and date not in allowed:
+            continue
+        by_day.setdefault(date, {})[int(row["player_id"])] = tab_metrics(
+            row["tabs"], row["kills"], row["deaths"], row["assists"], row["score"],
+            row["grenades"])
     samples: dict[int, list[float]] = {}
-    for values_by_player in by_day.values():
-        bounds = {
-            key: (min(values[key] for values in values_by_player.values()),
-                  max(values[key] for values in values_by_player.values()))
-            for key in weights
-        }
-        for player_id, values in values_by_player.items():
-            normalized = {}
-            for key, value in values.items():
-                minimum, maximum = bounds[key]
-                normalized[key] = (50.0 if maximum == minimum
-                                   else (value - minimum) / (maximum - minimum) * 100.0)
-            score = sum(normalized[key] * weight for key, weight in weights.items()) / sum(weights.values())
-            samples.setdefault(player_id, []).append(score)
+    for stats in by_day.values():
+        for player_id, value in day_efficiency(stats).items():
+            samples.setdefault(player_id, []).append(value)
     return {player_id: round(sum(values) / len(values), 1)
             for player_id, values in samples.items()}
 
@@ -509,14 +545,57 @@ def _eff_cell(value: Any) -> str:
     return f"<span class='effcell'><span class='n'>{esc(value)}</span>{meter(value, 100)}</span>"
 
 
+PERIOD_CHOICES = (1, 2, 3, 5, 7, 14, 30)
+
+
+def _parse_period(raw: Any) -> int | None:
+    """?days=N → последние N дней КВ; пусто / all / мусор → за всё время (None)."""
+    try:
+        n = int(str(raw or "").strip())
+    except ValueError:
+        return None
+    return min(n, 3650) if n > 0 else None
+
+
+def _ru_days(n: int) -> str:
+    word = ("дней" if 11 <= n % 100 <= 14 else
+            "день" if n % 10 == 1 else
+            "дня" if 2 <= n % 10 <= 4 else "дней")
+    return f"{n} {word}"
+
+
+def _period_bar(current: int | None) -> str:
+    options = sorted(set(PERIOD_CHOICES) | ({current} if current else set()))
+    links = "".join(
+        (f"<b>{n}</b>" if n == current else
+         f"<a href='{url_for('players', days=n)}' "
+         f"title='{'Последний день КВ' if n == 1 else 'Последние ' + _ru_days(n) + ' КВ'}'>{n}</a>")
+        for n in options)
+    everything = ("<b>Всё время</b>" if current is None else
+                  f"<a href='{url_for('players', days='all')}'>Всё время</a>")
+    return ("<div class='period'><span class='dim'>Последние дни КВ</span>"
+            f"<span class='seg'>{links}</span><span class='seg'>{everything}</span></div>")
+
+
+def _period_label(period: int | None, dates: list[str], available: int) -> str:
+    if not dates:
+        return "Дней КВ пока нет"
+    newest, oldest = dates[0], dates[-1]
+    span = (fmt_date_ru(newest) if newest == oldest
+            else f"{fmt_date_ru(oldest)} — {fmt_date_ru(newest)}")
+    if period is None:
+        return f"За всё время: {_ru_days(len(dates))} КВ, {span}"
+    note = f" (в базе только {available})" if available < period else ""
+    head = "Последний день КВ" if len(dates) == 1 else f"Последние {_ru_days(len(dates))} КВ"
+    return f"{head}{note}: {span}"
+
+
 @app.get("/players")
 def players():
+    period = _parse_period(request.args.get("days"))
     with closing(player_store.connect(DB_PATH)) as con:
         rows = q(con, """
-            SELECT p.id, p.canonical_nick, rm.squad_id,
-                   COUNT(DISTINCT kr.match_date) days,
-                   SUM(kr.total_grenades) grenades,
-                   MAX(kr.match_date) last_day
+            SELECT p.id, p.canonical_nick, rm.squad_id
             FROM players p
             JOIN (
                 SELECT player_id, MIN(squad_id) squad_id
@@ -524,15 +603,26 @@ def players():
                 WHERE active=1 AND (squad_id BETWEEN 1 AND 6 OR squad_id=99)
                 GROUP BY player_id
             ) rm ON rm.player_id=p.id
-            LEFT JOIN (SELECT k.player_id, k.total_grenades, r.match_date
-                       FROM kv_daily_players k JOIN kv_daily_reports r ON r.id=k.report_id
-                       WHERE NOT EXISTS (SELECT 1 FROM archived_days _a
-                                         WHERE _a.match_date=r.match_date)) kr
-                   ON kr.player_id=p.id
-            GROUP BY p.id, rm.squad_id
             ORDER BY CASE WHEN rm.squad_id=99 THEN 7 ELSE rm.squad_id END,
                      p.canonical_nick COLLATE NOCASE""")
-        eff_by_player = average_player_efficiencies(con)
+        available_dates = all_dates(con)                      # новые сверху, без архива
+        dates = available_dates[:period] if period else available_dates
+        date_set = set(dates)
+        # игрок × день: гранаты (максимум за день) и факт участия (отчёт или таб)
+        attendance: dict[int, dict[str, int]] = {}
+        for r in q(con, """
+                SELECT player_id, match_date, MAX(g) grenades FROM (
+                    SELECT k.player_id player_id, r.match_date match_date, k.total_grenades g
+                    FROM kv_daily_players k JOIN kv_daily_reports r ON r.id=k.report_id
+                    WHERE k.player_id IS NOT NULL
+                    UNION ALL
+                    SELECT sp.player_id, s.match_date, NULL
+                    FROM scan_players sp JOIN scans s ON s.id=sp.scan_id
+                    WHERE sp.player_id IS NOT NULL AND s.match_date IS NOT NULL)
+                GROUP BY player_id, match_date"""):
+            if r["match_date"] in date_set:
+                attendance.setdefault(int(r["player_id"]), {})[r["match_date"]] = int(r["grenades"] or 0)
+        eff_by_player = average_player_efficiencies(con, date_set)
     groups: dict[int, list[dict[str, Any]]] = {99: [], **{i: [] for i in range(1, 7)}}
     for row in rows:
         groups[int(row["squad_id"])].append(row)
@@ -544,17 +634,25 @@ def players():
         label = "Чемпионы" if squad_id == 99 else f"Отряд {squad_id}"
         member_rows = "".join(
             f"<tr class='player-row'><td class='nick grow'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
-            f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td>"
+            f"<td>{len(attendance.get(int(r['id']), {}))}</td>"
+            f"<td class='total'>{sum(attendance.get(int(r['id']), {}).values())}</td>"
             f"<td class='eff'>{_eff_cell(eff_by_player.get(int(r['id'])))}</td>"
             "</tr>"
             for r in members)
         bodies.append(
             f"<tbody class='squad-group'><tr class='squad-title'><td colspan='4'>{label}</td></tr>"
             f"{member_rows}</tbody>")
+    tip = ("Среднее EFF за выбранные дни КВ. Считается по табу: У/таб 30%, KDA 30%, Счёт/таб 25%, "
+           "Гранаты 15%. Если гранат нет — только по табу.")
     body = ("<div class='pagehead'><div><h1>Игроки</h1>"
+            f"<div class='subtitle'>{esc(_period_label(period, dates, len(available_dates)))}</div>"
             "</div></div>"
+            + _period_bar(period) +
             "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
-            "<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Ник</th><th>Дни</th><th>Грены</th><th class='sortable' title='Среднее текущего EFF по дням КВ' onclick='sortPlayerSquads(this)'>EFF</th></tr></thead>"
+            "<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Ник</th>"
+            "<th title='Дни КВ из выбранных, где у игрока есть отчёт или таб'>Дни</th>"
+            "<th title='Сумма гранат за выбранные дни'>Грены</th>"
+            f"<th class='sortable' title='{esc(tip)}' onclick='sortPlayerSquads(this)'>EFF</th></tr></thead>"
             f"{''.join(bodies)}</table></div>"
             "<script>function filterPlayers(value){const q=value.toLowerCase();document.querySelectorAll('.squad-group').forEach(group=>{let n=0;group.querySelectorAll('.player-row').forEach(row=>{const show=row.textContent.toLowerCase().includes(q);row.style.display=show?'':'none';if(show)n++});group.style.display=n?'':'none'})}function sortPlayerSquads(th){const dir=th.dataset.dir==='desc'?'asc':'desc';th.dataset.dir=dir;document.querySelectorAll('.squad-group').forEach(group=>{const rows=[...group.querySelectorAll('.player-row')];const value=row=>{const raw=row.cells[3].textContent.trim().replace(',','.');if(!raw||raw==='—')return null;const parsed=Number(raw);return Number.isFinite(parsed)?parsed:null};rows.sort((a,b)=>{const av=value(a),bv=value(b);if(av===null||bv===null)return av===bv?0:av===null?1:-1;return dir==='asc'?av-bv:bv-av});rows.forEach(row=>group.appendChild(row))})}</script>")
     return render("Игроки", body)
@@ -720,37 +818,17 @@ def day(date: str):
             "voice_seconds": None, "attended": None, "stages": {},
             "scan_only": True,
         })
-    # EFF is calculated independently inside this KV day.
-    # The four requested weights sum to 0.90, so divide by 0.90 to keep EFF on a 0–100 scale.
-    eff_weights = {"kills_per_tab": 0.25, "kda": 0.25, "score_per_tab": 0.20, "grenades": 0.20}
-    eff_values: dict[int, dict[str, float]] = {}
-    for k in krows:
-        player_id = k.get("player_id")
-        t = tab_sum.get(player_id) if player_id is not None else None
-        if not t or k.get("total_grenades") is None:
-            continue
-        tabs = max(int(t["n"]), 1)
-        deaths = int(t["d"])
-        eff_values[int(player_id)] = {
-            "kills_per_tab": float(t["k"]) / tabs,
-            "kda": (float(t["k"] + t["a"]) / deaths) if deaths else float(t["k"] + t["a"]),
-            "score_per_tab": float(t["s"]) / tabs,
-            "grenades": float(k["total_grenades"]),
-        }
-    eff_bounds = {
-        key: (min(values[key] for values in eff_values.values()),
-              max(values[key] for values in eff_values.values()))
-        for key in eff_weights
-    } if eff_values else {}
-    day_eff: dict[int, float] = {}
-    for player_id, values in eff_values.items():
-        normalized = {}
-        for key, value in values.items():
-            minimum, maximum = eff_bounds[key]
-            normalized[key] = 50.0 if maximum == minimum else (value - minimum) / (maximum - minimum) * 100.0
-        day_eff[player_id] = round(
-            sum(normalized[key] * weight for key, weight in eff_weights.items())
-            / sum(eff_weights.values()), 1)
+    # EFF считается внутри этого дня по табу; гранаты учитываются, только если они есть.
+    grenades_by_player = {int(k["player_id"]): k["total_grenades"] for k in krows
+                          if k.get("player_id") is not None and k.get("total_grenades") is not None}
+    day_eff = {
+        player_id: round(value, 1)
+        for player_id, value in day_efficiency({
+            int(player_id): tab_metrics(t["n"], t["k"], t["d"], t["a"], t["s"],
+                                        grenades_by_player.get(int(player_id)))
+            for player_id, t in tab_sum.items() if player_id is not None
+        }).items()
+    }
 
     has_tabs = bool(scans)
     max_stage = max((max(k["stages"], default=0) for k in krows), default=0)
@@ -910,7 +988,7 @@ def day(date: str):
                 "<th class='sortable' data-sort='number'>П</th>"
                 "<th class='sortable' data-sort='number'>Счёт</th>"
                 "<th class='sortable' data-sort='number'>KDA</th>"
-                "<th class='sortable' data-sort='number' title='EFF дня: У/таб 25%, KDA 25%, Счёт/таб 20%, Гранаты/КВ 20%'>EFF</th>"
+                "<th class='sortable' data-sort='number' title='EFF дня по табу: У/таб 30%, KDA 30%, Счёт/таб 25%, Гранаты 15% (нет гранат — считается по табу)'>EFF</th>"
                 if has_tabs else "")
     toggle = ("<div class='seg'>" + ("<b>Всего</b>" if mode == "total" else f"<a href='{url_for('day',date=date,mode='total')}'>Всего</a>") + (f"<a href='{url_for('day',date=date,mode='stages')}'>По этапам</a>" if mode == "total" else "<b>По этапам</b>") + "</div>")
 
