@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import player_store  # noqa: E402
-from flask import Flask, Response, redirect, request, url_for  # noqa: E402
+from flask import Flask, Response, abort, redirect, request, url_for  # noqa: E402
 
 app = Flask(__name__)
 
@@ -289,6 +289,17 @@ def esc(value: Any) -> str:
     return html.escape(str(value if value is not None else ""))
 
 
+def meter(value: Any, maximum: Any) -> str:
+    """Тонкая полоска заполнения 0…100 % от maximum (цвета — из палитры панели)."""
+    try:
+        share = float(value or 0) / float(maximum) if float(maximum) > 0 else 0.0
+    except (TypeError, ValueError):
+        share = 0.0
+    share = max(0.0, min(1.0, share))
+    width = 0.0 if share <= 0 else max(share * 100.0, 3.0)
+    return f"<span class='meter'><i style='width:{width:.1f}%'></i></span>"
+
+
 def fmt_attended(value: Any) -> str:
     if value is None:
         return "—"
@@ -312,8 +323,11 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name=
 .actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 12px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
 .scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}.source-badge{{display:inline-block;margin-left:5px;padding:1px 4px;border:1px solid var(--line);border-radius:4px;color:var(--dim);font-size:9px;vertical-align:1px}}input#flt{{width:min(100%,300px)}}
 .chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--dim);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}.sortable{{cursor:pointer;user-select:none}}.sortable::after{{content:" ↕";color:var(--dim);font-size:9px}}.sortable[data-dir="desc"]::after{{content:" ↓";color:var(--blue)}}.sortable[data-dir="asc"]::after{{content:" ↑";color:var(--blue)}}.eff{{font-weight:800;color:var(--blue)}}
+.meter{{display:inline-block;width:64px;height:6px;border-radius:3px;background:var(--soft);box-shadow:inset 0 0 0 1px var(--line);overflow:hidden;vertical-align:middle;flex:none}}.meter i{{display:block;height:100%;border-radius:3px;background:var(--blue)}}.mcell,.effcell{{display:inline-flex;align-items:center;gap:9px}}.mcell b{{min-width:44px;text-align:right}}.effcell .n{{min-width:34px;text-align:right}}
+table.tight th,table.tight td{{padding-left:11px;padding-right:11px}}table.tight th.grow,table.tight td.grow{{width:100%;padding-left:8px;max-width:none}}td.act{{padding-right:6px;text-align:right}}td.act form{{margin:0}}button.quiet{{min-height:26px;padding:0 10px;border-color:rgba(127,127,127,.16);background:rgba(0,0,0,.09);color:var(--dim);opacity:.55;font-weight:600}}tr:hover button.quiet,button.quiet:focus-visible{{opacity:.8}}tr:hover button.quiet:hover{{opacity:1;background:rgba(0,0,0,.14)}}.day-edit button.danger.wide{{width:auto;padding:0 9px}}.day-edit input[name^="v"]{{width:68px}}
+@media(max-width:640px){{.hide-sm{{display:none}}.meter{{width:40px}}.mcell,.effcell{{gap:6px}}table.tight th,table.tight td{{padding-left:7px;padding-right:7px}}}}
 @media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
-</style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a>{logout}</nav></div></header><main class="wrap {layout}">{body}</main></body></html>"""
+</style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a><!--navx-->{logout}</nav></div></header><main class="wrap {layout}">{body}</main><script>document.addEventListener('click',function(e){{var b=e.target.closest('[data-confirm]');if(b&&b.tagName!=='FORM'&&!confirm(b.getAttribute('data-confirm')))e.preventDefault()}});document.addEventListener('submit',function(e){{var f=e.target;if(f.tagName==='FORM'&&f.hasAttribute('data-confirm')&&!confirm(f.getAttribute('data-confirm')))e.preventDefault()}});</script></body></html>"""
 
 
 LOGOUT_FORM = '<form method="post" action="/logout" style="margin:0 0 0 8px"><button type="submit">Выйти</button></form>'
@@ -325,11 +339,33 @@ def render(title: str, body: str) -> str:
     return PAGE.format(title=html.escape(title),body=body,home=url_for("index"),players=url_for("players"),layout=layout,ov="active" if path=="/" or path.startswith("/day/") else "",pl="active" if path.startswith("/player") else "",logout=LOGOUT_FORM if _password() else "")
 
 
+_archive_ready: set[str] = set()
+
+
+def _ensure_archive_table(con: Any) -> None:
+    con.execute("CREATE TABLE IF NOT EXISTS archived_days("
+                "match_date TEXT NOT NULL PRIMARY KEY, "
+                "archived_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+
+
+@app.before_request
+def _prepare_archive_table():
+    """Таблица архива есть после ensure_schema бота; тут страховка для отдельного запуска панели."""
+    key = str(DB_PATH)
+    if key not in _archive_ready and Path(DB_PATH).exists():
+        with closing(player_store.connect(DB_PATH)) as con:
+            _ensure_archive_table(con)
+        _archive_ready.add(key)
+
+
 def all_dates(con: Any) -> list[str]:
-    return [r["date"] for r in q(con, """
-        SELECT match_date date FROM scans
-        UNION SELECT match_date FROM kv_daily_reports
-        UNION SELECT match_date FROM grenade_session_stats WHERE match_date IS NOT NULL
+    """Даты КВ без архивных."""
+    na = player_store.not_archived
+    return [r["date"] for r in q(con, f"""
+        SELECT match_date date FROM scans WHERE {na('scans.match_date')}
+        UNION SELECT match_date FROM kv_daily_reports WHERE {na('kv_daily_reports.match_date')}
+        UNION SELECT match_date FROM grenade_session_stats
+              WHERE match_date IS NOT NULL AND {na('grenade_session_stats.match_date')}
         ORDER BY date DESC""")]
 
 
@@ -337,13 +373,15 @@ def all_dates(con: Any) -> list[str]:
 
 @app.get("/")
 def index():
+    na = player_store.not_archived
     with closing(player_store.connect(DB_PATH)) as con:
-        rows = q(con, """
+        rows = q(con, f"""
             SELECT d.date, COALESCE(t.tabs,0) tabs, COALESCE(g.players,0) players,
                    COALESCE(g.grenades,0) grenades, COALESCE(g.voice,0) voice
-            FROM (SELECT match_date date FROM scans UNION
-                  SELECT match_date FROM kv_daily_reports UNION
-                  SELECT match_date FROM grenade_session_stats WHERE match_date IS NOT NULL) d
+            FROM (SELECT match_date date FROM scans WHERE {na('scans.match_date')} UNION
+                  SELECT match_date FROM kv_daily_reports WHERE {na('kv_daily_reports.match_date')} UNION
+                  SELECT match_date FROM grenade_session_stats
+                  WHERE match_date IS NOT NULL AND {na('grenade_session_stats.match_date')}) d
             LEFT JOIN (SELECT match_date, COUNT(*) tabs FROM scans GROUP BY match_date) t
                    ON t.match_date=d.date
             LEFT JOIN (SELECT r.match_date, COUNT(DISTINCT p.player_id) players,
@@ -351,18 +389,24 @@ def index():
                        FROM kv_daily_reports r JOIN kv_daily_players p ON p.report_id=r.id
                        GROUP BY r.match_date) g ON g.match_date=d.date
             ORDER BY d.date DESC""")
+        archived_n = int(one(con, "SELECT COUNT(*) n FROM archived_days")["n"])
     out, cur_month = [], None
+    max_grenades = max((int(r["grenades"] or 0) for r in rows), default=0)
     for r in rows:
         m = month_ru(r["date"])
         if m != cur_month:
             cur_month = m
-            out.append(f"<tr><td class='month' colspan='5'>{esc(m)}</td></tr>")
+            out.append(f"<tr><td class='month' colspan='6'>{esc(m)}</td></tr>")
         out.append(
-            f"<tr><td class='nick'><a href='{url_for('day', date=r['date'])}'>"
+            f"<tr><td class='nick grow'><a href='{url_for('day', date=r['date'])}'>"
             f"{fmt_date_ru(r['date'])}</a></td>"
-            f"<td>{r['tabs'] or 0}</td><td>{r['players'] or 0}</td>"
-            f"<td class='total'>{r['grenades'] or 0}</td>"
-            f"<td>{fmt_sec(r['voice'])}</td></tr>")
+            f"<td class='hide-sm'>{r['tabs'] or 0}</td><td class='hide-sm'>{r['players'] or 0}</td>"
+            f"<td class='total'><span class='mcell'>{meter(r['grenades'], max_grenades)}"
+            f"<b>{r['grenades'] or 0}</b></span></td>"
+            f"<td>{fmt_sec(r['voice'])}</td>"
+            f"<td class='act'><form method='post' action='{url_for('day_archive', date=r['date'])}'>"
+            "<button class='quiet' title='Убрать день из списка и итогов (можно вернуть)'>В архив</button>"
+            "</form></td></tr>")
     total_tabs = sum(int(r["tabs"] or 0) for r in rows)
     total_grenades = sum(int(r["grenades"] or 0) for r in rows)
     total_voice = sum(int(r["voice"] or 0) for r in rows)
@@ -372,19 +416,32 @@ def index():
                f"<div class='metric'><label>Табов</label><b>{total_tabs}</b></div>"
                f"<div class='metric'><label>Гранат</label><b>{total_grenades}</b></div>"
                f"<div class='metric'><label>Войс всего</label><b>{fmt_sec(total_voice)}</b></div></div>")
+    banner = ""
+    just = request.args.get("archived")
+    if just:
+        try:
+            just = player_store.parse_match_date(just)
+            banner = ("<div class='banner'>🗄 День " + fmt_date_ru(just) + " убран в архив "
+                      f"<form method='post' action='{url_for('day_unarchive', date=just)}' "
+                      "style='display:inline;margin-left:10px'><button>↩ Вернуть</button></form></div>")
+        except ValueError:
+            pass
+    archive_link = (f"<a class='button' href='{url_for('archive')}'>🗄 Архив ({archived_n})</a>"
+                    if archived_n else "")
     body = ("<div class='pagehead'><div><h1>Обзор</h1>"
-            "</div>"
+            "</div><div class='actions'>" + archive_link
             + (f"<a class='button primary' href='{url_for('day',date=latest)}'>Последний КВ</a>" if latest else "")
-            + "</div>" + summary
-            + "<div class='panel'><table><thead><tr><th>Дата</th><th>Табов</th>"
-            "<th>Игроков</th><th>Гранаты</th><th>Войс</th></tr></thead>"
+            + "</div></div>" + banner + summary
+            + "<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Дата</th>"
+            "<th class='hide-sm'>Табов</th><th class='hide-sm'>Игроков</th><th>Гранаты</th><th>Войс</th><th></th></tr></thead>"
             f"<tbody>{''.join(out)}</tbody></table></div>"
             )
     return render("Дни", body)
 
 
 def average_player_efficiencies(con: Any) -> dict[int, float]:
-    """Average the existing relative day EFF over completed KV days."""
+    """Average the existing relative day EFF over completed KV days (archived days excluded)."""
+    _ensure_archive_table(con)
     rows = q(con, """
         WITH tabs AS (
             SELECT s.match_date date, sp.player_id,
@@ -409,6 +466,7 @@ def average_player_efficiencies(con: Any) -> dict[int, float]:
                t.assists, t.score, g.grenades
         FROM tabs t
         JOIN grenades g ON g.date=t.date AND g.player_id=t.player_id
+        WHERE NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=t.date)
         ORDER BY t.date, t.player_id
     """)
     weights = {"kills_per_tab": 0.25, "kda": 0.25,
@@ -444,14 +502,21 @@ def average_player_efficiencies(con: Any) -> dict[int, float]:
             for player_id, values in samples.items()}
 
 
+def _eff_cell(value: Any) -> str:
+    """EFF числом и тонкая полоска справа (шкала 0–100); без данных — прочерк."""
+    if value is None:
+        return "—"
+    return f"<span class='effcell'><span class='n'>{esc(value)}</span>{meter(value, 100)}</span>"
+
+
 @app.get("/players")
 def players():
     with closing(player_store.connect(DB_PATH)) as con:
         rows = q(con, """
             SELECT p.id, p.canonical_nick, rm.squad_id,
-                   COUNT(DISTINCT r.match_date) days,
-                   SUM(k.total_grenades) grenades,
-                   MAX(r.match_date) last_day
+                   COUNT(DISTINCT kr.match_date) days,
+                   SUM(kr.total_grenades) grenades,
+                   MAX(kr.match_date) last_day
             FROM players p
             JOIN (
                 SELECT player_id, MIN(squad_id) squad_id
@@ -459,8 +524,11 @@ def players():
                 WHERE active=1 AND (squad_id BETWEEN 1 AND 6 OR squad_id=99)
                 GROUP BY player_id
             ) rm ON rm.player_id=p.id
-            LEFT JOIN kv_daily_players k ON k.player_id=p.id
-            LEFT JOIN kv_daily_reports r ON r.id=k.report_id
+            LEFT JOIN (SELECT k.player_id, k.total_grenades, r.match_date
+                       FROM kv_daily_players k JOIN kv_daily_reports r ON r.id=k.report_id
+                       WHERE NOT EXISTS (SELECT 1 FROM archived_days _a
+                                         WHERE _a.match_date=r.match_date)) kr
+                   ON kr.player_id=p.id
             GROUP BY p.id, rm.squad_id
             ORDER BY CASE WHEN rm.squad_id=99 THEN 7 ELSE rm.squad_id END,
                      p.canonical_nick COLLATE NOCASE""")
@@ -475,9 +543,9 @@ def players():
             continue
         label = "Чемпионы" if squad_id == 99 else f"Отряд {squad_id}"
         member_rows = "".join(
-            f"<tr class='player-row'><td class='nick'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
+            f"<tr class='player-row'><td class='nick grow'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
             f"<td>{r['days'] or 0}</td><td class='total'>{r['grenades'] or 0}</td>"
-            f"<td class='eff'>{esc(eff_by_player.get(int(r['id']), '—'))}</td>"
+            f"<td class='eff'>{_eff_cell(eff_by_player.get(int(r['id'])))}</td>"
             "</tr>"
             for r in members)
         bodies.append(
@@ -486,7 +554,7 @@ def players():
     body = ("<div class='pagehead'><div><h1>Игроки</h1>"
             "</div></div>"
             "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
-            "<div class='panel'><table><thead><tr><th class='nick'>Ник</th><th>Дни</th><th>Грены</th><th class='sortable' title='Среднее текущего EFF по дням КВ' onclick='sortPlayerSquads(this)'>EFF</th></tr></thead>"
+            "<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Ник</th><th>Дни</th><th>Грены</th><th class='sortable' title='Среднее текущего EFF по дням КВ' onclick='sortPlayerSquads(this)'>EFF</th></tr></thead>"
             f"{''.join(bodies)}</table></div>"
             "<script>function filterPlayers(value){const q=value.toLowerCase();document.querySelectorAll('.squad-group').forEach(group=>{let n=0;group.querySelectorAll('.player-row').forEach(row=>{const show=row.textContent.toLowerCase().includes(q);row.style.display=show?'':'none';if(show)n++});group.style.display=n?'':'none'})}function sortPlayerSquads(th){const dir=th.dataset.dir==='desc'?'asc':'desc';th.dataset.dir=dir;document.querySelectorAll('.squad-group').forEach(group=>{const rows=[...group.querySelectorAll('.player-row')];const value=row=>{const raw=row.cells[3].textContent.trim().replace(',','.');if(!raw||raw==='—')return null;const parsed=Number(raw);return Number.isFinite(parsed)?parsed:null};rows.sort((a,b)=>{const av=value(a),bv=value(b);if(av===null||bv===null)return av===bv?0:av===null?1:-1;return dir==='asc'?av-bv:bv-av});rows.forEach(row=>group.appendChild(row))})}</script>")
     return render("Игроки", body)
@@ -501,7 +569,9 @@ def player(player_id: int):
         tabs = q(con, """SELECT s.match_date date, sp.kills k, sp.deaths d, sp.assists a,
                                 sp.score sc, s.stage
                          FROM scan_players sp JOIN scans s ON s.id=sp.scan_id
-                         WHERE sp.player_id=? ORDER BY s.match_date DESC, s.stage, s.id""",
+                         WHERE sp.player_id=?
+                           AND NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=s.match_date)
+                         ORDER BY s.match_date DESC, s.stage, s.id""",
                  (player_id,))
         days = q(con, """SELECT r.match_date date, k.total_grenades total,
                                 k.voice_seconds voice, k.attended attended,
@@ -510,11 +580,15 @@ def player(player_id: int):
                          JOIN kv_daily_reports r ON r.id=k.report_id
                          LEFT JOIN kv_daily_grenade_stages g
                            ON g.report_id=k.report_id AND g.row_no=k.row_no
-                         WHERE k.player_id=? GROUP BY r.match_date, k.report_id, k.row_no
+                         WHERE k.player_id=?
+                           AND NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=r.match_date)
+                         GROUP BY r.match_date, k.report_id, k.row_no
                          ORDER BY r.match_date DESC""", (player_id,))
         snaps = q(con, """SELECT match_date date, GROUP_CONCAT(stat_key||'='||value) snap
                           FROM grenade_session_stats WHERE player_id=?
                           AND match_date IS NOT NULL
+                          AND NOT EXISTS (SELECT 1 FROM archived_days _a
+                                          WHERE _a.match_date=grenade_session_stats.match_date)
                           GROUP BY match_date ORDER BY match_date DESC""", (player_id,))
     max_stage = 0
     for r in days:
@@ -627,6 +701,7 @@ def day(date: str):
     with closing(player_store.connect(DB_PATH)) as con:
         scans, report, krows = _day_data(con, date)
         dates = all_dates(con)
+        archived = one(con, "SELECT archived_at FROM archived_days WHERE match_date=?", (date,))
     tab_sum = _tab_totals(scans)
     # A player may exist in a screenshot but be absent from the grenade/voice report
     # (substitution, stale roster, or partial import). Keep those combat stats visible.
@@ -733,8 +808,8 @@ def day(date: str):
             voice_cell = (f"<td><input type='text' inputmode='numeric' name='v{row_no}' "
                           f"value='{fmt_sec(k['voice_seconds'] or 0)}' title='минуты:секунды'></td>")
             action_cell = (f"<td><button class='danger' name='__del_row' value='{row_no}' "
-                           f"formaction='{save_url}' onclick=\"return confirm('Удалить гранаты и войс "
-                           f"{esc(nick)} за {fmt_date_ru(date)}?')\">✕</button></td>")
+                           f"formaction='{save_url}' data-confirm='Удалить гранаты и войс "
+                           f"{esc(nick)} за {fmt_date_ru(date)}?'>✕</button></td>")
             source_badge = ""
 
         link = (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(nick)}</a>"
@@ -750,8 +825,8 @@ def day(date: str):
     for s in scans:
         head = (
             "<tr><td colspan='7' style='text-align:left'>"
-            f"<button class='danger' name='__del_scan' value='{s['id']}' "
-            f"formaction='{save_url}' onclick=\"return confirm('Удалить весь таб?')\""
+            f"<button class='danger wide' name='__del_scan' value='{s['id']}' "
+            f"formaction='{save_url}' data-confirm='Удалить весь таб?'"
             ">✕ таб</button> <span class='dim'>"
             + " · ".join(filter(None, [
                 f"этап {stage_label(s['stage'])}" if s["stage"] else "без этапа",
@@ -807,6 +882,21 @@ def day(date: str):
         banner = "<div class='banner ok-pill'>✅ Сохранено</div>"
     elif request.args.get("deleted"):
         banner = "<div class='banner ok-pill'>🗑 Удалено</div>"
+    elif request.args.get("restored"):
+        banner = "<div class='banner ok-pill'>↩ День возвращён из архива</div>"
+    if archived:
+        banner += ("<div class='banner' style='background:var(--soft);color:var(--dim)'>"
+                   "🗄 День в архиве: не входит в список дней, итоги и EFF игроков</div>")
+        archive_ctl = (f"<form method='post' action='{url_for('day_unarchive', date=date)}'>"
+                       "<button class='primary'>↩ Вернуть из архива</button></form>")
+    else:
+        confirm_text = (f"Убрать день {fmt_date_ru(date)} в архив?\n\n"
+                        "Он пропадёт из списка дней, суммарных гранат/дней и EFF игроков. "
+                        "Вернуть можно в разделе «Архив».")
+        archive_ctl = (f"<form method='post' action='{url_for('day_archive', date=date)}' "
+                       f"data-confirm='{esc(confirm_text)}'>"
+                       "<button class='danger wide' style='min-height:32px;padding:0 12px'>"
+                       "🗑 Удалить день (в архив)</button></form>")
 
     chips = ("<div class='chips'>"
              f"<span class='chip'>Игроков: {len(krows)}</span>"
@@ -842,6 +932,15 @@ function sortDayTable(th){
 document.addEventListener('click',e=>{const th=e.target.closest('#day-table th.sortable');if(th)sortDayTable(th)});
 </script>"""
 
+    guard_script = """<script>
+(function(){var f=document.querySelector('form.day-edit');if(!f)return;var dirty=false;
+f.addEventListener('input',function(){dirty=true});
+f.addEventListener('submit',function(){dirty=false});
+window.addEventListener('beforeunload',function(e){if(dirty){e.preventDefault();e.returnValue=''}});
+document.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&'sSыЫ'.indexOf(e.key)>-1&&e.key.length===1){e.preventDefault();var b=f.querySelector('button.save');if(b)f.requestSubmit(b)}});
+})();
+</script>"""
+
     kv_block = (
         toggle
         + "<div class='scroll'><table id='day-table'><thead><tr>"
@@ -856,12 +955,71 @@ document.addEventListener('click',e=>{const th=e.target.closest('#day-table th.s
         "(гранаты за этот день не импортировались).</p>")
 
     body = (f"<a class='back' href='{url_for('index')}'>← Обзор</a>"
-            f"<div class='pagehead'><div><h1>{fmt_date_ru(date)}</h1></div></div>{nav}{chips}{banner}"
+            f"<div class='pagehead'><div><h1>{fmt_date_ru(date)}</h1></div>{archive_ctl}</div>{nav}{chips}{banner}"
             f"<form class='day-edit' method='post' action='{save_url}'>"
             f"<input type='hidden' name='mode' value='{mode}'>"
             + kv_block + tabs_details
-            + "<button class='save float'>💾 Сохранить</button></form>")
+            + "<button class='save float' title='Ctrl+S'>💾 Сохранить</button></form>" + guard_script)
     return render(date, body)
+
+
+def _valid_day(date: str) -> str:
+    try:
+        return player_store.parse_match_date(date)
+    except ValueError:
+        abort(400)
+
+
+@app.post("/day/<date>/archive")
+def day_archive(date: str):
+    """Спрятать день КВ: табы, гранаты и войс дня перестают учитываться везде в панели."""
+    date = _valid_day(date)
+    with closing(player_store.connect(DB_PATH)) as con:
+        con.execute("INSERT OR IGNORE INTO archived_days(match_date) VALUES(?)", (date,))
+    return redirect(url_for("index", archived=date), code=303)
+
+
+@app.post("/day/<date>/unarchive")
+def day_unarchive(date: str):
+    date = _valid_day(date)
+    with closing(player_store.connect(DB_PATH)) as con:
+        con.execute("DELETE FROM archived_days WHERE match_date=?", (date,))
+    return redirect(url_for("day", date=date, restored=1), code=303)
+
+
+@app.get("/archive")
+def archive():
+    with closing(player_store.connect(DB_PATH)) as con:
+        rows = q(con, """
+            SELECT a.match_date date, a.archived_at,
+                   (SELECT COUNT(*) FROM scans s WHERE s.match_date=a.match_date) tabs,
+                   (SELECT COUNT(DISTINCT p.player_id) FROM kv_daily_reports r
+                      JOIN kv_daily_players p ON p.report_id=r.id
+                      WHERE r.match_date=a.match_date) players,
+                   (SELECT SUM(p.total_grenades) FROM kv_daily_reports r
+                      JOIN kv_daily_players p ON p.report_id=r.id
+                      WHERE r.match_date=a.match_date) grenades,
+                   (SELECT SUM(p.voice_seconds) FROM kv_daily_reports r
+                      JOIN kv_daily_players p ON p.report_id=r.id
+                      WHERE r.match_date=a.match_date) voice
+            FROM archived_days a ORDER BY a.match_date DESC""")
+    trs = "".join(
+        f"<tr><td class='nick'><a href='{url_for('day', date=r['date'])}'>{fmt_date_ru(r['date'])}</a></td>"
+        f"<td>{r['tabs'] or 0}</td><td>{r['players'] or 0}</td>"
+        f"<td class='total'>{r['grenades'] or 0}</td><td>{fmt_sec(r['voice'])}</td>"
+        f"<td class='dim'>{fmt_date_ru(str(r['archived_at'])[:10])}</td>"
+        f"<td><form method='post' action='{url_for('day_unarchive', date=r['date'])}' style='margin:0'>"
+        "<button>↩ Вернуть</button></form></td></tr>"
+        for r in rows)
+    table = ("<div class='panel'><table><thead><tr><th>Дата</th><th>Табов</th><th>Игроков</th>"
+             "<th>Гранаты</th><th>Войс</th><th>В архиве с</th><th></th></tr></thead>"
+             f"<tbody>{trs}</tbody></table></div>" if rows else
+             "<p class='hint'>Архив пуст. Сюда попадают дни, убранные кнопкой «Удалить день» на странице дня.</p>")
+    body = (f"<a class='back' href='{url_for('index')}'>← Обзор</a>"
+            "<div class='pagehead'><div><h1>Архив дней КВ</h1>"
+            "<p class='hint'>Эти дни не учитываются в списке дней, итогах и EFF игроков. "
+            "Данные не удалены, день можно вернуть.</p></div></div>" + table)
+    return render("Архив", body)
 
 
 def _to_int(value: str | None) -> int | None:

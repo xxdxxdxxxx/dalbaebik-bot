@@ -118,6 +118,8 @@ def install(runtime):
         if gid and preserved:
             with closing(runtime.player_store.connect(db_path)) as con:
                 for player_id, squad_id, slot in preserved:
+                    if con.execute("SELECT 1 FROM players WHERE id=?", (player_id,)).fetchone() is None:
+                        continue  # merged into a Discord-bound player by this save
                     if con.execute(
                         "SELECT 1 FROM discord_bindings WHERE player_id=?", (player_id,)
                     ).fetchone() is not None:
