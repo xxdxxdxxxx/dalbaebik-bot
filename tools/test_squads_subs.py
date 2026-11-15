@@ -53,16 +53,16 @@ class SubsTenSlotsTests(unittest.TestCase):
         return None if row is None else (row["squad_id"], row["slot"], bool(row["active"]))
 
     # ------------------------------------------------------------------ страница
-    def test_subs_have_ten_cells_and_squads_five(self):
+    def test_subs_have_eleven_cells_and_squads_five(self):
         html = self.page()
         cells = re.findall(r"data-squad='(\d+)' data-slot='(\d+)'", html)
         per_squad = {}
         for squad, slot in cells:
             per_squad.setdefault(int(squad), []).append(int(slot))
-        self.assertEqual(per_squad[99], list(range(1, 11)))
+        self.assertEqual(per_squad[99], list(range(1, 12)))
         for squad in (1, 2, 3, 4, 5, 6):
             self.assertEqual(per_squad[squad], [1, 2, 3, 4, 5])
-        self.assertEqual(len(cells), 6 * 5 + 10)
+        self.assertEqual(len(cells), 6 * 5 + 11)
 
     def test_subs_are_one_column_beside_all_squads_down_to_the_bottom(self):
         html = self.page()
@@ -71,13 +71,16 @@ class SubsTenSlotsTests(unittest.TestCase):
         # слева — отряды 1–6 в двух рядах по три, замен там нет
         self.assertEqual(re.findall(r"<div class='sheet-head'>(\w+)</div>", main), ["1", "2", "3", "4", "5", "6"])
         self.assertNotIn("data-squad='99'", main)
-        # справа — один заголовок «Замены», затем 5 мест, полоса вровень с нижним рядом и ещё 5 мест
+        # справа — один заголовок «Замены» и 11 одинаковых рабочих мест; 6-е стоит в полосе между рядами
         self.assertEqual(subs.count("<div class='sheet-head'>Замены</div>"), 1)
-        self.assertIn("<div class='sheet-head sheet-band' aria-hidden='true'></div>", subs)   # пустая, без подписи
+        self.assertNotIn("sheet-band", subs)                       # серой нередактируемой полосы больше нет
         self.assertNotIn("6–10", subs)
-        band = subs.index("sheet-band")
-        self.assertEqual(len(re.findall(r"data-slot='\d+'", subs[:band])), 5)
-        self.assertEqual(len(re.findall(r"data-slot='\d+'", subs[band:])), 5)
+        slots = re.findall(r"data-slot='(\d+)'", subs)
+        self.assertEqual(slots, [str(i) for i in range(1, 12)])
+        mid = subs.index("sheet-mid")
+        self.assertEqual(len(re.findall(r"data-slot='\d+'", subs[:mid])), 5)   # места 1–5 до 6-го
+        self.assertIn("data-slot='6'", subs[mid - 120:mid + 120])
+        self.assertEqual(len(re.findall(r"data-slot='\d+'", subs[mid:])), 6)               # 6-е и 7–11
         self.assertEqual(html.count("class='sheet-col sheet-subs'"), 1)
 
     def test_notes_still_line_up_with_four_columns(self):
@@ -85,20 +88,20 @@ class SubsTenSlotsTests(unittest.TestCase):
         self.assertEqual(html.count("class='note-col'"), 4)
 
     # ---------------------------------------------------------------- редактирование
-    def test_all_ten_subs_places_can_be_filled_and_survive_reload(self):
-        for slot in range(1, 11):
+    def test_all_eleven_subs_places_can_be_filled_and_survive_reload(self):
+        for slot in range(1, 12):
             self.assertEqual(self.cell(99, slot, f"Sub{slot}").status_code, 204, slot)
-        for slot in range(1, 11):
+        for slot in range(1, 12):
             self.assertEqual(self.membership(f"Sub{slot}"), (99, slot, True))
         html = self.page()
-        for slot in range(1, 11):
+        for slot in range(1, 12):
             self.assertRegex(html, rf"data-squad='99' data-slot='{slot}' value='Sub{slot}'")
         # повторный заход на страницу (пересборка ячеек из состава) ничего не теряет
         html = self.page()
-        self.assertRegex(html, r"data-squad='99' data-slot='10' value='Sub10'")
+        self.assertRegex(html, r"data-squad='99' data-slot='11' value='Sub11'")
 
     def test_places_outside_limits_are_rejected(self):
-        self.assertEqual(self.cell(99, 11, "Nobody").status_code, 400)
+        self.assertEqual(self.cell(99, 12, "Nobody").status_code, 400)
         self.assertEqual(self.cell(99, 0, "Nobody").status_code, 400)
         self.assertEqual(self.cell(1, 6, "Nobody").status_code, 400)      # у отрядов по-прежнему 5
         self.assertEqual(self.cell(4, 10, "Nobody").status_code, 400)
@@ -127,17 +130,17 @@ class SubsTenSlotsTests(unittest.TestCase):
         self.assertRegex(html, r"data-squad='99' data-slot='9' value='Mover'")
 
     # ------------------------------------------------------------ соседние механизмы
-    def test_sync_board_cells_keeps_slots_six_to_ten_of_subs(self):
+    def test_sync_board_cells_keeps_slots_six_to_eleven_of_subs(self):
         pid = player_store.upsert_binding(self.db, "100", "Late", guild_id=GUILD)
-        player_store.upsert_roster_member(self.db, GUILD, pid, squad_id=99, slot=10)
+        player_store.upsert_roster_member(self.db, GUILD, pid, squad_id=99, slot=11)
         with closing(player_store.connect(self.db)) as con:
             roster_consistency.sync_board_cells(con, GUILD)
             rows = {(r["squad_id"], r["slot"]): r["text"] for r in con.execute(
                 "SELECT squad_id,slot,text FROM roster_board_cells WHERE guild_id=?", (GUILD,))}
-        self.assertEqual(rows[(99, 10)], "Late")
-        self.assertEqual({s for sq, s in rows if sq == 99}, set(range(1, 11)))
+        self.assertEqual(rows[(99, 11)], "Late")
+        self.assertEqual({s for sq, s in rows if sq == 99}, set(range(1, 12)))
         self.assertEqual({s for sq, s in rows if sq == 1}, set(range(1, 6)))
-        self.assertEqual(len(rows), 6 * 5 + 10)
+        self.assertEqual(len(rows), 6 * 5 + 11)
 
     def test_clan_map_still_gets_only_squads_one_to_six(self):
         self.cell(99, 7, "Reserve")
@@ -148,7 +151,7 @@ class SubsTenSlotsTests(unittest.TestCase):
         self.assertNotIn("Reserve", desired.values())
 
     def test_slots_for(self):
-        self.assertEqual(list(roster_board.slots_for(99)), list(range(1, 11)))
+        self.assertEqual(list(roster_board.slots_for(99)), list(range(1, 12)))
         for squad in (1, 2, 3, 4, 5, 6):
             self.assertEqual(list(roster_board.slots_for(squad)), [1, 2, 3, 4, 5])
 

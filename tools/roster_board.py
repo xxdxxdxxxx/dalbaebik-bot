@@ -14,17 +14,17 @@ BOTTOM = (4, 5, 6)
 NOTE_COLUMNS = (1, 2, 3, SUBS_ID)
 LABELS = {1: "1", 2: "2", 3: "3", SUBS_ID: "Замены", 4: "4", 5: "5", 6: "6"}
 SLOTS = range(1, 6)          # места в отрядах 1–6
-SUBS_SLOTS = range(1, 11)    # у замен 10 мест: 5 рядом с верхним рядом отрядов, 5 рядом с нижним
+SUBS_SLOTS = range(1, 12)    # у замен 11 мест: 5 рядом с верхним рядом отрядов, 1 в полосе между рядами, 5 рядом с нижним
 NOTE_ROWS = (1, 2)
 
 
 def slots_for(squad_id):
-    """Допустимые места ячейки: 1–5 в отрядах, 1–10 у замен."""
+    """Допустимые места ячейки: 1–5 в отрядах, 1–11 у замен."""
     return SUBS_SLOTS if squad_id == SUBS_ID else SLOTS
 
 CSS = r"""
-.layout-squads{max-width:940px}main h1+.squads-zone{margin-top:14px}.sheet-cell.err{box-shadow:inset 0 0 0 2px var(--red)}.sheet-cell.saving{opacity:.7}.squads-zone{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.sheet-main{min-width:0}.sheet-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));background:var(--panel)}.sheet-grid-bottom{border-top:1px solid var(--line)}.sheet-col{min-width:0;border-right:1px solid var(--line)}.sheet-subs{border-right:0}.sheet-cell.above-band{border-bottom:0}.sheet-head{height:38px;display:grid;place-items:center;background:var(--soft);border-bottom:1px solid var(--line);font-size:14px;font-weight:800;text-align:center}.sheet-cell,.sheet-note{display:block;width:100%;height:36px;border:0;border-bottom:1px solid rgba(127,127,127,.17);border-radius:0;background:var(--panel);color:var(--text);font:550 14px/36px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;text-align:center;padding:0 8px;outline:0}.sheet-cell:last-child,.sheet-note:last-child{border-bottom:0}.sheet-head.sheet-band{height:39px;border-top:1px solid var(--line)}.sheet-cell:focus,.sheet-note:focus{background:var(--blue2);box-shadow:inset 0 0 0 1px var(--blue)}.sheet-cell.dragging{opacity:.4}.sheet-cell.drag-over{background:var(--blue2);box-shadow:inset 0 0 0 2px var(--blue)}.notes-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:16px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.note-col{min-width:0;border-right:1px solid var(--line)}.note-col:last-child{border-right:0}.sheet-status{height:20px;margin-top:8px;color:var(--dim);font-size:11px;text-align:right}.sheet-status.ok{color:var(--green)}.sheet-status.err{color:var(--red)}
-@media(max-width:760px){.squads-zone{grid-template-columns:1fr}.sheet-grid,.notes-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.sheet-col:nth-child(2n),.note-col:nth-child(2n){border-right:0}.sheet-col:nth-child(n+3),.note-col:nth-child(n+3){border-top:1px solid var(--line)}.sheet-subs{border-top:1px solid var(--line)}.sheet-head.sheet-band{display:none}.sheet-cell.above-band{border-bottom:1px solid rgba(127,127,127,.17)}}@media(max-width:430px){.sheet-grid,.notes-grid{grid-template-columns:1fr}.sheet-col,.note-col{border-right:0!important;border-top:1px solid var(--line)}.sheet-col:first-child,.note-col:first-child{border-top:0}}
+.layout-squads{max-width:940px}main h1+.squads-zone{margin-top:14px}.sheet-cell.err{box-shadow:inset 0 0 0 2px var(--red)}.sheet-cell.saving{opacity:.7}.squads-zone{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.sheet-main{min-width:0}.sheet-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));background:var(--panel)}.sheet-grid-bottom{border-top:1px solid var(--line)}.sheet-col{min-width:0;border-right:1px solid var(--line)}.sheet-subs{border-right:0}.sheet-cell.above-band{border-bottom:0}.sheet-head{height:38px;display:grid;place-items:center;background:var(--soft);border-bottom:1px solid var(--line);font-size:14px;font-weight:800;text-align:center}.sheet-cell,.sheet-note{display:block;width:100%;height:36px;border:0;border-bottom:1px solid rgba(127,127,127,.17);border-radius:0;background:var(--panel);color:var(--text);font:550 14px/36px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;text-align:center;padding:0 8px;outline:0}.sheet-cell:last-child,.sheet-note:last-child{border-bottom:0}.sheet-head.sheet-band{height:39px;border-top:1px solid var(--line)}.sheet-cell.sheet-mid{height:39px;line-height:37px;border-top:1px solid var(--line)}.sheet-cell:focus,.sheet-note:focus{background:var(--blue2);box-shadow:inset 0 0 0 1px var(--blue)}.sheet-cell.dragging{opacity:.4}.sheet-cell.drag-over{background:var(--blue2);box-shadow:inset 0 0 0 2px var(--blue)}.notes-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:16px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.note-col{min-width:0;border-right:1px solid var(--line)}.note-col:last-child{border-right:0}.sheet-status{height:20px;margin-top:8px;color:var(--dim);font-size:11px;text-align:right}.sheet-status.ok{color:var(--green)}.sheet-status.err{color:var(--red)}
+@media(max-width:760px){.squads-zone{grid-template-columns:1fr}.sheet-grid,.notes-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.sheet-col:nth-child(2n),.note-col:nth-child(2n){border-right:0}.sheet-col:nth-child(n+3),.note-col:nth-child(n+3){border-top:1px solid var(--line)}.sheet-subs{border-top:1px solid var(--line)}.sheet-head.sheet-band{display:none}.sheet-cell.above-band{border-bottom:1px solid rgba(127,127,127,.17)}.sheet-cell.sheet-mid{height:36px;line-height:36px;border-top:0}}@media(max-width:430px){.sheet-grid,.notes-grid{grid-template-columns:1fr}.sheet-col,.note-col{border-right:0!important;border-top:1px solid var(--line)}.sheet-col:first-child,.note-col:first-child{border-top:0}}
 """
 
 SCRIPT = r"""<script>
@@ -75,7 +75,7 @@ def _seed(con, guild_id):
         FROM roster_memberships r JOIN players p ON p.id=r.player_id
         WHERE r.guild_id=? AND r.active=1
           AND ((r.squad_id BETWEEN 1 AND 6 AND r.slot BETWEEN 1 AND 5)
-               OR (r.squad_id=99 AND r.slot BETWEEN 1 AND 10))""", (guild_id,))
+               OR (r.squad_id=99 AND r.slot BETWEEN 1 AND 11))""", (guild_id,))
     con.executemany("INSERT OR IGNORE INTO roster_board_cells(guild_id,squad_id,slot,text) VALUES(?,?,?,'')",
                     [(guild_id, squad_id, slot) for squad_id in ORDER for slot in slots_for(squad_id)])
 
@@ -133,16 +133,18 @@ def _column(values, squad_id):
 
 
 def _subs_column(values):
-    """Замены: одна колонка на всю высоту зоны — 5 мест рядом с отрядами 1–3 и 5 рядом с 4–6.
+    """Замены: одна колонка на всю высоту зоны — 11 одинаковых рабочих мест.
 
-    Между ними пустая нередактируемая полоса (без подписи) высотой с заголовки нижнего ряда:
-    благодаря ей линии мест замен идут вровень с отрядами, а колонка упирается в нижнюю грань.
+    5 мест рядом с отрядами 1–3, 6-е — в полосе вровень с заголовками нижнего ряда (там раньше была
+    пустая полоса) и 5 мест рядом с отрядами 4–6. Высота 6-го места равна высоте этих заголовков,
+    поэтому линии остальных мест идут вровень с отрядами, а колонка упирается в нижнюю грань.
     """
-    upper, lower = SUBS_SLOTS[:5], SUBS_SLOTS[5:]
+    upper, mid, lower = SUBS_SLOTS[:5], SUBS_SLOTS[5], SUBS_SLOTS[6:]
     first = "".join(_cell(values, SUBS_ID, slot, " above-band" if slot == upper[-1] else "") for slot in upper)
+    middle = _cell(values, SUBS_ID, mid, " sheet-mid")
     second = "".join(_cell(values, SUBS_ID, slot) for slot in lower)
-    return (f"<section class='sheet-col sheet-subs'><div class='sheet-head'>{LABELS[SUBS_ID]}</div>{first}"
-            f"<div class='sheet-head sheet-band' aria-hidden='true'></div>{second}</section>")
+    return (f"<section class='sheet-col sheet-subs'><div class='sheet-head'>{LABELS[SUBS_ID]}</div>"
+            f"{first}{middle}{second}</section>")
 
 
 def install(admin):

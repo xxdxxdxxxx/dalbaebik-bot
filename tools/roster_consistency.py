@@ -94,7 +94,7 @@ def sync_board_cells(con: sqlite3.Connection, guild_id: int) -> None:
                SELECT r.squad_id,r.slot,p.canonical_nick
                FROM roster_memberships r JOIN players p ON p.id=r.player_id
                WHERE r.guild_id=? AND r.active=1
-                 AND r.squad_id=99 AND r.slot BETWEEN 1 AND 10""",
+                 AND r.squad_id=99 AND r.slot BETWEEN 1 AND 11""",
             (int(guild_id), int(guild_id)),
         )
     )
@@ -102,7 +102,7 @@ def sync_board_cells(con: sqlite3.Connection, guild_id: int) -> None:
         "INSERT INTO roster_board_cells(guild_id,squad_id,slot,text) VALUES(?,?,?,?)",
         [(int(guild_id), int(row[0]), int(row[1]), str(row[2])) for row in rows],
     )
-    # Keep every editable position visible even when empty (5 per squad, 10 for the subs).
+    # Keep every editable position visible even when empty (5 per squad, 11 for the subs).
     con.executemany(
         "INSERT OR IGNORE INTO roster_board_cells(guild_id,squad_id,slot,text) VALUES(?,?,?,'')",
         [(int(guild_id), squad_id, slot)

@@ -544,6 +544,12 @@ button.tick:disabled{opacity:.3}form.tickform{margin:0}
 .bt tbody tr:hover td.nick{background:var(--blue2)}}
 .hintbox{padding:14px 16px;border:1px dashed var(--line);border-radius:10px;color:var(--dim);margin:10px 0}.hintbox code{background:var(--soft);padding:1px 5px;border-radius:5px;color:var(--text)}
 .bsearch{margin:2px 0 10px}
+.bt a.cp{cursor:copy;color:inherit;text-decoration:none}.bt a.cp:hover{color:var(--blue)}.bt a.cp:focus-visible{outline:1px solid var(--blue);outline-offset:2px;border-radius:3px}
+.bt a.cp.copied{color:var(--green)}.bt a.cp.copied::after{content:' ✓ скопировано';font-size:11px;font-weight:400}
+.bpanel{width:fit-content;max-width:100%}
+.bt.bnow{width:auto}.bt.bnow td.nick,.bt.bnow th.nick{width:auto;min-width:240px;max-width:420px}
+.bt.bnow td.bc,.bt.bnow th.bh{width:62px;min-width:56px}
+@media(max-width:760px){.bpanel{width:100%}.bt.bnow td.nick,.bt.bnow th.nick{min-width:0}}
 """
 
 JS = r"""<script>
@@ -579,6 +585,16 @@ document.addEventListener('submit',function(e){
   .catch(function(err){alert(err.message||'Ошибка. Обновите страницу.')})
   .then(function(){b.disabled=false;busy=false});
 });
+function copyText(t){
+  if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(t);
+  return new Promise(function(ok,fail){var a=document.createElement('textarea');a.value=t;a.setAttribute('readonly','');
+    a.style.cssText='position:fixed;top:0;left:0;opacity:0';document.body.appendChild(a);a.select();
+    var done=false;try{done=document.execCommand('copy')}catch(e){}document.body.removeChild(a);done?ok():fail(new Error('copy'))})}
+function copyNick(el){var t=el.getAttribute('data-nick')||'';if(!t)return;
+  copyText(t).then(function(){el.classList.add('copied');clearTimeout(el._t);el._t=setTimeout(function(){el.classList.remove('copied')},1200)})
+  .catch(function(){window.prompt('Скопируйте ник (Ctrl+C):',t)})}
+document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a.cp');if(a){e.preventDefault();copyNick(a)}});
+document.addEventListener('keydown',function(e){if(e.key!=='Enter'&&e.key!==' ')return;var a=e.target.closest&&e.target.closest('a.cp');if(a){e.preventDefault();copyNick(a)}});
 function poll(){if(document.hidden||busy)return;
   fetch(VURL,{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null})
   .then(function(j){if(j&&j.v&&j.v!==cur)location.reload()}).catch(function(){})}
@@ -606,9 +622,9 @@ def _counts_text(counts: dict[str, int]) -> str:
 
 def _row_html(admin: Any, row: dict[str, Any]) -> str:
     esc = admin.esc
-    name = esc(row["nick"])
-    if row["pid"] is not None:
-        name = f"<a href='{url_for('player', player_id=row['pid'])}'>{name}</a>"
+    # ник — не ссылка на профиль: клик копирует его в буфер обмена (см. JS ниже)
+    name = (f"<a class='cp' role='button' tabindex='0' data-nick='{esc(row['nick'])}' "
+            f"title='Нажмите, чтобы скопировать ник'>{esc(row['nick'])}</a>")
     notes = ""
     if row["typed"] and row["typed"].casefold() != row["nick"].casefold():
         notes += f"<span class='typed'>({esc(row['typed'])})</span>"
@@ -632,7 +648,7 @@ def _row_html(admin: Any, row: dict[str, Any]) -> str:
               f"<button class='tick{' on' if row['issued'] else ''}' title='{esc(title)}' "
               "aria-label='Бафы выданы'>✓</button></form>")
     return (f"<tr class='brow{' done' if row['issued'] else ''}'>"
-            f"<td class='nick grow' title='{esc(tip)}'><span class='who'>{name}</span>{notes}</td>"
+            f"<td class='nick' title='{esc(tip)}'><span class='who'>{name}</span>{notes}</td>"
             f"{_buff_cells(row['counts'])}<td class='tk'>{button}</td></tr>")
 
 
@@ -651,13 +667,13 @@ def _render_board(admin: Any) -> str:
 
     def foot(row_id: str, label: str, values: dict[str, int], css: str = "") -> str:
         cells = "".join(f"<td class='bc'>{values[k] or '·'}</td>" for k in BUFF_KEYS)
-        return f"<tr id='{row_id}'{css}><td class='nick grow'>{label}</td>{cells}<td class='tk'></td></tr>"
+        return f"<tr id='{row_id}'{css}><td class='nick'>{label}</td>{cells}<td class='tk'></td></tr>"
 
-    head = ("<th class='nick grow'>Ник</th>" + "".join(f"<th class='bh'>{esc(t)}</th>" for _, t in BUFFS)
+    head = ("<th class='nick'>Ник</th>" + "".join(f"<th class='bh'>{esc(t)}</th>" for _, t in BUFFS)
             + "<th class='tk' title='Бафы выданы'>✓</th>")
     if rows:
         table = ("<input id='flt' class='bsearch' placeholder='Поиск по нику…' aria-label='Поиск игрока'>"
-                 "<div class='panel'><table class='tight bt'><thead><tr>" + head + "</tr></thead><tbody>"
+                 "<div class='panel bpanel'><table class='tight bt bnow'><thead><tr>" + head + "</tr></thead><tbody>"
                  + "".join(_row_html(admin, r) for r in rows) + "</tbody><tfoot>"
                  + foot("brow-tot", "Итого", totals) + foot("brow-rest", "Осталось выдать", rest, " class='rest'")
                  + "</tfoot></table></div>")
@@ -681,12 +697,10 @@ def _render_board(admin: Any) -> str:
     chips = ("<div class='chips'>"
              f"<span class='chip'>В таблице: {len(rows)}</span>"
              f"<span class='chip'>Выдано: <b id='chip-done'>{done} из {len(rows)}</b></span></div>")
-    note = ("<p class='hint' style='margin:0 0 10px'>Галочка сразу попадает в историю. После КВ (в 05:00 МСК) "
-            "выданные заявки уходят из таблицы, невыданные остаются. Убрать заявку — удалить сообщение в канале.</p>")
     body = ("<div class='pagehead'><div><h1>Бафы</h1>"
             f"<div class='subtitle'>Выдача: {admin.fmt_date_ru(today)}</div></div>"
             f"<div class='actions'><a class='button' href='{url_for('buffs_history')}'>📜 История</a></div></div>"
-            + chips + note + table + bad
+            + chips + table + bad
             + JS.replace("__VER__", json.dumps(version)).replace("__VURL__", json.dumps(url_for("buffs_version")))
             .replace("__N__", str(len(BUFFS))))
     return admin.render("Бафы", body)
