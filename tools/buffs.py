@@ -545,11 +545,12 @@ button.tick:disabled{opacity:.3}form.tickform{margin:0}
 .hintbox{padding:14px 16px;border:1px dashed var(--line);border-radius:10px;color:var(--dim);margin:10px 0}.hintbox code{background:var(--soft);padding:1px 5px;border-radius:5px;color:var(--text)}
 .bsearch{margin:2px 0 10px}
 .bt a.cp{cursor:copy;color:inherit;text-decoration:none}.bt a.cp:hover{color:var(--blue)}.bt a.cp:focus-visible{outline:1px solid var(--blue);outline-offset:2px;border-radius:3px}
-.bt a.cp.copied{color:var(--green)}.bt a.cp.copied::after{content:' ✓ скопировано';font-size:11px;font-weight:400}
-.bpanel{width:fit-content;max-width:100%}
+.bt a.cp.copied{color:var(--green)}
+.bpanel{width:fit-content;max-width:100%;overflow:visible}
+.bt.bnow thead th{top:50px;box-shadow:0 1px 0 var(--line)}
 .bt.bnow{width:auto}.bt.bnow td.nick,.bt.bnow th.nick{width:auto;min-width:240px;max-width:420px}
 .bt.bnow td.bc,.bt.bnow th.bh{width:62px;min-width:56px}
-@media(max-width:760px){.bpanel{width:100%}.bt.bnow td.nick,.bt.bnow th.nick{min-width:0}}
+@media(max-width:760px){.bpanel{width:100%;overflow-x:auto}.bt.bnow thead th{top:0}.bt.bnow td.nick,.bt.bnow th.nick{min-width:0}}
 """
 
 JS = r"""<script>
@@ -628,7 +629,6 @@ def _row_html(admin: Any, row: dict[str, Any]) -> str:
     notes = ""
     if row["typed"] and row["typed"].casefold() != row["nick"].casefold():
         notes += f"<span class='typed'>({esc(row['typed'])})</span>"
-    notes += f"<span class='when'>{esc(_fmt_dm(row['created_at']))}</span>"
     if row["pid"] is None:
         notes += " <span class='source-badge' title='Такого ника нет в базе игроков — проверьте написание'>нет в базе</span>"
     if row["earlier"]:
