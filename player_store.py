@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 GRENADE_STEPS = ("20:00", "20:25", "20:50", "21:20", "21:40")
 
@@ -304,6 +304,17 @@ CREATE TABLE IF NOT EXISTS voice_checkpoints(
  PRIMARY KEY(session_id, discord_id)
 );
 CREATE INDEX IF NOT EXISTS idx_voice_checkpoint_player ON voice_checkpoints(player_id, session_id);
+-- v14: первый заход игрока в войс явки за день КВ. joined_at — ISO-время МСК
+-- (2026-11-14T19:39:12+03:00). Пишет бот один раз за день, читает страница «Заход войс».
+CREATE TABLE IF NOT EXISTS voice_join_times(
+ guild_id INTEGER NOT NULL,
+ match_date TEXT NOT NULL,
+ player_id INTEGER NOT NULL REFERENCES players(id),
+ joined_at TEXT NOT NULL,
+ PRIMARY KEY(guild_id, match_date, player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_voice_join_date ON voice_join_times(match_date);
+CREATE INDEX IF NOT EXISTS idx_voice_join_player ON voice_join_times(player_id);
 CREATE TABLE IF NOT EXISTS bot_kv_state(
  guild_id INTEGER NOT NULL REFERENCES bot_guild_config(guild_id) ON DELETE CASCADE,
  state_key TEXT NOT NULL,
@@ -440,6 +451,14 @@ def _merge_player(con: sqlite3.Connection, survivor: int, duplicate: int) -> Non
     con.execute("UPDATE scan_players SET player_id=? WHERE player_id=?", (survivor, duplicate))
     con.execute("UPDATE voice_stats SET player_id=? WHERE player_id=?", (survivor, duplicate))
     con.execute("UPDATE kv_daily_players SET player_id=? WHERE player_id=?", (survivor, duplicate))
+    # заход в войс: при совпадении дня остаётся более раннее время
+    for row in list(con.execute("SELECT guild_id,match_date,joined_at FROM voice_join_times WHERE player_id=?",
+                                (duplicate,))):
+        con.execute("""INSERT INTO voice_join_times(guild_id,match_date,player_id,joined_at) VALUES(?,?,?,?)
+            ON CONFLICT(guild_id,match_date,player_id) DO UPDATE SET
+            joined_at=MIN(voice_join_times.joined_at,excluded.joined_at)""",
+            (row["guild_id"], row["match_date"], survivor, row["joined_at"]))
+    con.execute("DELETE FROM voice_join_times WHERE player_id=?", (duplicate,))
     for row in con.execute("SELECT guild_id,removed_at,reason FROM roster_removals WHERE player_id=?", (duplicate,)):
         con.execute("""INSERT INTO roster_removals(guild_id,player_id,removed_at,reason)
             VALUES(?,?,?,?) ON CONFLICT(guild_id,player_id) DO UPDATE SET
@@ -460,7 +479,7 @@ def _merge_player(con: sqlite3.Connection, survivor: int, duplicate: int) -> Non
 
 
 class NicknameConflict(ValueError):
-    """The nickname already belongs to a player bound to a different Discord account."""
+    """The nickname belongs to an active roster member bound to a different Discord account."""
 
     def __init__(self, nickname: str, discord_id: str | int | None = None):
         super().__init__(f"nickname {nickname!r} belongs to another player")
@@ -985,6 +1004,40 @@ def sync_voice_snapshot(db_path: Path | str, totals: dict[str, Any], source_key:
     return written
 
 
+def record_voice_joins(db_path: Path | str, guild_id: int, match_date: str,
+                       joins: dict[str | int, str]) -> int:
+    """Запомнить первый заход в войс за день КВ: {discord_id: ISO-время МСК}.
+
+    Повтор безопасен: время записывается один раз за (день, игрок) и больше не меняется
+    (повторные заходы, рестарт бота и тики обновления его не перетирают).
+    Discord-аккаунты без привязки к игроку пропускаются. Возвращает число НОВЫХ записей.
+    """
+    day = parse_match_date(match_date)
+    clean = {str(did): str(at).strip() for did, at in (joins or {}).items() if str(at or "").strip()}
+    if not clean:
+        return 0
+    ensure_schema(db_path)
+    written = 0
+    with closing(connect(db_path)) as con:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            for did, joined_at in clean.items():
+                binding = con.execute(
+                    "SELECT player_id FROM discord_bindings WHERE discord_id=?", (did,)
+                ).fetchone()
+                if binding is None:
+                    continue
+                cur = con.execute(
+                    """INSERT OR IGNORE INTO voice_join_times(guild_id,match_date,player_id,joined_at)
+                       VALUES(?,?,?,?)""", (int(guild_id), day, int(binding[0]), joined_at))
+                written += max(cur.rowcount, 0)
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+    return written
+
+
 def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -1240,6 +1293,56 @@ def _merge_roster_changes(con: sqlite3.Connection, gid: int, players: dict[str, 
             updated_at=CURRENT_TIMESTAMP""", (gid, pid, position[0], position[1]))
 
 
+def _claim_nick_owners(con: sqlite3.Connection, gid: int, nick: str, discord_id: str | int,
+                       player_id: int | None = None) -> list[int]:
+    """Free ``nick`` for ``discord_id`` and return the players that already own it.
+
+    A nickname is blocked only while its owner is an *active* roster member
+    (``roster_memberships.active=1`` in ``gid``) bound to another Discord account;
+    that raises ``NicknameConflict`` and nothing is changed. Every other owner
+    (removed from the roster, never in it, or unbound) loses its old Discord
+    bindings and its ``roster_removals`` tombstone here, so the caller can reuse
+    or merge it with ``_merge_player_everywhere`` without giving one player two
+    Discord accounts. ``player_id`` is the claimant's own player (if it has one)
+    and is never treated as an owner.
+    """
+    did = str(discord_id)
+    owners = sorted(_identity_ids(con, nick) - ({int(player_id)} if player_id is not None else set()))
+    for owner in owners:
+        bound = [str(row[0]) for row in con.execute(
+            """SELECT discord_id FROM discord_bindings WHERE player_id=? AND discord_id<>?
+               ORDER BY updated_at DESC,discord_id""", (owner, did))]
+        if not bound:
+            continue
+        active = con.execute(
+            "SELECT 1 FROM roster_memberships WHERE guild_id=? AND player_id=? AND active=1",
+            (gid, owner)).fetchone()
+        if active is not None:
+            raise NicknameConflict(nick, bound[0])
+    for owner in owners:
+        con.execute("DELETE FROM discord_bindings WHERE player_id=? AND discord_id<>?", (owner, did))
+        con.execute("DELETE FROM roster_removals WHERE guild_id=? AND player_id=?", (gid, owner))
+    return owners
+
+
+def _promote_nick(con: sqlite3.Connection, player_id: int, nick: str) -> None:
+    """Make ``nick`` the player's canonical nickname; the previous one stays as an alias."""
+    row = con.execute("SELECT canonical_nick FROM players WHERE id=?", (player_id,)).fetchone()
+    if row is None:
+        return
+    old_nick = str(row[0])
+    # The nickname becomes canonical, so a spare alias with the same spelling is redundant.
+    for alias_row in list(con.execute("SELECT alias FROM player_aliases WHERE player_id=?", (player_id,))):
+        if _norm(alias_row[0]) == _norm(nick):
+            con.execute("DELETE FROM player_aliases WHERE alias=?", (alias_row[0],))
+    if old_nick == nick:
+        return
+    con.execute("UPDATE players SET canonical_nick=? WHERE id=?", (nick, player_id))
+    if _norm(old_nick) != _norm(nick):
+        # Keep the previous spelling/name resolvable for old scans and imported reports.
+        con.execute("INSERT OR IGNORE INTO player_aliases(alias,player_id) VALUES(?,?)", (old_nick, player_id))
+
+
 def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int | None = None) -> int:
     """Transactionally persist the legacy-shaped runtime object to SQLite only."""
     ensure_schema(db_path)
@@ -1272,39 +1375,33 @@ def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int |
                     "SELECT player_id FROM discord_bindings WHERE discord_id=?", (did,)
                 ).fetchone()
                 if binding is None:
-                    pid = _player_id(con, nick)
+                    # Nobody is bound to this Discord account yet. A nickname that already
+                    # exists (canonical or spare) is reused, unless an active member of the
+                    # roster holds it; stale bindings of its former owner are dropped first.
+                    owners = _claim_nick_owners(con, gid, nick, did)
+                    if owners:
+                        pid = owners[0]
+                        for other in owners[1:]:
+                            _merge_player_everywhere(con, pid, other, final_nick=nick)
+                        current_row = con.execute("SELECT canonical_nick FROM players WHERE id=?", (pid,)).fetchone()
+                        if current_row is not None and _norm(current_row[0]) != _norm(nick):
+                            _promote_nick(con, pid, nick)   # it was a spare nickname
+                    else:
+                        pid = _player_id(con, nick)
                 else:
                     # A Discord binding is the stable identity. A roster nickname edit
                     # renames that player instead of creating a second identity.
                     pid = int(binding[0])
                     nick_untouched = base_rec is not None and _norm(base_rec.get("nick") or "") == _norm(nick)
                     if not nick_untouched:
-                        others = _identity_ids(con, nick) - {pid}
                         # The same nickname may already exist as a player nobody bound
                         # to Discord (typed on the admin board, seen in a scan, an old
-                        # alias). That is the same person: merge instead of failing.
-                        for other in sorted(others):
-                            row = con.execute(
-                                "SELECT discord_id FROM discord_bindings WHERE player_id=? AND discord_id<>? LIMIT 1",
-                                (other, did)).fetchone()
-                            if row is not None:
-                                raise NicknameConflict(nick, row[0])
-                        for other in sorted(others):
+                        # alias) or as one who left the roster. That is the same person:
+                        # merge instead of failing. Only an active roster member bound to
+                        # another Discord account keeps the nickname (NicknameConflict).
+                        for other in _claim_nick_owners(con, gid, nick, did, pid):
                             _merge_player_everywhere(con, pid, other, final_nick=nick)
-                        old_row = con.execute(
-                            "SELECT canonical_nick FROM players WHERE id=?", (pid,)
-                        ).fetchone()
-                        old_nick = str(old_row[0]) if old_row else ""
-                        if old_nick and _norm(old_nick) != _norm(nick):
-                            con.execute("UPDATE players SET canonical_nick=? WHERE id=?", (nick, pid))
-                            # Keep the previous spelling/name resolvable for old scans and
-                            # imported reports without changing their player_id.
-                            con.execute(
-                                "INSERT OR IGNORE INTO player_aliases(alias,player_id) VALUES(?,?)",
-                                (old_nick, pid),
-                            )
-                        elif old_nick != nick:
-                            con.execute("UPDATE players SET canonical_nick=? WHERE id=?", (nick, pid))
+                        _promote_nick(con, pid, nick)
                 current[did] = pid
                 con.execute("""INSERT INTO discord_bindings(discord_id,player_id,discord_name,discord_username)
                     VALUES(?,?,?,?) ON CONFLICT(discord_id) DO UPDATE SET player_id=excluded.player_id,
@@ -1362,18 +1459,28 @@ def save_bot_snapshot(db_path: Path | str, data: dict[str, Any], guild_id: int |
                             (session_id,player_id,discord_id,game_nick,squad_id,slot,squad_label)
                             VALUES(?,?,?,?,?,?,?)""",
                             (sid, pid, did, member["game_nick"], squad, member.get("slot"), label))
+                # The tables below are rewritten from the runtime snapshot, which only knows the
+                # active roster. Players who left it (/remove, unbound) are still part of this
+                # day's history: keep their attendance and the owner of their voice time.
+                current_pids = set(current.values())
+                kept_attendance = [(sid, int(r[0]), int(r[1]), int(r[2])) for r in con.execute(
+                    "SELECT player_id,came,in_voice FROM attendance WHERE session_id=?", (sid,))
+                    if int(r[0]) not in current_pids]
+                voice_owner = {str(r[0]): int(r[1]) for r in con.execute(
+                    "SELECT discord_id,player_id FROM voice_checkpoints WHERE session_id=? AND player_id IS NOT NULL",
+                    (sid,))}
                 for table in ("attendance", "session_maps", "absent_dm_deliveries", "live_grenade_state", "voice_checkpoints"):
                     con.execute(f"DELETE FROM {table} WHERE session_id=?", (sid,))
                 con.executemany("INSERT INTO attendance(session_id,player_id,came,in_voice) VALUES(?,?,?,?)",
                     [(sid, current[did], int(bool(rec.get("came"))), int(bool(rec.get("in_voice"))))
-                     for did, rec in (data.get("players") or {}).items() if did in current])
+                     for did, rec in (data.get("players") or {}).items() if did in current] + kept_attendance)
                 maps = data.get("kv_maps") or {}
                 con.executemany("INSERT INTO session_maps(session_id,position,map_name) VALUES(?,?,?)",
                     [(sid, pos, str(name)) for pos, name in enumerate(maps.get("maps") or [])])
                 con.executemany("INSERT INTO absent_dm_deliveries(session_id,discord_id,player_id) VALUES(?,?,?)",
                     [(sid, str(did), current.get(str(did))) for did in dict.fromkeys(data.get("absent_dm_sent") or [])])
                 con.executemany("INSERT INTO voice_checkpoints(session_id,discord_id,player_id,seconds) VALUES(?,?,?,?)",
-                    [(sid, str(did), current.get(str(did)), float(value)) for did, value in
+                    [(sid, str(did), current.get(str(did), voice_owner.get(str(did))), float(value)) for did, value in
                      (data.get("voice_speak_seconds") or {}).items() if not isinstance(value, bool) and isinstance(value, (int, float)) and value >= 0])
                 grenade_rows = []
                 for nick, values in (data.get("grenade_history") or {}).items():
@@ -1524,6 +1631,130 @@ def restore_roster_member(db_path: Path | str, guild_id: int, *,
         cur = con.execute("DELETE FROM roster_removals WHERE guild_id=? AND player_id=?",
                           (int(guild_id), int(player_id)))
         return cur.rowcount > 0
+
+
+class UnbindResult(NamedTuple):
+    """Outcome of ``unbind_discord_everywhere`` / ``unbind_nick_everywhere``.
+
+    ``status`` is ``"removed"`` (player taken out of the roster, all Discord
+    bindings dropped), ``"alias_removed"`` (only a spare nickname was deleted,
+    the player stays) or ``"not_found"`` (nothing matched, nothing was written).
+    ``nick`` is the player's canonical nickname, ``discord_ids`` the Discord
+    accounts that were unbound, ``alias`` the deleted spare nickname.
+    """
+
+    status: str
+    player_id: int | None = None
+    nick: str | None = None
+    discord_ids: tuple[str, ...] = ()
+    alias: str | None = None
+    was_active: bool = False
+
+
+def _unbind_player(con: sqlite3.Connection, gid: int, player_id: int,
+                   first_discord_id: str | None = None) -> tuple[list[str], bool] | None:
+    """Take one player out of the roster and drop every Discord binding it has.
+
+    History, aliases and scans stay. Returns ``(unbound discord ids, was active)`` or
+    ``None`` when there was nothing to do (not in the active roster, no binding).
+    """
+    was_active = con.execute(
+        "SELECT 1 FROM roster_memberships WHERE guild_id=? AND player_id=? AND active=1",
+        (gid, player_id)).fetchone() is not None
+    ids = [str(row[0]) for row in con.execute(
+        "SELECT discord_id FROM discord_bindings WHERE player_id=? ORDER BY discord_id", (player_id,))]
+    if not was_active and not ids:
+        return None
+    if first_discord_id is not None and first_discord_id in ids:
+        ids.remove(first_discord_id)
+        ids.insert(0, first_discord_id)
+    con.execute("INSERT OR IGNORE INTO bot_guild_config(guild_id) VALUES(?)", (gid,))
+    con.execute("""INSERT INTO roster_removals(guild_id,player_id) VALUES(?,?)
+        ON CONFLICT(guild_id,player_id) DO UPDATE SET
+        removed_at=CURRENT_TIMESTAMP,reason='explicit_remove'""", (gid, player_id))
+    con.execute("""UPDATE roster_memberships SET active=0,
+        deactivated_at=COALESCE(deactivated_at,CURRENT_TIMESTAMP),updated_at=CURRENT_TIMESTAMP
+        WHERE guild_id=? AND player_id=?""", (gid, player_id))
+    con.execute("DELETE FROM discord_bindings WHERE player_id=?", (player_id,))
+    return ids, was_active
+
+
+def unbind_discord_everywhere(db_path: Path | str, guild_id: int, discord_id: str | int) -> UnbindResult:
+    """Explicit /remove by Discord account, over the whole database, in one transaction.
+
+    Works for an account that is not in the active roster too. The player is taken
+    out of the roster (``active=0`` plus a ``roster_removals`` record) and ALL of its
+    Discord bindings are deleted, so its nickname is free for a new /add. Identity,
+    history, aliases and scans are kept.
+    """
+    ensure_schema(db_path)
+    did = str(discord_id)
+    with closing(connect(db_path)) as con:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            row = con.execute("SELECT player_id FROM discord_bindings WHERE discord_id=?", (did,)).fetchone()
+            if row is None:
+                con.commit()
+                return UnbindResult("not_found")
+            pid = int(row[0])
+            done = _unbind_player(con, int(guild_id), pid, did)
+            nick_row = con.execute("SELECT canonical_nick FROM players WHERE id=?", (pid,)).fetchone()
+            con.commit()
+            ids, was_active = done if done is not None else ([], False)
+            return UnbindResult("removed", pid, str(nick_row[0]) if nick_row else None,
+                                tuple(ids), None, was_active)
+        except Exception:
+            con.rollback()
+            raise
+
+
+def unbind_nick_everywhere(db_path: Path | str, guild_id: int, nick: str) -> UnbindResult:
+    """Explicit /remove by nickname (case-insensitive), over the whole database, in one transaction.
+
+    A canonical nickname behaves like ``unbind_discord_everywhere`` (roster removal plus
+    every Discord binding of that player, including a player nobody bound to Discord).
+    A spare nickname (``player_aliases``) is simply deleted and the player stays in the
+    roster. Identity, history and scans are kept either way.
+    """
+    ensure_schema(db_path)
+    key = _norm(nick)
+    if not key:
+        return UnbindResult("not_found")
+    with closing(connect(db_path)) as con:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            gid = int(guild_id)
+            owners = [(int(r["id"]), str(r["canonical_nick"])) for r in con.execute(
+                "SELECT id,canonical_nick FROM players ORDER BY id") if _norm(r["canonical_nick"]) == key]
+            if owners:
+                ids: list[str] = []
+                first: tuple[int, str] | None = None
+                was_active = False
+                for pid, canonical in owners:
+                    done = _unbind_player(con, gid, pid)
+                    if done is None:
+                        continue
+                    first = first or (pid, canonical)
+                    ids.extend(i for i in done[0] if i not in ids)
+                    was_active = was_active or done[1]
+                con.commit()
+                if first is None:
+                    return UnbindResult("not_found")
+                return UnbindResult("removed", first[0], first[1], tuple(ids), None, was_active)
+            spare = [(str(r["alias"]), int(r["player_id"])) for r in con.execute(
+                "SELECT alias,player_id FROM player_aliases ORDER BY player_id,alias") if _norm(r["alias"]) == key]
+            if not spare:
+                con.commit()
+                return UnbindResult("not_found")
+            for alias, _pid in spare:
+                con.execute("DELETE FROM player_aliases WHERE alias=?", (alias,))
+            alias, pid = spare[0]
+            owner = con.execute("SELECT canonical_nick FROM players WHERE id=?", (pid,)).fetchone()
+            con.commit()
+            return UnbindResult("alias_removed", pid, str(owner[0]) if owner else None, (), alias, False)
+        except Exception:
+            con.rollback()
+            raise
 
 
 def removed_roster_identities(db_path: Path | str, guild_id: int) -> dict[str, set[str]]:

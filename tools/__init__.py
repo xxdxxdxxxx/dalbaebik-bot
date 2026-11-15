@@ -2,12 +2,13 @@
 import sys
 
 from . import admin_ui as admin_ui
-from . import clanmap_sync, discord_roster_refresh, roster_board, roster_consistency, status_messages, unbound_roster
+from . import buffs, clanmap_sync, discord_roster_refresh, roster_board, roster_consistency, status_messages, unbound_roster
 
 roster_consistency.install_player_store()
 roster_board.install(admin_ui)
 roster_consistency.install_roster_board(roster_board)
 clanmap_sync.install(admin_ui)
+buffs.install(admin_ui)
 
 
 def install_runtime(runtime):
@@ -17,6 +18,7 @@ def install_runtime(runtime):
     status_messages.install(runtime)
     unbound_roster.install(runtime)
     discord_roster_refresh.install(admin_ui, runtime)
+    buffs.install_runtime(runtime)
 
 
 install_runtime(sys.modules.get("__main__"))

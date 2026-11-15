@@ -6,6 +6,8 @@ from typing import Any
 
 import player_store
 
+from .roster_board import ORDER, slots_for
+
 
 def install_player_store() -> None:
     """Preserve active admin-only roster rows during legacy snapshot writes.
@@ -92,7 +94,7 @@ def sync_board_cells(con: sqlite3.Connection, guild_id: int) -> None:
                SELECT r.squad_id,r.slot,p.canonical_nick
                FROM roster_memberships r JOIN players p ON p.id=r.player_id
                WHERE r.guild_id=? AND r.active=1
-                 AND r.squad_id=99 AND r.slot BETWEEN 1 AND 5""",
+                 AND r.squad_id=99 AND r.slot BETWEEN 1 AND 10""",
             (int(guild_id), int(guild_id)),
         )
     )
@@ -100,12 +102,12 @@ def sync_board_cells(con: sqlite3.Connection, guild_id: int) -> None:
         "INSERT INTO roster_board_cells(guild_id,squad_id,slot,text) VALUES(?,?,?,?)",
         [(int(guild_id), int(row[0]), int(row[1]), str(row[2])) for row in rows],
     )
-    # Keep the five editable positions visible even when empty.
+    # Keep every editable position visible even when empty (5 per squad, 10 for the subs).
     con.executemany(
         "INSERT OR IGNORE INTO roster_board_cells(guild_id,squad_id,slot,text) VALUES(?,?,?,'')",
         [(int(guild_id), squad_id, slot)
-         for squad_id in (1, 2, 3, 99, 4, 5, 6)
-         for slot in range(1, 6)],
+         for squad_id in ORDER
+         for slot in slots_for(squad_id)],
     )
 
 

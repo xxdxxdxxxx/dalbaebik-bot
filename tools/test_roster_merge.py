@@ -293,12 +293,23 @@ class AddCommandTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as td:
             db = make_db(td)
             bind(db, "100", "Mine", 1, 1)
-            bind(db, "200", "sawerqe", 1, 2)
-            with closing(player_store.connect(db)) as con:   # other user left the active roster
-                con.execute("UPDATE roster_memberships SET active=0 WHERE player_id=(SELECT player_id FROM discord_bindings WHERE discord_id='200')")
+            bind(db, "200", "sawerqe", 1, 2)               # the owner is an active roster member
             ok, embed = await self.run_add(db, self.member(100, "Me"), "sawerqe")
             self.assertFalse(ok)
             self.assertIn("<@200>", embed.description)
+
+    async def test_add_nick_of_a_member_who_left_the_roster_is_allowed(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = make_db(td)
+            bind(db, "100", "Mine", 1, 1)
+            other = bind(db, "200", "sawerqe", 1, 2)
+            with closing(player_store.connect(db)) as con:   # other user left the active roster
+                con.execute("UPDATE roster_memberships SET active=0 WHERE player_id=?", (other,))
+            ok, embed = await self.run_add(db, self.member(100, "Me"), "sawerqe")
+            self.assertTrue(ok, embed.description)
+            with closing(player_store.connect(db)) as con:
+                bound = [r[0] for r in con.execute("SELECT discord_id FROM discord_bindings")]
+            self.assertEqual(bound, ["100"])               # the old owner's binding is gone
 
 
 if __name__ == "__main__":

@@ -9,7 +9,8 @@
   /day/<дата>     — сводная таблица дня: игрок → таб (У/С/П/СЧЁТ за день),
                     гранаты по этапам, войс; правка гранат/войса прямо в строке,
                     исходные табы — в раскрывающемся разделе;
-  /players, /player/<id> — история игрока по дням (поиск накруток).
+  /players, /player/<id> — история игрока по дням (поиск накруток);
+  /players/voice  — «Заход войс»: игроки из отрядов × дни КВ → время первого захода в войс.
 
 Правки сразу видны в /stats бота (исторические данные читаются из SQLite).
 """
@@ -325,6 +326,7 @@ PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name=
 .chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--dim);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}.sortable{{cursor:pointer;user-select:none}}.sortable::after{{content:" ↕";color:var(--dim);font-size:9px}}.sortable[data-dir="desc"]::after{{content:" ↓";color:var(--blue)}}.sortable[data-dir="asc"]::after{{content:" ↑";color:var(--blue)}}.eff{{font-weight:800;color:var(--blue)}}
 .meter{{display:inline-block;width:64px;height:6px;border-radius:3px;background:var(--soft);box-shadow:inset 0 0 0 1px var(--line);overflow:hidden;vertical-align:middle;flex:none}}.meter i{{display:block;height:100%;border-radius:3px;background:var(--blue)}}.mcell,.effcell{{display:inline-flex;align-items:center;gap:9px}}.mcell b{{min-width:44px;text-align:right}}.effcell .n{{min-width:34px;text-align:right}}
 table.tight th,table.tight td{{padding-left:11px;padding-right:11px}}table.tight th.grow,table.tight td.grow{{width:100%;padding-left:8px;max-width:none}}td.act{{padding-right:6px;text-align:right}}td.act form{{margin:0}}button.quiet{{min-height:26px;padding:0 10px;border-color:rgba(127,127,127,.16);background:rgba(0,0,0,.09);color:var(--dim);opacity:.55;font-weight:600}}tr:hover button.quiet,button.quiet:focus-visible{{opacity:.8}}tr:hover button.quiet:hover{{opacity:1;background:rgba(0,0,0,.14)}}.day-edit button.danger.wide{{width:auto;padding:0 9px}}.day-edit input[name^="v"]{{width:68px}}.period{{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:0 0 8px}}.period .seg{{margin:0;flex-wrap:wrap}}.period .seg a:hover{{color:var(--blue)}}.subtitle{{margin-top:2px;font-size:12px}}
+.vt td.nick,.vt th.nick{{position:sticky;left:0;min-width:130px;background:var(--panel);z-index:1}}.vt th.nick{{background:var(--soft);z-index:3}}.vt tr:hover td.nick{{background:var(--blue2)}}.vt td.vj{{font-weight:650}}
 @media(max-width:640px){{.hide-sm{{display:none}}.meter{{width:40px}}.mcell,.effcell{{gap:6px}}table.tight th,table.tight td{{padding-left:7px;padding-right:7px}}}}
 @media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
 </style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a><!--navx-->{logout}</nav></div></header><main class="wrap {layout}">{body}</main><script>document.addEventListener('click',function(e){{var b=e.target.closest('[data-confirm]');if(b&&b.tagName!=='FORM'&&!confirm(b.getAttribute('data-confirm')))e.preventDefault()}});document.addEventListener('submit',function(e){{var f=e.target;if(f.tagName==='FORM'&&f.hasAttribute('data-confirm')&&!confirm(f.getAttribute('data-confirm')))e.preventDefault()}});</script></body></html>"""
@@ -590,21 +592,40 @@ def _period_label(period: int | None, dates: list[str], available: int) -> str:
     return f"{head}{note}: {span}"
 
 
+SQUAD_ORDER = (1, 2, 3, 4, 5, 6, 99)
+
+
+def squad_roster(con: Any) -> list[dict[str, Any]]:
+    """Игроки, которые сейчас стоят в отрядах 1–6 или «Чемпионах» (99): id, ник, squad_id."""
+    return q(con, """
+        SELECT p.id, p.canonical_nick, rm.squad_id
+        FROM players p
+        JOIN (
+            SELECT player_id, MIN(squad_id) squad_id
+            FROM roster_memberships
+            WHERE active=1 AND (squad_id BETWEEN 1 AND 6 OR squad_id=99)
+            GROUP BY player_id
+        ) rm ON rm.player_id=p.id
+        ORDER BY CASE WHEN rm.squad_id=99 THEN 7 ELSE rm.squad_id END,
+                 p.canonical_nick COLLATE NOCASE""")
+
+
+def squad_label(squad_id: int) -> str:
+    return "Чемпионы" if squad_id == 99 else f"Отряд {squad_id}"
+
+
+# Поиск по нику: прячет строки `.player-row` и пустые группы `.squad-group`.
+FILTER_PLAYERS_JS = ("function filterPlayers(value){const q=value.toLowerCase();"
+                     "document.querySelectorAll('.squad-group').forEach(group=>{let n=0;"
+                     "group.querySelectorAll('.player-row').forEach(row=>{const show=row.textContent.toLowerCase().includes(q);"
+                     "row.style.display=show?'':'none';if(show)n++});group.style.display=n?'':'none'})}")
+
+
 @app.get("/players")
 def players():
     period = _parse_period(request.args.get("days"))
     with closing(player_store.connect(DB_PATH)) as con:
-        rows = q(con, """
-            SELECT p.id, p.canonical_nick, rm.squad_id
-            FROM players p
-            JOIN (
-                SELECT player_id, MIN(squad_id) squad_id
-                FROM roster_memberships
-                WHERE active=1 AND (squad_id BETWEEN 1 AND 6 OR squad_id=99)
-                GROUP BY player_id
-            ) rm ON rm.player_id=p.id
-            ORDER BY CASE WHEN rm.squad_id=99 THEN 7 ELSE rm.squad_id END,
-                     p.canonical_nick COLLATE NOCASE""")
+        rows = squad_roster(con)
         available_dates = all_dates(con)                      # новые сверху, без архива
         dates = available_dates[:period] if period else available_dates
         date_set = set(dates)
@@ -627,11 +648,11 @@ def players():
     for row in rows:
         groups[int(row["squad_id"])].append(row)
     bodies = []
-    for squad_id in [1, 2, 3, 4, 5, 6, 99]:
+    for squad_id in SQUAD_ORDER:
         members = groups[squad_id]
         if not members:
             continue
-        label = "Чемпионы" if squad_id == 99 else f"Отряд {squad_id}"
+        label = squad_label(squad_id)
         member_rows = "".join(
             f"<tr class='player-row'><td class='nick grow'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
             f"<td>{len(attendance.get(int(r['id']), {}))}</td>"
@@ -646,6 +667,9 @@ def players():
            "Гранаты 15%. Если гранат нет — только по табу.")
     body = ("<div class='pagehead'><div><h1>Игроки</h1>"
             f"<div class='subtitle'>{esc(_period_label(period, dates, len(available_dates)))}</div>"
+            "</div><div class='actions'>"
+            f"<a class='button' href='{url_for('players_voice')}' "
+            "title='Во сколько каждый зашёл в войс явки по дням КВ'>🎙 Заход войс</a>"
             "</div></div>"
             + _period_bar(period) +
             "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
@@ -654,8 +678,79 @@ def players():
             "<th title='Сумма гранат за выбранные дни'>Грены</th>"
             f"<th class='sortable' title='{esc(tip)}' onclick='sortPlayerSquads(this)'>EFF</th></tr></thead>"
             f"{''.join(bodies)}</table></div>"
-            "<script>function filterPlayers(value){const q=value.toLowerCase();document.querySelectorAll('.squad-group').forEach(group=>{let n=0;group.querySelectorAll('.player-row').forEach(row=>{const show=row.textContent.toLowerCase().includes(q);row.style.display=show?'':'none';if(show)n++});group.style.display=n?'':'none'})}function sortPlayerSquads(th){const dir=th.dataset.dir==='desc'?'asc':'desc';th.dataset.dir=dir;document.querySelectorAll('.squad-group').forEach(group=>{const rows=[...group.querySelectorAll('.player-row')];const value=row=>{const raw=row.cells[3].textContent.trim().replace(',','.');if(!raw||raw==='—')return null;const parsed=Number(raw);return Number.isFinite(parsed)?parsed:null};rows.sort((a,b)=>{const av=value(a),bv=value(b);if(av===null||bv===null)return av===bv?0:av===null?1:-1;return dir==='asc'?av-bv:bv-av});rows.forEach(row=>group.appendChild(row))})}</script>")
+            "<script>" + FILTER_PLAYERS_JS + "function sortPlayerSquads(th){const dir=th.dataset.dir==='desc'?'asc':'desc';th.dataset.dir=dir;document.querySelectorAll('.squad-group').forEach(group=>{const rows=[...group.querySelectorAll('.player-row')];const value=row=>{const raw=row.cells[3].textContent.trim().replace(',','.');if(!raw||raw==='—')return null;const parsed=Number(raw);return Number.isFinite(parsed)?parsed:null};rows.sort((a,b)=>{const av=value(a),bv=value(b);if(av===null||bv===null)return av===bv?0:av===null?1:-1;return dir==='asc'?av-bv:bv-av});rows.forEach(row=>group.appendChild(row))})}</script>")
     return render("Игроки", body)
+
+
+def fmt_clock(joined_at: Any) -> str:
+    """'2026-11-14T19:39:12+03:00' → '19:39' (время МСК как записал бот); нет данных → '—'."""
+    text = str(joined_at or "")
+    return text[11:16] if len(text) >= 16 and text[10] in "T " else "—"
+
+
+def fmt_date_short(day: str) -> str:
+    try:
+        d = datetime.strptime(day, "%Y-%m-%d")
+        return f"{d.strftime('%d.%m')} {RU_WD[d.weekday()]}"
+    except ValueError:
+        return day
+
+
+@app.get("/players/voice")
+def players_voice():
+    """Игроки из отрядов × дни КВ (не архивные): во сколько зашёл в войс явки."""
+    na = player_store.not_archived
+    with closing(player_store.connect(DB_PATH)) as con:
+        rows = squad_roster(con)
+        day_pages = set(all_dates(con))
+        joins: dict[tuple[int, str], str] = {}
+        for r in q(con, f"""SELECT player_id, match_date, MIN(joined_at) joined_at FROM voice_join_times
+                            WHERE {na('voice_join_times.match_date')} GROUP BY player_id, match_date"""):
+            joins[(int(r["player_id"]), r["match_date"])] = r["joined_at"]
+    # дни КВ как в «Обзоре» + день, в котором уже есть заходы, но ещё нет табов/гранат (идёт прямо сейчас)
+    dates = sorted(day_pages | {day for _, day in joins}, reverse=True)
+    groups: dict[int, list[dict[str, Any]]] = {squad_id: [] for squad_id in SQUAD_ORDER}
+    for row in rows:
+        groups[int(row["squad_id"])].append(row)
+
+    head = "".join(
+        f"<th title='{esc(fmt_date_ru(day))}'>"
+        + (f"<a href='{url_for('day', date=day)}'>{esc(fmt_date_short(day))}</a>" if day in day_pages
+           else esc(fmt_date_short(day)))
+        + "</th>"
+        for day in dates)
+    bodies = []
+    for squad_id in SQUAD_ORDER:
+        members = groups[squad_id]
+        if not members:
+            continue
+        member_rows = []
+        for r in members:
+            cells = []
+            for day in dates:
+                at = joins.get((int(r["id"]), day))
+                cells.append(f"<td class='vj' title='{esc(fmt_date_ru(day))} · {esc(str(at)[11:19])} МСК'>{esc(fmt_clock(at))}</td>"
+                             if at else "<td class='dim'>—</td>")
+            member_rows.append(
+                f"<tr class='player-row'><td class='nick'><a href='{url_for('player', player_id=r['id'])}'>"
+                f"{esc(r['canonical_nick'])}</a></td>{''.join(cells)}</tr>")
+        bodies.append(f"<tbody class='squad-group'><tr class='squad-title'><td colspan='{len(dates) + 1}'>"
+                      f"{squad_label(squad_id)}</td></tr>{''.join(member_rows)}</tbody>")
+
+    if not dates:
+        table = "<p class='hint'>Дней КВ пока нет.</p>"
+    elif not bodies:
+        table = "<p class='hint'>В отрядах пока никого нет.</p>"
+    else:
+        table = ("<div class='panel'><div class='scroll'><table class='tight vt'><thead><tr>"
+                 f"<th class='nick'>Ник</th>{head}</tr></thead>{''.join(bodies)}</table></div></div>")
+    body = (f"<a class='back' href='{url_for('players')}'>← Игроки</a>"
+            "<div class='pagehead'><div><h1>Заход в войс</h1>"
+            "<div class='subtitle'>Во сколько игрок впервые зашёл в войс на КВ (время МСК). "
+            "Только игроки из отрядов; даты — дни КВ не из архива.</div></div></div>"
+            "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
+            + table + f"<script>{FILTER_PLAYERS_JS}</script>")
+    return render("Заход в войс", body)
 
 
 @app.get("/player/<int:player_id>")

@@ -7,17 +7,24 @@ from contextlib import closing
 
 from flask import request, url_for
 
-ORDER = (1, 2, 3, 99, 4, 5, 6)
-TOP = (1, 2, 3, 99)
+SUBS_ID = 99
+ORDER = (1, 2, 3, SUBS_ID, 4, 5, 6)
+TOP = (1, 2, 3)          # верхний ряд слева; «Замены» стоят справа на всю высоту
 BOTTOM = (4, 5, 6)
-NOTE_COLUMNS = (1, 2, 3, 99)
-LABELS = {1: "1", 2: "2", 3: "3", 99: "Замены", 4: "4", 5: "5", 6: "6"}
-SLOTS = range(1, 6)
+NOTE_COLUMNS = (1, 2, 3, SUBS_ID)
+LABELS = {1: "1", 2: "2", 3: "3", SUBS_ID: "Замены", 4: "4", 5: "5", 6: "6"}
+SLOTS = range(1, 6)          # места в отрядах 1–6
+SUBS_SLOTS = range(1, 11)    # у замен 10 мест: 5 рядом с верхним рядом отрядов, 5 рядом с нижним
 NOTE_ROWS = (1, 2)
 
+
+def slots_for(squad_id):
+    """Допустимые места ячейки: 1–5 в отрядах, 1–10 у замен."""
+    return SUBS_SLOTS if squad_id == SUBS_ID else SLOTS
+
 CSS = r"""
-.layout-squads{max-width:940px}main h1+.squads-zone{margin-top:14px}.sheet-cell.err{box-shadow:inset 0 0 0 2px var(--red)}.sheet-cell.saving{opacity:.7}.squads-zone{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.sheet-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--panel)}.sheet-grid-bottom{width:75%;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line)}.sheet-col{min-width:0;border-right:1px solid var(--line)}.sheet-col:last-child{border-right:0}.sheet-grid-bottom .sheet-col:last-child{border-right:1px solid var(--line)}.sheet-head{height:38px;display:grid;place-items:center;background:var(--soft);border-bottom:1px solid var(--line);font-size:14px;font-weight:800;text-align:center}.sheet-cell,.sheet-note{display:block;width:100%;height:36px;border:0;border-bottom:1px solid rgba(127,127,127,.17);border-radius:0;background:var(--panel);color:var(--text);font:550 14px/36px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;text-align:center;padding:0 8px;outline:0}.sheet-cell:last-child,.sheet-note:last-child{border-bottom:0}.sheet-cell:focus,.sheet-note:focus{background:var(--blue2);box-shadow:inset 0 0 0 1px var(--blue)}.sheet-cell.dragging{opacity:.4}.sheet-cell.drag-over{background:var(--blue2);box-shadow:inset 0 0 0 2px var(--blue)}.notes-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:16px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.note-col{min-width:0;border-right:1px solid var(--line)}.note-col:last-child{border-right:0}.sheet-status{height:20px;margin-top:8px;color:var(--dim);font-size:11px;text-align:right}.sheet-status.ok{color:var(--green)}.sheet-status.err{color:var(--red)}
-@media(max-width:760px){.sheet-grid,.notes-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.sheet-grid-bottom{width:100%}.sheet-col:nth-child(2n),.note-col:nth-child(2n){border-right:0}.sheet-col:nth-child(n+3),.note-col:nth-child(n+3){border-top:1px solid var(--line)}}@media(max-width:430px){.sheet-grid,.notes-grid{grid-template-columns:1fr}.sheet-col,.note-col{border-right:0!important;border-top:1px solid var(--line)}.sheet-col:first-child,.note-col:first-child{border-top:0}}
+.layout-squads{max-width:940px}main h1+.squads-zone{margin-top:14px}.sheet-cell.err{box-shadow:inset 0 0 0 2px var(--red)}.sheet-cell.saving{opacity:.7}.squads-zone{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.sheet-main{min-width:0}.sheet-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));background:var(--panel)}.sheet-grid-bottom{border-top:1px solid var(--line)}.sheet-col{min-width:0;border-right:1px solid var(--line)}.sheet-subs{border-right:0}.sheet-cell.above-band{border-bottom:0}.sheet-head{height:38px;display:grid;place-items:center;background:var(--soft);border-bottom:1px solid var(--line);font-size:14px;font-weight:800;text-align:center}.sheet-cell,.sheet-note{display:block;width:100%;height:36px;border:0;border-bottom:1px solid rgba(127,127,127,.17);border-radius:0;background:var(--panel);color:var(--text);font:550 14px/36px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;text-align:center;padding:0 8px;outline:0}.sheet-cell:last-child,.sheet-note:last-child{border-bottom:0}.sheet-head.sheet-band{height:39px;border-top:1px solid var(--line)}.sheet-cell:focus,.sheet-note:focus{background:var(--blue2);box-shadow:inset 0 0 0 1px var(--blue)}.sheet-cell.dragging{opacity:.4}.sheet-cell.drag-over{background:var(--blue2);box-shadow:inset 0 0 0 2px var(--blue)}.notes-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:16px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.note-col{min-width:0;border-right:1px solid var(--line)}.note-col:last-child{border-right:0}.sheet-status{height:20px;margin-top:8px;color:var(--dim);font-size:11px;text-align:right}.sheet-status.ok{color:var(--green)}.sheet-status.err{color:var(--red)}
+@media(max-width:760px){.squads-zone{grid-template-columns:1fr}.sheet-grid,.notes-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.sheet-col:nth-child(2n),.note-col:nth-child(2n){border-right:0}.sheet-col:nth-child(n+3),.note-col:nth-child(n+3){border-top:1px solid var(--line)}.sheet-subs{border-top:1px solid var(--line)}.sheet-head.sheet-band{display:none}.sheet-cell.above-band{border-bottom:1px solid rgba(127,127,127,.17)}}@media(max-width:430px){.sheet-grid,.notes-grid{grid-template-columns:1fr}.sheet-col,.note-col{border-right:0!important;border-top:1px solid var(--line)}.sheet-col:first-child,.note-col:first-child{border-top:0}}
 """
 
 SCRIPT = r"""<script>
@@ -66,10 +73,11 @@ def _seed(con, guild_id):
     con.execute("""INSERT OR IGNORE INTO roster_board_cells(guild_id,squad_id,slot,text)
         SELECT r.guild_id,r.squad_id,r.slot,p.canonical_nick
         FROM roster_memberships r JOIN players p ON p.id=r.player_id
-        WHERE r.guild_id=? AND r.active=1 AND (r.squad_id BETWEEN 1 AND 6 OR r.squad_id=99)
-          AND r.slot BETWEEN 1 AND 5""", (guild_id,))
+        WHERE r.guild_id=? AND r.active=1
+          AND ((r.squad_id BETWEEN 1 AND 6 AND r.slot BETWEEN 1 AND 5)
+               OR (r.squad_id=99 AND r.slot BETWEEN 1 AND 10))""", (guild_id,))
     con.executemany("INSERT OR IGNORE INTO roster_board_cells(guild_id,squad_id,slot,text) VALUES(?,?,?,'')",
-                    [(guild_id, squad_id, slot) for squad_id in ORDER for slot in SLOTS])
+                    [(guild_id, squad_id, slot) for squad_id in ORDER for slot in slots_for(squad_id)])
 
 
 def _find_or_create(admin, con, guild_id, nickname):
@@ -114,13 +122,27 @@ def _set_cell(admin, con, guild_id, squad_id, slot, value):
                 (guild_id, squad_id, slot, text))
 
 
+def _cell(values, squad_id, slot, extra=""):
+    return (f"<input class='sheet-cell{extra}' draggable='true' data-squad='{squad_id}' data-slot='{slot}' "
+            f"value='{html.escape(values.get((squad_id, slot), ''), quote=True)}' aria-label='{LABELS[squad_id]}, место {slot}'>")
+
+
 def _column(values, squad_id):
-    cells = "".join(
-        f"<input class='sheet-cell' draggable='true' data-squad='{squad_id}' data-slot='{slot}' "
-        f"value='{html.escape(values.get((squad_id, slot), ''), quote=True)}' aria-label='{LABELS[squad_id]}, место {slot}'>"
-        for slot in SLOTS
-    )
+    cells = "".join(_cell(values, squad_id, slot) for slot in SLOTS)
     return f"<section class='sheet-col'><div class='sheet-head'>{LABELS[squad_id]}</div>{cells}</section>"
+
+
+def _subs_column(values):
+    """Замены: одна колонка на всю высоту зоны — 5 мест рядом с отрядами 1–3 и 5 рядом с 4–6.
+
+    Между ними пустая нередактируемая полоса (без подписи) высотой с заголовки нижнего ряда:
+    благодаря ей линии мест замен идут вровень с отрядами, а колонка упирается в нижнюю грань.
+    """
+    upper, lower = SUBS_SLOTS[:5], SUBS_SLOTS[5:]
+    first = "".join(_cell(values, SUBS_ID, slot, " above-band" if slot == upper[-1] else "") for slot in upper)
+    second = "".join(_cell(values, SUBS_ID, slot) for slot in lower)
+    return (f"<section class='sheet-col sheet-subs'><div class='sheet-head'>{LABELS[SUBS_ID]}</div>{first}"
+            f"<div class='sheet-head sheet-band' aria-hidden='true'></div>{second}</section>")
 
 
 def install(admin):
@@ -153,6 +175,7 @@ def install(admin):
         note_values = {(int(row["column_id"]), int(row["row_no"])): str(row["text"]) for row in notes}
         top = "".join(_column(values, squad_id) for squad_id in TOP)
         bottom = "".join(_column(values, squad_id) for squad_id in BOTTOM)
+        subs = _subs_column(values)
         note_columns = []
         for column in NOTE_COLUMNS:
             fields = "".join(
@@ -163,7 +186,8 @@ def install(admin):
             note_columns.append(f"<section class='note-col'>{fields}</section>")
         body = (
             "<h1>Отряды</h1>"
-            f"<div class='squads-zone'><div class='sheet-grid'>{top}</div><div class='sheet-grid sheet-grid-bottom'>{bottom}</div></div>"
+            f"<div class='squads-zone'><div class='sheet-main'><div class='sheet-grid'>{top}</div>"
+            f"<div class='sheet-grid sheet-grid-bottom'>{bottom}</div></div>{subs}</div>"
             f"<div class='notes-grid'>{''.join(note_columns)}</div><div id='sheet-status' class='sheet-status'></div>{SCRIPT}"
         )
         return admin.render("Отряды", body)
@@ -172,7 +196,7 @@ def install(admin):
     def roster_cell():
         try:
             squad_id, slot = int(request.form["squad"]), int(request.form["slot"])
-            if squad_id not in ORDER or slot not in SLOTS:
+            if squad_id not in ORDER or slot not in slots_for(squad_id):
                 raise ValueError("Неверная ячейка")
             with closing(admin.player_store.connect(admin.DB_PATH)) as con:
                 con.execute("BEGIN IMMEDIATE")
@@ -191,7 +215,8 @@ def install(admin):
         try:
             left = (int(request.form["a_squad"]), int(request.form["a_slot"]))
             right = (int(request.form["b_squad"]), int(request.form["b_slot"]))
-            if left[0] not in ORDER or right[0] not in ORDER or left[1] not in SLOTS or right[1] not in SLOTS:
+            if (left[0] not in ORDER or right[0] not in ORDER
+                    or left[1] not in slots_for(left[0]) or right[1] not in slots_for(right[0])):
                 raise ValueError("Неверные ячейки")
             with closing(admin.player_store.connect(admin.DB_PATH)) as con:
                 con.execute("BEGIN IMMEDIATE")

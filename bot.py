@@ -888,6 +888,11 @@ async def do_roster_remove(
     Удалить из состава:
       · по Discord (target)
       · или по нику STALCRAFT (game_nick) — как в админ-панели
+
+    Работает по всей базе (player_store.unbind_*_everywhere), а не только по активному
+    составу: игрок уходит из состава, снимаются все его привязки Discord, ник
+    освобождается. Запасной ник (alias) просто удаляется. Гранаты, войс, посещаемость,
+    история и сканы остаются в БД.
     """
     data_preview = load_db()
     if not can_use_roster(actor, data_preview):
@@ -915,55 +920,64 @@ async def do_roster_remove(
             color=COLOR_ERR,
         )
 
+    guild_id = get_guild_id(data_preview) or getattr(getattr(actor, "guild", None), "id", 0)
     async with db_lock:
-        data = load_db()
-        players = data.get("players", {})
-
+        # Одна транзакция по всей базе: игрок уходит из состава (active=0 + запись в
+        # roster_removals), снимаются ВСЕ его привязки Discord; ник освобождается для /add.
+        # Запасной ник (alias) просто удаляется. История, алиасы и сканы остаются.
         if target is not None:
-            key = str(target.id)
-            if key not in players:
-                return make_reply_embed(
-                    "ℹ️  Нет в базе",
-                    f"{target.mention} не найден в составе.",
-                    color=COLOR_WAIT,
-                )
+            result = await asyncio.to_thread(
+                player_store.unbind_discord_everywhere, PLAYER_DB_PATH, guild_id, target.id)
         else:
-            key = find_player_id_by_game_nick(data, nick_arg or "")
-            if key is None:
-                return make_reply_embed(
-                    "ℹ️  Нет в базе",
-                    f"Ник STALCRAFT `{nick_arg}` не найден в составе.\n"
-                    f"Проверь написание или удали через `@Discord`.",
-                    color=COLOR_WAIT,
-                )
+            result = await asyncio.to_thread(
+                player_store.unbind_nick_everywhere, PLAYER_DB_PATH, guild_id, nick_arg)
 
-        removed = players.pop(key)
-        gnick = removed.get("game_nick")
-        if gnick:
-            _hist_pop_ci(data.setdefault("grenade_history", {}), gnick)
-        guild_id = get_guild_id(data)
-        save_db(data)
-        # /remove means full roster removal (not merely clearing squad/slot).
-        # Keep identity, bindings and history, but persist a durable tombstone.
-        await asyncio.to_thread(
-            player_store.mark_roster_removed,
-            PLAYER_DB_PATH,
-            guild_id,
-            discord_id=key,
+        if result.status == "removed":
+            # Гранаты, войс, посещаемость и сканы удалённого остаются в БД (live-данные
+            # текущего дня тоже): в статусных сообщениях его уже нет, а итоги дня учтут его.
+            await upsert_status_messages(load_db())
+
+    if result.status == "not_found":
+        if target is not None:
+            return make_reply_embed(
+                "ℹ️  Нет в базе",
+                f"{target.mention} не найден в базе.",
+                color=COLOR_WAIT,
+            )
+        return make_reply_embed(
+            "ℹ️  Нет в базе",
+            f"Ник STALCRAFT `{nick_arg}` не найден в базе.\n"
+            f"Проверь написание или удали через `@Discord`.",
+            color=COLOR_WAIT,
         )
-        await upsert_status_messages(load_db())
 
+    if result.status == "alias_removed":
+        return make_reply_embed(
+            "🔓  Ник отвязан",
+            (
+                f"**Запасной ник:** `{result.alias or nick_arg}`\n"
+                f"**Игрок:** `{result.nick or '—'}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Игрок остаётся в составе, убран только этот ник."
+            ),
+            color=COLOR_INFO,
+        )
 
-    ds_line = f"<@{key}>"
+    ds_line = ", ".join(f"<@{did}>" for did in result.discord_ids) or "— (Discord не был привязан)"
+    lines = [f"**Discord:** {ds_line}"]
+    if target is not None:
+        lines.append(f"**Был ник DS:** `{target.display_name or '—'}`")
+    lines.append(f"**STALCRAFT:** `{result.nick or nick_arg or '—'}`")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    if not result.was_active:
+        lines.append("В активном составе не числился — сняты только привязки Discord.")
+    elif result.discord_ids:
+        lines.append("Привязки Discord сняты, история и сканы сохранены.")
+    else:
+        lines.append("Убран из состава, история и сканы сохранены.")
     return make_reply_embed(
         "🗑️  Удалён из состава",
-        (
-            f"**Discord:** {ds_line}\n"
-            f"**Был ник DS:** `{removed.get('discord_name') or '—'}`\n"
-            f"**STALCRAFT:** `{removed.get('game_nick') or nick_arg or '—'}`\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"Запись полностью убрана из базы."
-        ),
+        "\n".join(lines),
         color=COLOR_ERR,
     )
 
@@ -1959,6 +1973,28 @@ def collect_voice_member_ids(
     return present
 
 
+_VOICE_JOIN_SAVED: set[tuple[str, str]] = set()   # (день КВ, discord_id), уже записанные в БД
+
+
+def save_voice_join_times(data: dict[str, Any], discord_ids: list[int | str]) -> None:
+    """
+    Запомнить время ПЕРВОГО захода в войс за день КВ (МСК) — для страницы «Заход войс».
+    Вызывать только пока КВ-сессия живая (is_kv_live). В БД время пишется один раз за день,
+    повторные заходы и рестарт бота его не меняют; сбой записи не должен ломать явку.
+    """
+    day = str(data.get("grenade_date") or data.get("session_date") or today_msk_str())
+    fresh = [str(i) for i in discord_ids if (day, str(i)) not in _VOICE_JOIN_SAVED]
+    if not fresh:
+        return
+    stamp = now_msk().isoformat(timespec="seconds")
+    try:
+        player_store.record_voice_joins(PLAYER_DB_PATH, get_guild_id(data), day, {i: stamp for i in fresh})
+    except Exception as exc:
+        log(f"заход в войс не записан: {exc}", "warn")
+        return
+    _VOICE_JOIN_SAVED.update((day, i) for i in fresh)
+
+
 async def refresh_voice_presence() -> None:
     changed = False
     async with db_lock:
@@ -1975,6 +2011,7 @@ async def refresh_voice_presence() -> None:
         live = is_kv_live(data)
         mark_came = can_mark_came(data)
         voice_ids = collect_voice_member_ids(guild, voice_cfg)
+        joined_now: list[str] = []
 
         for did_str, p in data.get("players", {}).items():
             inv = int(did_str) in voice_ids
@@ -1988,12 +2025,15 @@ async def refresh_voice_presence() -> None:
             if p.get("in_voice") != inv:
                 p["in_voice"] = inv
                 changed = True
+            if inv:
+                joined_now.append(did_str)
             # ✅ только до конца сбора явки (20:05)
             if mark_came and inv and not p.get("came"):
                 p["came"] = True
                 changed = True
                 log(f"явка · {p.get('game_nick')}", "ok")
 
+        save_voice_join_times(data, joined_now)
         if changed:
             save_db(data)
     if changed:
@@ -4256,6 +4296,7 @@ async def cmd_help(interaction: discord.Interaction):
         "**Состав**\n· `/add` · `/remove` · `/alias_add`\n\n"
         "**КВ**\n· `/map` · `/refresh` · `/scan_now` · `/ls_send`\n\n"
         "**Аналитика**\n· `/scan` — распознать и сохранить таб\n· статистика и история доступны в админ-панели\n\n"
+        "**Бафы**\n· `/buffs_channel` · `/buffs_sync` · `/buffs_off` — таблица и история в админ-панели\n\n"
         "**Настройка**\n· `/setup` · `/set_log` · `/settings`\n"
         "· `/voice_add` · `/voice_remove` · `/voice_clear`\n"
         "· `/access_add` · `/access_remove` · `/access_list`\n\n"
@@ -5037,6 +5078,8 @@ async def on_voice_state_update(
             # fall through to upsert outside lock
         else:
             p["in_voice"] = in_target
+            if in_target:
+                save_voice_join_times(data, [key])
             if can_mark_came(data) and in_target and not p.get("came"):
                 p["came"] = True
                 log(f"явка · {p.get('game_nick')}", "ok")
