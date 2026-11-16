@@ -7,10 +7,11 @@
     3 хилки
 
 Первая строка — игровой ник, дальше «число + название» (через запятую или с новой строки).
-Бот читает канал (команда /buffs_channel). Панель показывает доску: у каждого игрока его последняя
-заявка. На КВ у игрока ставят галочку «выдано» — она сразу пишется в историю (ник, сколько и каких
-бафов, дата). Со следующего дня выдачи (в 05:00 МСК) выданные заявки уходят с доски в историю,
-невыданные остаются.
+Бот читает канал (команда /buffs_channel). Панель показывает доску — статичную таблицу: у каждого
+игрока его последняя заявка, она висит, пока сообщение есть в канале (удалили в Discord — заявка
+исчезла). На КВ у игрока ставят галочку «выдано» — она сразу пишется в историю (ник, сколько и каких
+бафов, день выдачи). Со следующего дня выдачи (в 05:00 МСК) галочки сбрасываются, а игроки остаются
+на доске — их можно отметить снова. В истории — итоги по каждому баффу.
 """
 from __future__ import annotations
 
@@ -52,9 +53,9 @@ BUFF_KEYS = tuple(key for key, _ in BUFFS)
 # (падежи и опечатки вроде «убиц» ловятся сами). Новое название — добавить основу сюда.
 BUFF_STEMS: dict[str, tuple[str, ...]] = {
     "shiza": ("шиз",),
-    "topot": ("топот",),
+    "topot": ("топот", "топт"),
     "killer": ("убийц", "убиц"),
-    "heal": ("хил", "подорожник", "зеленк", "зеленок"),
+    "heal": ("хил", "подорожник", "зелен"),     # «зелень», «зелени», «зеленки», «ящика зелени»
     "napalm": ("напалм",),
     "smoke": ("смок", "дым"),
 }
@@ -62,6 +63,7 @@ BUFF_STEMS: dict[str, tuple[str, ...]] = {
 _MINE_FORMS = frozenset({"мин", "мины", "мина", "минов", "мину", "мине", "минам", "минами"})
 
 _FILLERS = frozenset({"шт", "штук", "штуки", "штука", "x", "х"})
+_FILLER_STEMS = ("ящик",)    # «3 ящика зелени», «напалми 4 ящика» — число то же, что и без ящиков
 _MAX_QTY = 100_000
 _MAX_NICK = 64
 
@@ -73,6 +75,11 @@ _DISCORD_TOKENS = re.compile(r"<(?:@[!&]?|#)\d+>|<a?:\w+:\d+>")
 _LIST_MARK = re.compile(r"^\s*(?:\d{1,2}[.)]|[-–—•>])\s+")
 _NICK_LABEL = re.compile(r"^(?:ник(?:нейм)?|nick(?:name)?)\s*[:=\-–—]\s*", re.IGNORECASE)
 _BUFF_CHUNK = re.compile(r"^(?:\d+[xх×]?|[^\W\d_]+)$")
+
+
+def _is_filler(word: str) -> bool:
+    w = word.casefold().replace("ё", "е")
+    return w in _FILLERS or w.startswith(_FILLER_STEMS)
 
 
 def buff_key(word: str) -> str | None:
@@ -129,7 +136,7 @@ def _parse_segment(tokens: list[str], counts: dict[str, int], unknown: list[str]
                 i += 1
                 continue
             qty, j = int(tokens[i]), i + 1
-            while j < len(tokens) and tokens[j].casefold() in _FILLERS:
+            while j < len(tokens) and _is_filler(tokens[j]):
                 j += 1
             if j < len(tokens) and not tokens[j].isdigit():
                 _add(counts, unknown, qty, tokens[j])
@@ -144,7 +151,7 @@ def _parse_segment(tokens: list[str], counts: dict[str, int], unknown: list[str]
                 unknown.append(tok)
                 i += 1
                 continue
-            while j < len(tokens) and tokens[j].casefold() in _FILLERS:
+            while j < len(tokens) and _is_filler(tokens[j]):
                 j += 1
             if buff_key(tok) is not None:
                 if j < len(tokens) and tokens[j].isdigit():
@@ -174,6 +181,20 @@ def _is_buff_line(line: str) -> bool:
     return bool(_parse_body(line)[0])
 
 
+def _split_nick_and_buffs(line: str) -> tuple[str, str] | None:
+    """«Danilka_suhav 100 топотов, 3 напалма» → («Danilka_suhav», «100 топотов, 3 напалма»).
+
+    Ник — всё до первого отдельного числа, дальше обязано разбираться как список бафов.
+    Иначе первая строка остаётся ником целиком («Игрок 2008» и подобные)."""
+    words = line.split()
+    for i in range(1, len(words)):
+        if words[i].isdigit():
+            if _parse_body(" ".join(words[i:]))[0]:
+                return " ".join(words[:i]), " ".join(words[i:])
+            return None
+    return None
+
+
 def parse_message(text: str) -> Parsed:
     """Ник — первая строка, остальное — «число + баф». Ничего не нашлось — status 'unparsed'."""
     lines = [ln for ln in (_clean_line(x) for x in str(text or "").splitlines()) if ln]
@@ -182,8 +203,13 @@ def parse_message(text: str) -> Parsed:
     nick: str | None = None
     body = lines
     if not _is_buff_line(lines[0]):
-        nick = _NICK_LABEL.sub("", lines[0]).strip(" ,;:")[:_MAX_NICK] or None
-        body = lines[1:]
+        first = _NICK_LABEL.sub("", lines[0])
+        inline = _split_nick_and_buffs(first)
+        if inline is not None:                       # ник и бафы написали в одну строку
+            first, body = inline[0], [inline[1], *lines[1:]]
+        else:
+            body = lines[1:]
+        nick = first.strip(" ,;:")[:_MAX_NICK] or None
     counts, unknown = _parse_body("\n".join(body))
     return Parsed(nick, counts, unknown)
 
@@ -461,12 +487,13 @@ UNPARSED_SHOWN = 30
 
 
 def _collect(admin: Any, con: sqlite3.Connection, now: datetime):
-    """Доска: у каждого игрока его последняя заявка. Она висит, пока сообщение есть в канале;
-    удалили сообщение — заявки нет (история выдачи при этом остаётся).
+    """Доска — статичная таблица: у каждого игрока его последняя заявка. Она висит, пока сообщение
+    есть в канале; удалили сообщение в Discord — заявки нет (история выдачи при этом остаётся).
 
-    Заявка выдана, если после неё (и после её правки) была выдача. Выданные сегодня остаются на
-    доске с зелёной галочкой, выданные в прошлые дни уходят в историю. Сообщение после выдачи —
-    новая заявка, она снова невыдана. Читаются только сообщения текущего канала бафов."""
+    Галочка относится только к текущему дню выдачи: заявка «выдана», если после неё (и после её
+    правки) сегодня была выдача. Со сменой дня (05:00 МСК) галочки сами сбрасываются, а игроки
+    остаются на доске — в следующий КВ их можно отметить снова. Сообщение после выдачи — новая
+    заявка, она снова без галочки. Читаются только сообщения текущего канала бафов."""
     today = issue_day_for(now)
     in_channel = "channel_id IN (SELECT channel_id FROM buff_settings)"
     cache: dict[str, tuple] = {}
@@ -483,30 +510,23 @@ def _collect(admin: Any, con: sqlite3.Connection, now: datetime):
             "created_at": m["created_at"], "requested_at": max(m["created_at"], m["edited_at"] or ""),
             "author": m["author_name"], "issued": False, "issue_id": None, "issued_at": None, "earlier": {},
         }
-    last: dict[str, dict[str, Any]] = {}
-    today_events: dict[str, list[dict[str, int]]] = {}
+    # выдачи только сегодняшнего дня: вчерашние — уже история и галочку не держат
+    today_events: dict[str, list[dict[str, Any]]] = {}
     if requests:
-        # выдача старше самой старой заявки никого не закрывает, поэтому дальше неё не читаем
-        oldest = min(r["requested_at"] for r in requests.values())
-        for i in con.execute("SELECT * FROM buff_issued WHERE buff_day=? OR issued_at>=? ORDER BY issued_at, id",
-                             (today, oldest)):
+        for i in con.execute("SELECT * FROM buff_issued WHERE buff_day=? ORDER BY issued_at, id", (today,)):
             key = _identity(admin, con, cache, i["nick"])[2]
-            snap = json.loads(i["counts_json"])
-            last[key] = {"id": int(i["id"]), "day": i["buff_day"], "at": i["issued_at"]}
-            if i["buff_day"] == today:
-                today_events.setdefault(key, []).append(snap)
+            today_events.setdefault(key, []).append(
+                {"id": int(i["id"]), "at": i["issued_at"], "counts": json.loads(i["counts_json"])})
 
     rows: list[dict[str, Any]] = []
     for key, req in requests.items():
-        li = last.get(key)
-        done = li is not None and li["at"] > req["requested_at"]
-        if done and li["day"] != today:
-            continue                      # выдано в один из прошлых дней — это уже история
-        earlier = today_events.get(key, [])
+        events = today_events.get(key, [])
+        last = events[-1] if events else None
+        done = last is not None and last["at"] > req["requested_at"]
         if done:
-            req.update(issued=True, issue_id=li["id"], issued_at=li["at"])
-            earlier = earlier[:-1]
-        req["earlier"] = _sum_counts(earlier)
+            req.update(issued=True, issue_id=last["id"], issued_at=last["at"])
+            events = events[:-1]
+        req["earlier"] = _sum_counts(e["counts"] for e in events)
         rows.append(req)
     rows.sort(key=lambda r: (r["nick"].casefold(), r["key"]))
 
@@ -544,6 +564,8 @@ button.tick:disabled{opacity:.3}form.tickform{margin:0}
 .bt tbody tr:hover td.nick{background:var(--blue2)}}
 .hintbox{padding:14px 16px;border:1px dashed var(--line);border-radius:10px;color:var(--dim);margin:10px 0}.hintbox code{background:var(--soft);padding:1px 5px;border-radius:5px;color:var(--text)}
 .bsearch{margin:2px 0 10px}
+.metrics.bcat{grid-template-columns:repeat(7,1fr);margin-top:-8px}@media(max-width:760px){.metrics.bcat{grid-template-columns:repeat(2,1fr)}}
+.bt tfoot tr.totals td{border-top:1px solid var(--line);border-bottom:0;background:var(--soft);font-weight:750}
 .bt a.cp{cursor:copy;color:inherit;text-decoration:none}.bt a.cp:hover{color:var(--blue)}.bt a.cp:focus-visible{outline:1px solid var(--blue);outline-offset:2px;border-radius:3px}
 .bt a.cp.copied{color:var(--green)}
 .bpanel{width:fit-content;max-width:100%;overflow:visible}
@@ -734,11 +756,14 @@ def _render_history(admin: Any, view: str) -> str:
         p["days"].add(e["day"])
         for k in BUFF_KEYS:
             p["counts"][k] += int(e["counts"].get(k) or 0)
+    by_buff = {k: sum(int(e["counts"].get(k) or 0) for e in entries) for k in BUFF_KEYS}
     metrics = ("<div class='metrics'>"
                f"<div class='metric'><label>Дней выдачи</label><b>{len(days)}</b></div>"
                f"<div class='metric'><label>Игроков</label><b>{len(players)}</b></div>"
-               f"<div class='metric'><label>Выдач</label><b>{len(entries)}</b></div>"
-               f"<div class='metric'><label>Бафов выдано</label><b>{grand}</b></div></div>")
+               f"<div class='metric'><label>Выдач</label><b>{len(entries)}</b></div></div>"
+               "<div class='metrics bcat'>"
+               + "".join(f"<div class='metric'><label>{esc(title)}</label><b>{by_buff[key]}</b></div>"
+                         for key, title in BUFFS) + "</div>")
     toggle = ("<div class='seg'>"
               + ("<b>По игрокам</b>" if view == "players" else f"<a href='{url_for('buffs_history')}'>По игрокам</a>")
               + ("<b>По дням</b>" if view == "days" else f"<a href='{url_for('buffs_history', view='days')}'>По дням</a>")
@@ -747,6 +772,11 @@ def _render_history(admin: Any, view: str) -> str:
 
     def counts_cells(counts: dict[str, int]) -> str:
         return "".join(f"<td>{int(counts.get(k) or 0) or '<span class=dim>·</span>'}</td>" for k in BUFF_KEYS)
+
+    def totals_row(lead: str, spare: str, tail: str = "") -> str:
+        cells = "".join(f"<td><b>{by_buff[k]}</b></td>" if by_buff[k] else "<td><span class=dim>·</span></td>"
+                        for k in BUFF_KEYS)
+        return f"<tr class='totals'><td class='nick grow'>{lead}</td>{spare}{cells}<td class='total'>{grand}</td>{tail}</tr>"
 
     def name(pid: Any, nick: str) -> str:
         return f"<a href='{url_for('player', player_id=pid)}'>{esc(nick)}</a>" if pid is not None else esc(nick)
@@ -770,7 +800,8 @@ def _render_history(admin: Any, view: str) -> str:
                     f"data-confirm='{esc(confirm)}'><button class='quiet' title='Убрать эту выдачу из истории'>✕</button>"
                     "</form></td></tr>")
         table = ("<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Ник</th>" + th
-                 + "<th>Всего</th><th></th></tr></thead><tbody>" + "".join(parts) + "</tbody></table></div>")
+                 + "<th>Всего</th><th></th></tr></thead><tbody>" + "".join(parts) + "</tbody><tfoot>"
+                 + totals_row("Итого за всё время", "", "<td></td>") + "</tfoot></table></div>")
     else:
         body_rows = []
         for p in sorted(players.values(), key=lambda x: (-_total(x["counts"]), x["nick"].casefold())):
@@ -781,7 +812,8 @@ def _render_history(admin: Any, view: str) -> str:
                 f"<td class='total'>{_total(p['counts'])}</td></tr>")
         table = ("<div class='panel'><table class='tight bt'><thead><tr><th class='nick grow'>Ник</th>"
                  "<th title='Сколько дней игрок получал бафы'>Дней</th>" + th + "<th>Всего</th></tr></thead><tbody>"
-                 + "".join(body_rows) + "</tbody></table></div>")
+                 + "".join(body_rows) + "</tbody><tfoot>"
+                 + totals_row("Итого за всё время", "<td></td>") + "</tfoot></table></div>")
     body = (f"<a class='back' href='{url_for('buffs')}'>← Бафы</a>"
             "<div class='pagehead'><div><h1>История бафов</h1>"
             "<div class='subtitle'>Сколько и каких бафов выдали каждому игроку и в какие дни</div></div></div>"

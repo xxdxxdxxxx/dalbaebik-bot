@@ -48,6 +48,32 @@ class ParserTests(unittest.TestCase):
             with self.subTest(nick=nick):
                 self.assertEqual(self.parse(text), (nick, counts, "ok"))
 
+    def test_boxes_and_spelling_variants_from_the_channel(self):
+        cases = [
+            ("Teness_see\n114 топтов\n3 ящика зелени\n3 ящика напалма\n3 убийца боли",
+             {"topot": 114, "heal": 3, "napalm": 3, "killer": 3}),
+            ("Ilosty\nнапалми 4 ящика \n15 убиц \n100 топотив", {"napalm": 4, "killer": 15, "topot": 100}),
+            ("Zdarova_Otec\n100 топотов, 12 шизов, 4 напалма", {"topot": 100, "shiza": 12, "napalm": 4}),
+            ("SeptemberBurns\n20 мин (если пятиха)\n100 топотов\n4 зелен", {"mine": 20, "topot": 100, "heal": 4}),
+            ("Nsqq\n70 топотов , 3 убийцы, 10 мин, 2 хилки", {"topot": 70, "killer": 3, "mine": 10, "heal": 2}),
+        ]
+        for text, counts in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.parse(text)[1], counts)
+
+    def test_nick_and_buffs_on_one_line(self):
+        self.assertEqual(self.parse("Danilka_suhav 100 топотов, 3 напалма, 3 хилки, 1 смок, 15 убийц"),
+                         ("Danilka_suhav", {"topot": 100, "napalm": 3, "heal": 3, "smoke": 1, "killer": 15}, "ok"))
+        self.assertEqual(self.parse("Danilka_suhav 100 топотов\n3 убийцы")[:2],
+                         ("Danilka_suhav", {"topot": 100, "killer": 3}))
+        # число в нике без бафов после него — по-прежнему ник целиком
+        self.assertEqual(self.parse("Игрок 2008\n10 убийц")[:2], ("Игрок 2008", {"killer": 10}))
+
+    def test_extra_items_are_flagged_but_known_ones_are_kept(self):
+        p = buffs.parse_message("Jollu\n114 топтов\n3 биозаплатки\n3 Силовых\n3 ящика зелени")
+        self.assertEqual(p.counts, {"topot": 114, "heal": 3})
+        self.assertEqual((p.unrecognized, p.status), (["3 биозаплатки", "3 Силовых"], "partial"))
+
     def test_comma_separated_template(self):
         text = "Extanz\n100 топотов (это топоты), 10 шизей, 10 убийц, 3 хилки, 20 мин, 3 смока, 7 напалмов"
         self.assertEqual(self.parse(text), ("Extanz", {
@@ -385,8 +411,9 @@ class IssueTests(BuffBase):
         self.assertEqual(resp.status_code, 303)
         self.assertTrue(resp.headers["Location"].endswith("/buffs"))
 
-    def test_issued_requests_leave_the_board_after_the_kv(self):
+    def test_everyone_stays_on_the_board_and_ticks_reset_for_the_next_kv(self):
         self.seed_clan()
+        everyone = ["DinGOBY", "Extanz", "KROWA_DASHA", "MLoveX", "TergosX", "Пельмешек"]
         self.toggle("KROWA_DASHA", 1)
         self.toggle("TergosX", 1)
         v_evening = self.client.get("/buffs/version").get_json()["v"]
@@ -394,10 +421,18 @@ class IssueTests(BuffBase):
         self.assertEqual(self.done_nicks(), ["KROWA_DASHA", "TergosX"])
         self.assertEqual(self.client.get("/buffs/version").get_json()["v"], v_evening)
         self.now = msk(15, 5, 30)                           # новый день выдачи
-        self.assertEqual(self.rows(), ["DinGOBY", "Extanz", "MLoveX", "Пельмешек"])
+        self.assertEqual(self.rows(), everyone)             # никто не пропал
+        self.assertEqual(self.done_nicks(), [])             # галочки сброшены
         self.assertNotEqual(self.client.get("/buffs/version").get_json()["v"], v_evening)
         self.assertEqual(len(self.history_rows()), 2)       # история на месте
-        self.assertEqual(self.foot("brow-tot")[1], "300")   # 100+100+100 невыданных топотов
+        self.assertEqual(self.foot("brow-tot")[1], "430")   # таблица как была: все топоты снова «осталось выдать»
+        self.assertEqual(self.foot("brow-rest"), self.foot("brow-tot"))
+        self.assertNotIn("уже выдавали", self.page())       # вчерашняя выдача — не «сегодняшняя»
+        self.toggle("KROWA_DASHA", 1)                       # на следующем КВ можно отметить снова
+        self.assertEqual([r["buff_day"] for r in self.history_rows()],
+                         ["2026-11-14", "2026-11-14", "2026-11-15"])
+        self.assertEqual(self.done_nicks(), ["KROWA_DASHA"])
+        self.assertEqual(self.rows(), everyone)
 
     def test_issue_after_midnight_belongs_to_the_previous_kv_day(self):
         self.seed_clan()
@@ -451,15 +486,21 @@ class HistoryTests(BuffBase):
         for upto_ids, when in (((1, 2, 3), msk(12, 20)), ((4,), msk(13, 19)), ((5, 6), msk(14, 20))):
             self.now = when
             buffs.ingest_messages(self.db, [rec(i, t, when=w) for i, t, w in CLAN if i in upto_ids])
-            for nick in self.rows():
+            fresh = sorted(t.split("\n")[0].strip() for i, t, w in CLAN if i in upto_ids)
+            for nick in fresh:
                 self.toggle(nick, 1)
-            self.assertEqual(self.rows(), self.done_nicks())
+            self.assertEqual(self.done_nicks(), fresh)
 
     def test_history_totals_and_days(self):
         self.play_three_kv_days()
         history = self.page("/buffs/history")
         grand = sum(r["total"] for r in self.history_rows())
-        self.assertIn(f"<b>{grand}</b>", history)
+        self.assertIn(f"<td class='total'>{grand}</td>", history)        # итого в таблице
+        # панель «сколько всего какого бафа» — по каждой категории отдельно
+        for key, title in buffs.BUFFS:
+            expected = sum(json.loads(r["counts_json"]).get(key, 0) for r in self.history_rows())
+            self.assertIn(f"<label>{title}</label><b>{expected}</b>", history)
+        self.assertIn("<label>Топоты</label><b>430</b>", history)
         self.assertIn("<label>Игроков</label><b>6</b>", history)
         self.assertIn("<label>Дней выдачи</label><b>3</b>", history)
         tergos = history.split("TergosX")[1].split("</tr>")[0]
@@ -469,21 +510,35 @@ class HistoryTests(BuffBase):
         self.assertIn("13.11.26 пт", by_days)
         self.assertIn("DinGOBY", by_days)
 
-    def test_each_kv_day_clears_the_board_for_the_next_one(self):
+    def test_players_stay_on_the_board_after_everyone_was_ticked(self):
         self.play_three_kv_days()
         self.now = msk(15, 6)
-        self.assertEqual(self.rows(), [])                   # всем выдали — доска пуста
+        self.assertEqual(self.rows(), ["DinGOBY", "Extanz", "KROWA_DASHA", "MLoveX", "TergosX", "Пельмешек"])
+        self.assertEqual(self.done_nicks(), [])             # а галочки чистые — можно отмечать заново
 
-    def test_deleting_a_history_entry_brings_the_request_back(self):
+    def test_same_player_ticked_on_two_kv_days_is_counted_twice(self):
+        self.add_player("Extanz")
+        buffs.ingest_messages(self.db, [rec(1, "Extanz\n3 убийцы, 100 топотов", when=msk(12, 19))])
+        for day in (msk(12, 20), msk(14, 20)):
+            self.now = day
+            self.toggle("Extanz", 1)
+        history = self.page("/buffs/history")
+        self.assertIn("<label>Топоты</label><b>200</b>", history)
+        self.assertIn("<label>Убийцы</label><b>6</b>", history)
+        self.assertIn("<label>Дней выдачи</label><b>2</b>", history)
+        self.assertIn("12.11.26 чт", history)
+        self.assertIn("14.11.26 сб", history)
+
+    def test_deleting_a_history_entry_only_unticks_todays_row(self):
         self.play_three_kv_days()
         self.now = msk(14, 21)
         before = len(self.history_rows())
-        krowa = next(r for r in self.history_rows() if r["nick"] == "KROWA_DASHA")
-        resp = self.client.post(f"/buffs/issued/{krowa['id']}/delete")
+        mlovex = next(r for r in self.history_rows() if r["nick"] == "MLoveX")
+        resp = self.client.post(f"/buffs/issued/{mlovex['id']}/delete")
         self.assertEqual(resp.status_code, 303)
         self.assertEqual(len(self.history_rows()), before - 1)
-        self.assertEqual(self.rows(), ["KROWA_DASHA", "MLoveX", "Пельмешек"])   # выданные сегодня остаются до 05:00
-        self.assertEqual(self.done_nicks(), ["MLoveX", "Пельмешек"])             # а KROWA_DASHA снова невыдана
+        self.assertEqual(self.rows(), ["DinGOBY", "Extanz", "KROWA_DASHA", "MLoveX", "TergosX", "Пельмешек"])
+        self.assertEqual(self.done_nicks(), ["Пельмешек"])  # MLoveX снова без галочки, никто не пропал
 
     def test_history_follows_player_rename_via_alias(self):
         pid = self.add_player("Старый")
