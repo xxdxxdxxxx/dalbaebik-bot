@@ -2,7 +2,7 @@
 
 Игроки из отрядов, внутри отряда — в том же порядке мест, что на странице «Отряды»;
 справа от ника — слоты по категориям:
-Гаусс · Кувалда · Био · Тяж · Огнемёт · Скорость. Клик по слоту открывает выбор предмета
+Снайпы · Кувалда · Био · Тяж · Огнемёт · Скорость. Клик по слоту открывает выбор предмета
 и заточки (+0…+15), «Скорость» — двузначное число 10–99 (39, 40, 25…) или прочерк (пусто).
 
 Как добавить или поменять предмет — см. ITEMS и COLUMNS ниже; иконка лежит в tools/gear_icons/
@@ -50,6 +50,11 @@ class Column(NamedTuple):
 
 ITEMS: dict[str, Item] = {
     "gauss": Item("Гаусс", "legendary", "gauss.webp"),
+    # Новые снайперские винтовки — исключительные (красная рамка). Названия временные: в игре они называются иначе,
+    # поменять достаточно здесь (ключи sniper1…3 не трогать — они записаны в базе у игроков).
+    "sniper1": Item("Снайп 1", "exceptional", "sniper1.webp"),
+    "sniper2": Item("Снайп 2", "exceptional", "sniper2.webp"),
+    "sniper3": Item("Снайп 3", "exceptional", "sniper3.webp"),
     "hammer": Item("Кувалда", "legendary", "hammer.webp"),
     "assault": Item("Штурма", "legendary", "assault.webp"),
     "zivk": Item("Зивка", "legendary", "zivk.webp"),
@@ -59,7 +64,8 @@ ITEMS: dict[str, Item] = {
 }
 
 COLUMNS: tuple[Column, ...] = (
-    Column("gauss", "Гаусс", ("gauss",)),
+    # Ключ gauss остался от прежней категории «Гаусс» — по нему шмот лежит в базе, переименовывать нельзя.
+    Column("gauss", "Снайпы", ("gauss", "sniper1", "sniper2", "sniper3")),
     Column("hammer", "Кувалда", ("hammer",)),
     Column("bio", "Био", ("assault", "zivk")),
     Column("heavy", "Тяж", ("tank", "chief")),

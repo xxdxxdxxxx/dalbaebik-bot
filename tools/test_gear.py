@@ -75,7 +75,7 @@ class GearPageTests(unittest.TestCase):
         self.assertIn(">Шмот</a>", html)
         self.assertRegex(html, r"class='active' href='/gear'")
         heads = re.findall(r"<th class='g-c[^']*'>([^<]+)</th>", html)
-        self.assertEqual(heads, ["Гаусс", "Кувалда", "Био", "Тяж", "Огнемёт", "Скорость"])   # порядок слева направо
+        self.assertEqual(heads, ["Снайпы", "Кувалда", "Био", "Тяж", "Огнемёт", "Скорость"])   # порядок слева направо
         self.assertIn("Отряд 1", html)
         self.assertIn("Чемпионы", html)
         for nick in ("Alpha", "Bravo", "Subby"):
@@ -336,6 +336,8 @@ class GearPageTests(unittest.TestCase):
         self.assertEqual([c.key for c in gear.COLUMNS], ["gauss", "hammer", "bio", "heavy", "flamer", "speed"])
         self.assertEqual(gear.COLUMN_BY_KEY["bio"].items, ("assault", "zivk"))          # порядок в окне выбора
         self.assertEqual(gear.COLUMN_BY_KEY["heavy"].items, ("tank", "chief"))
+        self.assertEqual(gear.COLUMN_BY_KEY["gauss"].title, "Снайпы")               # ключ gauss — из базы, заголовок новый
+        self.assertEqual(gear.COLUMN_BY_KEY["gauss"].items, ("gauss", "sniper1", "sniper2", "sniper3"))
         used = {k for c in gear.COLUMNS for k in c.items}
         self.assertEqual(used, set(gear.ITEMS))
         for item in gear.ITEMS.values():
@@ -343,8 +345,26 @@ class GearPageTests(unittest.TestCase):
             self.assertTrue((gear.ICON_DIR / item.icon).is_file(), item.icon)
         for key, rarity in (("gauss", "legendary"), ("hammer", "legendary"), ("assault", "legendary"),
                             ("zivk", "legendary"), ("flamer", "exceptional"), ("tank", "exceptional"),
-                            ("chief", "exceptional")):
+                            ("chief", "exceptional"), ("sniper1", "exceptional"), ("sniper2", "exceptional"),
+                            ("sniper3", "exceptional")):
             self.assertEqual(gear.ITEMS[key].rarity, rarity, key)
+
+    def test_new_snipers_are_exceptional_red_and_live_in_the_snipers_column(self):
+        for key in ("sniper1", "sniper2", "sniper3"):
+            with self.subTest(item=key):
+                r = self.put(self.alpha, "gauss", item=key, level=15)
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+                self.assertEqual(r.get_json(), {"ok": True, "item": key, "level": 15, "text": ""})
+                tag = self.slot_tag(self.page(), self.alpha, "gauss")
+                self.assertIn("border-color:#933", tag)                        # исключительный — красная рамка
+                self.assertIn(f"/gear/icon/{key}.webp", tag)
+                self.assertIn("Снайпы: ", tag)                                  # подпись слота — по новому названию
+                self.assertEqual(self.client.get(f"/gear/icon/{key}.webp", base_url=LOCAL).status_code, 200)
+        self.put(self.alpha, "gauss", item="gauss", level=15)                   # прежний Гаусс остался золотым
+        self.assertIn("border-color:#CC9933", self.slot_tag(self.page(), self.alpha, "gauss"))
+        for col in ("hammer", "bio", "heavy", "flamer"):                       # в чужие категории снайперов не поставить
+            self.assertEqual(self.put(self.alpha, col, item="sniper1", level=1).status_code, 400, col)
+        self.assertIn('"items": ["gauss", "sniper1", "sniper2", "sniper3"]', self.page())   # порядок в окне выбора
 
     def test_empty_roster_page_still_renders(self):
         for nick, (squad, slot) in {"Alpha": (1, 1), "Bravo": (1, 2), "Subby": (99, 1)}.items():
