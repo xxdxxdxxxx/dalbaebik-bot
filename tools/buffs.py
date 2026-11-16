@@ -54,10 +54,10 @@ BUFF_KEYS = tuple(key for key, _ in BUFFS)
 BUFF_STEMS: dict[str, tuple[str, ...]] = {
     "shiza": ("шиз",),
     "topot": ("топот", "топт"),
-    "killer": ("убийц", "убиц"),
+    "killer": ("убийц", "убиц", "убий"),
     "heal": ("хил", "подорожник", "зелен"),     # «зелень», «зелени», «зеленки», «ящика зелени»
     "napalm": ("напалм",),
-    "smoke": ("смок", "дым"),
+    "smoke": ("смок", "дым", "завес"),            # смок = завеса = дым
 }
 # «мин» слишком короткое слово для основы («минута», «минимум»), поэтому только точные формы.
 _MINE_FORMS = frozenset({"мин", "мины", "мина", "минов", "мину", "мине", "минам", "минами"})
@@ -82,13 +82,56 @@ def _is_filler(word: str) -> bool:
     return w in _FILLERS or w.startswith(_FILLER_STEMS)
 
 
+def _distance(a: str, b: str) -> int:
+    """Расстояние Дамерау — Левенштейна: вставка, пропуск, замена и перестановка соседних букв."""
+    prev2: list[int] | None = None
+    prev = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
+            if prev2 is not None and i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        prev2, prev = prev, cur
+    return prev[-1]
+
+
+_NOT_BUFFS = ("топор", "тополь")     # настоящие слова, похожие на «топот»
+
+
+def _fuzzy_key(w: str) -> str | None:
+    """Слово с опечаткой («тапоты», «напалн», «смкои») → баф, если оно почти совпало с одной основой.
+
+    Сравнивается начало слова с основой (окончания не важны). Короткие основы («шиз», «хил») и слова
+    короче четырёх букв не угадываем — слишком много случайных совпадений."""
+    if len(w) < 4 or w.startswith(_NOT_BUFFS):
+        return None
+    best: tuple[int, str] | None = None
+    tie = False
+    for key, stems in BUFF_STEMS.items():
+        for stem in stems:
+            if len(stem) < 4:
+                continue
+            limit = 1 if len(stem) <= 5 else 2
+            d = min(_distance(w[:n], stem) for n in range(max(len(stem) - 1, 1), len(stem) + 2))
+            if d > limit:
+                continue
+            if best is None or d < best[0]:
+                best, tie = (d, key), False
+            elif d == best[0] and key != best[1]:
+                tie = True
+    return best[1] if best is not None and not tie else None
+
+
 def buff_key(word: str) -> str | None:
-    """Название баффа из слова игрока («топотов» → topot) или None."""
+    """Название баффа из слова игрока («топотов» → topot) или None. Пара опечаток прощается."""
     w = word.casefold().replace("ё", "е")
     for key, stems in BUFF_STEMS.items():
         if w.startswith(stems):
             return key
-    return "mine" if w in _MINE_FORMS else None
+    if w in _MINE_FORMS:
+        return "mine"
+    return _fuzzy_key(w) if w.isalpha() else None
 
 
 @dataclass
@@ -366,14 +409,23 @@ def _ingest_one(con: sqlite3.Connection, rec: dict[str, Any]) -> str:
     if not text.strip():
         return "skipped"
     message_id = int(rec["message_id"])
-    existing = con.execute("SELECT raw_text,deleted FROM buff_messages WHERE message_id=?",
-                           (message_id,)).fetchone()
-    if existing is not None and existing["raw_text"] == text and not existing["deleted"]:
-        return "same"       # повторное чтение истории не должно «будить» таблицу
+    existing = con.execute("""SELECT raw_text,deleted,nick,counts_json,unrecognized,status
+        FROM buff_messages WHERE message_id=?""", (message_id,)).fetchone()
     parsed = parse_message(text)
     nick = parsed.nick
     if not nick and parsed.counts:
         nick = _bound_nick(con, rec.get("author_id")) or str(rec.get("author_name") or "").strip()
+    counts_json = json.dumps(parsed.counts, ensure_ascii=False, sort_keys=True)
+    if existing is not None and existing["raw_text"] == text and not existing["deleted"]:
+        # Повторное чтение истории не «будит» таблицу. Но если парсер стал понимать больше (новые
+        # названия, прощение опечаток), старые сообщения разбираются заново — заявка и галочка те же.
+        if (existing["nick"], existing["counts_json"], existing["unrecognized"], existing["status"]) == (
+                (nick or "")[:_MAX_NICK], counts_json, ", ".join(parsed.unrecognized), parsed.status):
+            return "same"
+        con.execute("""UPDATE buff_messages SET nick=?,counts_json=?,unrecognized=?,status=?,updated_at=?
+            WHERE message_id=?""", ((nick or "")[:_MAX_NICK], counts_json, ", ".join(parsed.unrecognized),
+                                    parsed.status, _iso(_now()), message_id))
+        return parsed.status
     now = _iso(_now())
     created = rec["created_at"]
     edited = rec.get("edited_at")
@@ -386,8 +438,7 @@ def _ingest_one(con: sqlite3.Connection, rec: dict[str, Any]) -> str:
             deleted=0, updated_at=excluded.updated_at""",
                 (message_id, rec.get("guild_id"), int(rec["channel_id"]), rec.get("author_id"),
                  str(rec.get("author_name") or ""), msk_date(created), _iso(created),
-                 _iso(edited) if edited else None, (nick or "")[:_MAX_NICK],
-                 json.dumps(parsed.counts, ensure_ascii=False, sort_keys=True),
+                 _iso(edited) if edited else None, (nick or "")[:_MAX_NICK], counts_json,
                  ", ".join(parsed.unrecognized), text, parsed.status, now))
     return parsed.status
 

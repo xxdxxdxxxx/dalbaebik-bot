@@ -61,6 +61,33 @@ class ParserTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(self.parse(text)[1], counts)
 
+    def test_synonyms_and_typos_are_forgiven(self):
+        same = {
+            "heal": ("хилки", "хилок", "зелень", "зелени", "зеленки", "подорожник", "подорожников", "падорожник"),
+            "smoke": ("смок", "смоки", "смоков", "завеса", "завесы", "завес", "дым", "смкои"),
+            "killer": ("убийцы", "убиц", "убицы", "убий", "убийцв", "убйицы"),
+            "topot": ("топотов", "топтов", "топотив", "тапоты", "топатов"),
+            "napalm": ("напалм", "напалма", "напалми", "напалн"),
+        }
+        for key, words in same.items():
+            for word in words:
+                with self.subTest(word=word):
+                    self.assertEqual(buffs.buff_key(word), key)
+        self.assertEqual(self.parse("Vasya\n3 ящика хилок\n3 ящика подорожников\n2 ящика завес")[1],
+                         {"heal": 6, "smoke": 2})
+        self.assertEqual(self.parse("Vasya\n3 ящика смоков, 4 завеса")[1], {"smoke": 7})
+
+    def test_ordinary_words_are_not_guessed_as_buffs(self):
+        for word in ("ящика", "биозаплатки", "силовых", "вонь", "пушек", "минут", "минимум", "бафы", "хочу",
+                     "боли", "пятиха", "топор", "сок", "привет", "удали"):
+            with self.subTest(word=word):
+                self.assertIsNone(buffs.buff_key(word))
+
+    def test_one_bad_line_does_not_spoil_the_rest(self):
+        p = buffs.parse_message("SeptemberBurns\n20 мин (если пятиха)\n100 топотов\n4 зелен\n4 вонь")
+        self.assertEqual(p.counts, {"mine": 20, "topot": 100, "heal": 4})
+        self.assertEqual((p.unrecognized, p.status), (["4 вонь"], "partial"))
+
     def test_nick_and_buffs_on_one_line(self):
         self.assertEqual(self.parse("Danilka_suhav 100 топотов, 3 напалма, 3 хилки, 1 смок, 15 убийц"),
                          ("Danilka_suhav", {"topot": 100, "napalm": 3, "heal": 3, "smoke": 1, "killer": 15}, "ok"))
@@ -249,6 +276,20 @@ class IngestTests(BuffBase):
         self.assertEqual(buffs.mark_deleted(self.db, [1]), 1)
         self.assertEqual(buffs.mark_deleted(self.db, [1]), 0)
         self.assertNotIn("Extanz", self.page())
+
+    def test_old_messages_are_reparsed_when_the_parser_improves(self):
+        """Строка в базе осталась от старого парсера: перечитывание канала должно её исправить."""
+        text = "Teness_see\n114 топтов\n3 ящика зелени\n3 убийца боли"
+        buffs.ingest_messages(self.db, [rec(1, text, when=msk(14, 19))])
+        with closing(self.con()) as con:          # как было до правки: распозналась только часть
+            con.execute("UPDATE buff_messages SET counts_json='{\"killer\": 3}',status='partial' WHERE message_id=1")
+        again = buffs.ingest_messages(self.db, [rec(1, text, when=msk(14, 19))])
+        self.assertEqual((again["same"], again["ok"] + again["partial"]), (0, 1))
+        with closing(self.con()) as con:
+            row = con.execute("SELECT counts_json,status,edited_at FROM buff_messages WHERE message_id=1").fetchone()
+        self.assertEqual(json.loads(row["counts_json"]), {"topot": 114, "heal": 3, "killer": 3})
+        self.assertEqual((row["status"], row["edited_at"]), ("ok", None))     # не «правка» — заявка та же
+        self.assertEqual(buffs.ingest_messages(self.db, [rec(1, text, when=msk(14, 19))])["same"], 1)
 
     def test_deleting_a_message_changes_the_version_even_with_a_frozen_clock(self):
         buffs.ingest_messages(self.db, [rec(1, "Extanz\n3 убийцы", when=msk(14, 19))])
@@ -477,6 +518,18 @@ class IssueTests(BuffBase):
         self.toggle("Extanz", 1)
         v2 = self.client.get("/buffs/version").get_json()["v"]
         self.assertEqual(len({v0, v1, v2}), 3)
+
+
+class ReparseKeepsTicksTests(BuffBase):
+    def test_reparse_does_not_reset_a_tick(self):
+        self.add_player("Teness_see")
+        text = "Teness_see\n114 топтов\n3 ящика зелени"
+        buffs.ingest_messages(self.db, [rec(1, text, when=msk(14, 19))])
+        self.toggle("Teness_see", 1)
+        with closing(self.con()) as con:
+            con.execute("UPDATE buff_messages SET counts_json='{}',status='unparsed' WHERE message_id=1")
+        buffs.ingest_messages(self.db, [rec(1, text, when=msk(14, 19))])
+        self.assertEqual(self.done_nicks(), ["Teness_see"])
 
 
 class HistoryTests(BuffBase):
