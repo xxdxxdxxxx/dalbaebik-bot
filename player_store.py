@@ -475,6 +475,10 @@ def _merge_player(con: sqlite3.Connection, survivor: int, duplicate: int) -> Non
                     (survivor, row["guild_id"]))
     con.execute("DELETE FROM player_guilds WHERE player_id=?", (duplicate,))
     con.execute("UPDATE player_aliases SET player_id=? WHERE player_id=?", (survivor, duplicate))
+    # шмот (таблицу создаёт админ-панель): записи оставшегося игрока главнее, недостающие слоты переезжают
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='player_gear'").fetchone():
+        con.execute("UPDATE OR IGNORE player_gear SET player_id=? WHERE player_id=?", (survivor, duplicate))
+        con.execute("DELETE FROM player_gear WHERE player_id=?", (duplicate,))
     con.execute("DELETE FROM players WHERE id=?", (duplicate,))
 
 

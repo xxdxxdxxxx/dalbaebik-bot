@@ -222,7 +222,8 @@ class ArchiveDayTests(unittest.TestCase):
 
     def test_navigation_order_and_squads_page_without_hint(self):
         index = self.get("/").get_data(as_text=True)
-        self.assertIn("Игроки</a><a class='' href='/squads'>Отряды</a><a class='' href='/buffs'>Бафы</a></nav>", index)
+        self.assertIn("Игроки</a><a class='' href='/squads'>Отряды</a><a class='' href='/buffs'>Бафы</a>"
+                      "<a class='' href='/gear'>Шмот</a></nav>", index)
         self.assertNotIn("<!--navx-->", index)
         squads = self.get("/squads").get_data(as_text=True)
         self.assertNotIn("Нажмите на ячейку", squads)
