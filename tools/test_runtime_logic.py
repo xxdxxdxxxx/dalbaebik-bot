@@ -15,9 +15,9 @@ class RuntimeLogicTests(unittest.TestCase):
     def test_schedule(self):
         thu=bot.MSK.localize(datetime(2026,9,17,12)); sun=bot.MSK.localize(datetime(2026,9,20,12))
         self.assertEqual(bot.kv_start(thu).strftime("%H:%M"),"19:30")
-        self.assertEqual([t.strftime("%H:%M") for _,t,_ in bot.kv_grenade_steps(thu)],["20:05","20:25","20:50","21:15"])
+        self.assertEqual([t.strftime("%H:%M") for _,t,_ in bot.kv_grenade_steps(thu)],["20:00","20:25","20:50","21:15"])
         self.assertEqual(bot.kv_start(sun).strftime("%H:%M"),"18:30")
-        self.assertEqual([t.strftime("%H:%M") for _,t,_ in bot.kv_grenade_steps(sun)],["19:00","19:20","19:40","20:00","20:15"])
+        self.assertEqual([t.strftime("%H:%M") for _,t,_ in bot.kv_grenade_steps(sun)],["19:00","19:25","19:50","20:15","20:40"])
     def test_setup_source(self):
         source=Path(bot.__file__).read_text(encoding="utf-8")
         tree=ast.parse(source)
