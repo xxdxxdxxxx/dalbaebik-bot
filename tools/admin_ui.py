@@ -337,7 +337,7 @@ LOGOUT_FORM = '<form method="post" action="/logout" style="margin:0 0 0 8px"><bu
 
 def render(title: str, body: str) -> str:
     path=request.path
-    layout = "layout-day" if path.startswith("/day/") else ("layout-players" if path.startswith("/player") else "layout-overview")
+    layout = "layout-day" if path.startswith("/day/") else ("layout-players" if path.startswith(("/player", "/gear")) else "layout-overview")
     return PAGE.format(title=html.escape(title),body=body,home=url_for("index"),players=url_for("players"),layout=layout,ov="active" if path=="/" or path.startswith("/day/") else "",pl="active" if path.startswith("/player") else "",logout=LOGOUT_FORM if _password() else "")
 
 

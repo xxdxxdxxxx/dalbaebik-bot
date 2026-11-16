@@ -1,6 +1,7 @@
 """Шмот игроков для локальной админ-панели: страница «Шмот».
 
-Игроки из отрядов (как на странице «Игроки»), справа от ника — слоты по категориям:
+Игроки из отрядов, внутри отряда — в том же порядке мест, что на странице «Отряды»;
+справа от ника — слоты по категориям:
 Гаусс · Кувалда · Био · Тяж · Огнемёт · Скорость. Клик по слоту открывает выбор предмета
 и заточки (+0…+15), «Скорость» — двузначное число 10–99 (39, 40, 25…) или прочерк (пусто).
 
@@ -50,9 +51,9 @@ class Column(NamedTuple):
 ITEMS: dict[str, Item] = {
     "gauss": Item("Гаусс", "legendary", "gauss.webp"),
     "hammer": Item("Кувалда", "legendary", "hammer.webp"),
-    "assault": Item("Штурм", "legendary", "assault.webp"),
-    "zivk": Item("Зивк", "legendary", "zivk.webp"),
-    "tank": Item("СБА Танк", "exceptional", "tank.webp"),
+    "assault": Item("Штурма", "legendary", "assault.webp"),
+    "zivk": Item("Зивка", "legendary", "zivk.webp"),
+    "tank": Item("SBA ТАНК", "exceptional", "tank.webp"),
     "chief": Item("Вождь", "exceptional", "chief.webp"),
     "flamer": Item("Огнемёт", "exceptional", "flamer.webp"),
 }
@@ -82,6 +83,21 @@ def _schema(con: sqlite3.Connection) -> None:
         text TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY(player_id, slot))""")
+
+
+def ordered_roster(admin: Any, con: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Игроки из отрядов 1–6 и Чемпионов (как в `admin.squad_roster`), но внутри отряда — в порядке мест
+    со страницы «Отряды» (slot 1, 2, 3…), а не по алфавиту. Без места (редкость) — в конце отряда, по нику."""
+    return admin.q(con, """
+        SELECT p.id, p.canonical_nick, rm.squad_id, rm.slot
+        FROM players p
+        JOIN roster_memberships rm ON rm.player_id=p.id AND rm.active=1
+             AND (rm.squad_id BETWEEN 1 AND 6 OR rm.squad_id=99)
+        WHERE rm.id=(SELECT r2.id FROM roster_memberships r2
+                     WHERE r2.player_id=p.id AND r2.active=1 AND (r2.squad_id BETWEEN 1 AND 6 OR r2.squad_id=99)
+                     ORDER BY r2.squad_id, r2.slot, r2.id LIMIT 1)
+        ORDER BY CASE WHEN rm.squad_id=99 THEN 7 ELSE rm.squad_id END,
+                 rm.slot IS NULL, rm.slot, p.canonical_nick COLLATE NOCASE""")
 
 
 def load_gear(con: sqlite3.Connection) -> dict[tuple[int, str], dict[str, Any]]:
@@ -141,17 +157,24 @@ CSS = r"""
 .g-slot{position:relative;display:grid;place-items:center;width:36px;height:36px;min-height:0;margin:0 auto;padding:0;overflow:hidden;border:2px solid rgba(127,127,127,.4);border-radius:7px;background:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 3px,transparent 3px 6px),#0f1419;color:#fff;cursor:pointer}
 .g-slot:hover{background:repeating-linear-gradient(135deg,rgba(255,255,255,.09) 0 3px,transparent 3px 6px),#18202a}
 .g-slot:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
-.g-slot.empty{border-style:dashed}.g-slot.err{box-shadow:0 0 0 2px var(--red)}
+.g-slot:not(.empty){border-width:1.5px}.g-slot.empty{border-style:dashed}.g-slot.err{box-shadow:0 0 0 2px var(--red)}
 .g-slot img{position:absolute;top:0;left:0;width:100%;height:100%;padding:1px;object-fit:contain;pointer-events:none;-webkit-user-drag:none}
 .g-plus{font:400 17px/1 -apple-system,"Segoe UI",Arial,sans-serif;color:rgba(255,255,255,.3)}.g-slot:hover .g-plus{color:rgba(255,255,255,.65)}
 .g-lv{position:absolute;right:2px;bottom:1px;font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#fff;text-shadow:0 0 2px #000,0 0 3px #000,1px 1px 0 #000;pointer-events:none}
 .g-mini{width:32px;height:32px;margin:0;flex:none;cursor:inherit}
-/* Таблица по ширине содержимого, а не на весь экран: иконки стоят плотно и на равном расстоянии. */
-.g-panel{width:fit-content;max-width:100%}.gt{width:auto}.gt td.nick,.gt th.nick{width:150px}
-.gt td.g-c,.gt th.g-c{width:50px;padding:4px 0}.gt th.g-c{font-size:9px;letter-spacing:0}
-/* Скорость: число стоит у левого края колонки, на том же расстоянии от иконки, что иконки друг от друга. */
-.gt td.g-w,.gt th.g-w{width:auto;padding:4px 6px 4px 0;text-align:left}.gt th.g-w{padding-left:7px}
-.g-sp{width:46px;height:30px;min-height:30px;padding:0 6px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-weight:650;text-align:left;font-variant-numeric:tabular-nums}
+/* Панель на всю ширину, как в «Игроках»: ник слева, иконки и скорость примерно по центру, справа свободное место (.g-f).
+   overflow:visible, как у «Бафов», — иначе шапка не залипает при прокрутке страницы. */
+.g-panel{overflow:visible}
+/* table-layout:fixed: иконки и скорость — заданной ширины, пустая колонка справа (.g-f) — 25% таблицы, ник забирает остаток.
+   Чем шире .g-f, тем левее блок категорий; чем уже — тем он правее. */
+.gt{width:100%;table-layout:fixed}.gt td.nick,.gt th.nick{padding-left:8px}
+.gt td.g-c,.gt th.g-c{width:58px;padding:4px 0}.gt th.g-c{font-size:9px;letter-spacing:0}
+.gt td.g-f,.gt th.g-f{width:25%;padding:0}
+/* Скорость: колонка по центру, число стоит ровно под заголовком «Скорость». */
+.gt td.g-w,.gt th.g-w{width:74px;padding:4px 0;text-align:center}
+.gt thead th{top:50px;box-shadow:0 1px 0 var(--line)}
+@media(max-width:760px){.g-panel{overflow-x:auto}.gt{min-width:720px}.gt thead th{top:0}}
+.g-sp{display:block;width:52px;height:30px;min-height:30px;margin:0 auto;padding:0 4px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-weight:650;text-align:center;font-variant-numeric:tabular-nums}
 .g-sp::placeholder{color:var(--dim);opacity:.55}.g-sp:hover,.g-sp:focus{background:var(--panel);border-color:var(--line);outline:none}.g-sp:focus{border-color:var(--blue)}.g-sp.err{border-color:var(--red)}
 .g-pop{position:absolute;z-index:60;width:216px;padding:8px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.3)}.g-pop[hidden]{display:none}
 .g-gh{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:0 2px 6px;color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.05em}.g-gh b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:12px;text-transform:none;letter-spacing:0}
@@ -201,7 +224,7 @@ pop.hidden=false;place(btn);(first||clr).focus()}
 document.querySelector('.gt').addEventListener('click',e=>{const b=e.target.closest('.g-slot');if(!b)return;if(!pop.hidden&&cur===b)close(true);else open(b)});
 document.addEventListener('mousedown',e=>{if(!pop.hidden&&!pop.contains(e.target)&&!e.target.closest('.g-slot'))close(false)});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!pop.hidden)close(true)});
-window.addEventListener('resize',()=>close(false));document.addEventListener('scroll',e=>{if(!pop.hidden&&e.target.classList&&e.target.classList.contains('scroll'))close(false)},true);
+window.addEventListener('resize',()=>close(false));document.addEventListener('scroll',e=>{if(!pop.hidden&&e.target.classList&&e.target.classList.contains('g-panel'))close(false)},true);
 document.querySelectorAll('.g-sp').forEach(i=>{i.addEventListener('input',()=>{const v=i.value.replace(/\D/g,'').slice(0,2);if(v!==i.value)i.value=v});
 i.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();i.blur()}});
 i.addEventListener('change',()=>{i.classList.remove('err');run('Сохранение…',()=>post({player:i.dataset.player,col:'speed',text:i.value})).then(r=>{i.value=r.text;show('Сохранено','ok')},err=>{i.classList.add('err');show((err.message||'Ошибка')+' — не сохранено','err')})})});
@@ -261,7 +284,7 @@ def render_body(admin: Any, roster: list[dict[str, Any]], gear: dict[tuple[int, 
     for row in roster:
         groups[int(row["squad_id"])].append(row)
     head = "<th class='nick'>Ник</th>" + "".join(
-        f"<th class='g-c{' g-w' if c.is_text else ''}'>{_e(c.title)}</th>" for c in COLUMNS)
+        f"<th class='g-c{' g-w' if c.is_text else ''}'>{_e(c.title)}</th>" for c in COLUMNS) + "<th class='g-f'></th>"
     bodies = []
     for squad_id in admin.SQUAD_ORDER:
         members = groups[squad_id]
@@ -283,12 +306,12 @@ def render_body(admin: Any, roster: list[dict[str, Any]], gear: dict[tuple[int, 
                 else:
                     cells.append(f"<td class='g-c'>{_slot_html(pid, nick, column, entry, icons)}</td>")
             rows.append(f"<tr class='player-row'><td class='nick'><a href='{url_for('player', player_id=pid)}'>"
-                        f"{_e(nick)}</a></td>{''.join(cells)}</tr>")
-        bodies.append(f"<tbody class='squad-group'><tr class='squad-title'><td colspan='{len(COLUMNS) + 1}'>"
+                        f"{_e(nick)}</a></td>{''.join(cells)}<td class='g-f'></td></tr>")
+        bodies.append(f"<tbody class='squad-group'><tr class='squad-title'><td colspan='{len(COLUMNS) + 2}'>"
                       f"{_e(admin.squad_label(squad_id))}</td></tr>{''.join(rows)}</tbody>")
     if bodies:
-        table = ("<div class='panel g-panel'><div class='scroll'><table class='tight vt gt'>"
-                 f"<thead><tr>{head}</tr></thead>{''.join(bodies)}</table></div></div>")
+        table = ("<div class='panel g-panel'><table class='tight vt gt'>"
+                 f"<thead><tr>{head}</tr></thead>{''.join(bodies)}</table></div>")
     else:
         table = "<p class='hint'>В отрядах пока никого нет.</p>"
     return ("<div class='pagehead'><div><h1>Шмот</h1>"
@@ -326,7 +349,7 @@ def install(admin: Any) -> None:
     def gear_page():
         with closing(admin.player_store.connect(admin.DB_PATH)) as con:
             _schema(con)
-            roster = admin.squad_roster(con)
+            roster = ordered_roster(admin, con)
             gear = load_gear(con)
         return admin.render("Шмот", render_body(admin, roster, gear))
 
