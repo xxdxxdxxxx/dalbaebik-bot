@@ -8,7 +8,8 @@
   /               — дни КВ, сгруппированы по месяцам;
   /day/<дата>     — сводная таблица дня: игрок → таб (У/С/П/СЧЁТ за день),
                     гранаты по этапам, войс; правка гранат/войса прямо в строке,
-                    исходные табы — в раскрывающемся разделе;
+                    исходные табы — в раскрывающемся разделе. Если у дня есть таб, в таблице
+                    и итогах только игроки с таба, остальные — в свёрнутом списке «Не в табе»;
   /players, /player/<id> — история игрока по дням (поиск накруток);
   /players/voice  — «Заход войс»: игроки из отрядов × дни КВ → время первого захода в войс.
 
@@ -377,6 +378,8 @@ def all_dates(con: Any) -> list[str]:
 def index():
     na = player_store.not_archived
     with closing(player_store.connect(DB_PATH)) as con:
+        player_store.prepare_tab_filter(con)
+        played = player_store.played_filter("r.match_date", "p.player_id")
         rows = q(con, f"""
             SELECT d.date, COALESCE(t.tabs,0) tabs, COALESCE(g.players,0) players,
                    COALESCE(g.grenades,0) grenades, COALESCE(g.voice,0) voice
@@ -389,6 +392,7 @@ def index():
             LEFT JOIN (SELECT r.match_date, COUNT(DISTINCT p.player_id) players,
                               SUM(p.total_grenades) grenades, SUM(p.voice_seconds) voice
                        FROM kv_daily_reports r JOIN kv_daily_players p ON p.report_id=r.id
+                       WHERE {played}
                        GROUP BY r.match_date) g ON g.match_date=d.date
             ORDER BY d.date DESC""")
         archived_n = int(one(con, "SELECT COUNT(*) n FROM archived_days")["n"])
@@ -629,13 +633,16 @@ def players():
         available_dates = all_dates(con)                      # новые сверху, без архива
         dates = available_dates[:period] if period else available_dates
         date_set = set(dates)
-        # игрок × день: гранаты (максимум за день) и факт участия (отчёт или таб)
+        # игрок × день: гранаты (максимум за день) и факт участия (отчёт или таб);
+        # в дне с табом отчёт считается только у игроков с таба
+        player_store.prepare_tab_filter(con)
         attendance: dict[int, dict[str, int]] = {}
-        for r in q(con, """
+        for r in q(con, f"""
                 SELECT player_id, match_date, MAX(g) grenades FROM (
                     SELECT k.player_id player_id, r.match_date match_date, k.total_grenades g
                     FROM kv_daily_players k JOIN kv_daily_reports r ON r.id=k.report_id
                     WHERE k.player_id IS NOT NULL
+                      AND {player_store.played_filter('r.match_date', 'k.player_id')}
                     UNION ALL
                     SELECT sp.player_id, s.match_date, NULL
                     FROM scan_players sp JOIN scans s ON s.id=sp.scan_id
@@ -765,7 +772,9 @@ def player(player_id: int):
                            AND NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=s.match_date)
                          ORDER BY s.match_date DESC, s.stage, s.id""",
                  (player_id,))
-        days = q(con, """SELECT r.match_date date, k.total_grenades total,
+        # дни, где у игрока есть отчёт, но его нет на табе этого дня, в историю не попадают
+        player_store.prepare_tab_filter(con)
+        days = q(con, f"""SELECT r.match_date date, k.total_grenades total,
                                 k.voice_seconds voice, k.attended attended,
                                 GROUP_CONCAT(g.stage_no||':'||g.grenades) stages
                          FROM kv_daily_players k
@@ -774,13 +783,15 @@ def player(player_id: int):
                            ON g.report_id=k.report_id AND g.row_no=k.row_no
                          WHERE k.player_id=?
                            AND NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=r.match_date)
+                           AND {player_store.played_filter('r.match_date', 'k.player_id')}
                          GROUP BY r.match_date, k.report_id, k.row_no
                          ORDER BY r.match_date DESC""", (player_id,))
-        snaps = q(con, """SELECT match_date date, GROUP_CONCAT(stat_key||'='||value) snap
+        snaps = q(con, f"""SELECT match_date date, GROUP_CONCAT(stat_key||'='||value) snap
                           FROM grenade_session_stats WHERE player_id=?
                           AND match_date IS NOT NULL
                           AND NOT EXISTS (SELECT 1 FROM archived_days _a
                                           WHERE _a.match_date=grenade_session_stats.match_date)
+                          AND {player_store.played_filter('grenade_session_stats.match_date', 'grenade_session_stats.player_id')}
                           GROUP BY match_date ORDER BY match_date DESC""", (player_id,))
     max_stage = 0
     for r in days:
@@ -895,6 +906,13 @@ def day(date: str):
         dates = all_dates(con)
         archived = one(con, "SELECT archived_at FROM archived_days WHERE match_date=?", (date,))
     tab_sum = _tab_totals(scans)
+    # День с табом: играли только те, кто на табе. Остальные из отчёта (гранаты/войс на весь состав)
+    # в таблицу и итоги дня не попадают — они лежат свёрнутым списком «Не в табе» внизу страницы.
+    # Дни без таба (или с табом, где ни один ник не опознан) показываются целиком, как раньше.
+    skipped_rows: list[dict[str, Any]] = []
+    if tab_sum:
+        skipped_rows = [k for k in krows if k["player_id"] not in tab_sum]
+        krows = [k for k in krows if k["player_id"] in tab_sum]
     # A player may exist in a screenshot but be absent from the grenade/voice report
     # (substitution, stale roster, or partial import). Keep those combat stats visible.
     report_player_ids = {k["player_id"] for k in krows if k["player_id"] is not None}
@@ -999,7 +1017,9 @@ def day(date: str):
             "<tr><td colspan='7' style='text-align:left'>"
             f"<button class='danger wide' name='__del_scan' value='{s['id']}' "
             f"formaction='{save_url}' data-confirm='Удалить весь таб?'"
-            ">✕ таб</button> <span class='dim'>"
+            ">✕ таб</button> "
+            f"<a class='button' href='{url_for('day_relink', date=date, scan=s['id'])}' "
+            "title='Перепривязать ники только этого таба к игрокам'>↻ ники</a> <span class='dim'>"
             + " · ".join(filter(None, [
                 f"этап {stage_label(s['stage'])}" if s["stage"] else "без этапа",
                 esc(s["map"] or ""),
@@ -1022,7 +1042,12 @@ def day(date: str):
             "</tr>"
             for r in s["players"])
         scan_tables.append(head + rows)
-    tabs_details = (
+    relink_bar = (
+        "<p class='actions' style='margin:14px 0 4px'>"
+        f"<a class='button' href='{url_for('day_relink', date=date)}' "
+        "title='Заново сопоставить ники всех табов дня с игроками (сначала предпросмотр, можно вернуть)'>"
+        "↻ Перепривязать ники табов</a></p>" if scans else "")
+    tabs_details = relink_bar + (
         "<details" + (" open" if len(scans) == 1 else "") + ">"
         f"<summary>Исходные табы ({len(scans)}) · найдено {scan_player_count - unmatched_count}/{scan_player_count}"
         + (f" · не найдено {unmatched_count}" if unmatched_count else " · все ники найдены")
@@ -1031,6 +1056,28 @@ def day(date: str):
         "<th>У</th><th>С</th><th>П</th><th>Счёт</th></tr></thead>"
         f"<tbody>{''.join(scan_tables)}</tbody></table></div></details>"
         if scans else "<p class='hint'>Табов за этот день нет.</p>")
+
+    # ── не в табе: не играли, в статистику не входят (данные не стёрты) ─────
+    skipped_block = ""
+    if skipped_rows:
+        notes = ""
+        if report and len(scans) < int(report["stage_count"]):
+            notes += (f"<p class='hint flag'>⚠ Загружено табов: {len(scans)} из {report['stage_count']} этапов. "
+                      "Кто не попал ни на один загруженный таб, считается не игравшим.</p>")
+        if unmatched_count:
+            notes += (f"<p class='hint flag'>⚠ В табах {unmatched_count} ников не найдено в базе. Если кто-то из "
+                      "списка ниже играл, добавьте его ник в алиасы — игрок сразу вернётся в день.</p>")
+        skipped_trs = "".join(
+            "<tr><td class='nick'>"
+            + (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(k['canonical_nick'] or k['raw_nick'])}</a>"
+               if k["player_id"] else esc(k["canonical_nick"] or k["raw_nick"] or "—"))
+            + f"</td><td>{k['total_grenades'] or 0}</td><td>{fmt_sec(k['voice_seconds'] or 0)}</td></tr>"
+            for k in sorted(skipped_rows, key=lambda k: str(k["canonical_nick"] or k["raw_nick"] or "").casefold()))
+        skipped_block = (
+            f"<details class='skipped'><summary>Не в табе ({len(skipped_rows)}) · не играли, "
+            "в статистику не входят</summary>" + notes
+            + "<div class='scroll'><table><thead><tr><th class='nick'>Ник</th><th>Гранаты</th><th>Войс</th></tr></thead>"
+            f"<tbody>{skipped_trs}</tbody></table></div></details>")
 
     # ── навигация по дням ──────────────────────────────────────────────────
     pos = dates.index(date) if date in dates else -1
@@ -1056,6 +1103,16 @@ def day(date: str):
         banner = "<div class='banner ok-pill'>🗑 Удалено</div>"
     elif request.args.get("restored"):
         banner = "<div class='banner ok-pill'>↩ День возвращён из архива</div>"
+    elif request.args.get("relinked") is not None:
+        moved = _to_int(request.args.get("relinked")) or 0
+        banner = (f"<div class='banner ok-pill'>↻ Перепривязано строк: {moved} · "
+                  f"<a href='{url_for('day_relink', date=date)}'>история / вернуть</a></div>"
+                  if moved else "<div class='banner' style='background:var(--soft);color:var(--dim)'>"
+                                "Ничего не выбрано — изменений нет</div>")
+    elif request.args.get("unrelinked") is not None:
+        banner = (f"<div class='banner ok-pill'>↩ Возвращено строк: {_to_int(request.args.get('unrelinked')) or 0}"
+                  + (f" · пропущено (с тех пор менялись): {_to_int(request.args.get('skipped'))}"
+                     if _to_int(request.args.get("skipped")) else "") + "</div>")
     if archived:
         banner += ("<div class='banner' style='background:var(--soft);color:var(--dim)'>"
                    "🗄 День в архиве: не входит в список дней, итоги и EFF игроков</div>")
@@ -1072,7 +1129,9 @@ def day(date: str):
 
     chips = ("<div class='chips'>"
              f"<span class='chip'>Игроков: {len(krows)}</span>"
-             f"<span class='chip'>Гранат: {sum(k['total_grenades'] or 0 for k in krows)}"
+             + (f"<span class='chip' title='Есть в отчёте дня, но нет на табе: не играли, в итоги не входят'>"
+                f"Не в табе: {len(skipped_rows)}</span>" if skipped_rows else "")
+             + f"<span class='chip'>Гранат: {sum(k['total_grenades'] or 0 for k in krows)}"
              "</span>"
              "<span class='chip'>Войс: "
              + fmt_sec(sum(k["voice_seconds"] or 0 for k in krows)) + "</span></div>")
@@ -1131,7 +1190,8 @@ document.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&'sSы
             f"<form class='day-edit' method='post' action='{save_url}'>"
             f"<input type='hidden' name='mode' value='{mode}'>"
             + kv_block + tabs_details
-            + "<button class='save float' title='Ctrl+S'>💾 Сохранить</button></form>" + guard_script)
+            + "<button class='save float' title='Ctrl+S'>💾 Сохранить</button></form>"
+            + skipped_block + guard_script)
     return render(date, body)
 
 
@@ -1159,21 +1219,123 @@ def day_unarchive(date: str):
     return redirect(url_for("day", date=date, restored=1), code=303)
 
 
+@app.get("/day/<date>/relink")
+def day_relink(date: str):
+    """Предпросмотр перепривязки ников табов дня (или одного таба) к игрокам. Ничего не меняет."""
+    date = _valid_day(date)
+    scan_id = _to_int(request.args.get("scan"))
+    with closing(player_store.connect(DB_PATH)) as con:
+        scans = q(con, """SELECT id, stage, map, scanned_at FROM scans
+                          WHERE match_date=? ORDER BY COALESCE(stage,99), id""", (date,))
+        if scan_id is not None and not any(s["id"] == scan_id for s in scans):
+            abort(404)
+        plan = player_store.plan_scan_relink(con, date, scan_id)
+        history = player_store.relink_history(con, date)
+    if scan_id is not None:
+        s = next(s for s in scans if s["id"] == scan_id)
+        scope = "таб: " + " · ".join(filter(None, [
+            f"этап {stage_label(s['stage'])}" if s["stage"] else "без этапа",
+            esc(s["map"] or ""), esc((s["scanned_at"] or "")[:16])]))
+    else:
+        scope = f"все табы дня ({len(scans)})"
+    action = url_for("day_relink_apply", date=date)
+
+    group_rows = "".join(
+        "<tr>"
+        f"<td><input type='checkbox' name='pick' value='{esc(g['key'])}'{'' if g['conflict'] else ' checked'}></td>"
+        f"<td class='nick'>{esc(g['nick'])}</td>"
+        f"<td>{esc(g['old_nick']) if g['old_nick'] else '<span class=dim>не привязан</span>'}</td>"
+        f"<td><b>→ {esc(g['new_nick'])}</b></td><td>{len(g['rows'])}</td>"
+        "<td class='nick dim'>"
+        + (f"<span class='flag'>конфликт:</span> ник ещё записан алиасом у {esc(', '.join(g['also']))}; "
+           "по основному нику отдаём игроку с таким именем. Галочка снята — включите, если это верно"
+           if g["conflict"] else "")
+        + "</td></tr>"
+        for g in plan["groups"])
+    changes = sum(len(g["rows"]) for g in plan["groups"])
+    kept_rows = sum(k["rows"] for k in plan["kept"])
+    if plan["groups"]:
+        form = (
+            f"<form method='post' action='{action}' data-confirm='Перепривязать выбранные ники? Это можно вернуть кнопкой «Вернуть».'>"
+            + (f"<input type='hidden' name='scan' value='{scan_id}'>" if scan_id is not None else "")
+            + "<div class='scroll'><table><thead><tr><th></th><th class='nick'>Ник на табе</th><th>Сейчас</th>"
+              "<th>Станет</th><th>Строк</th><th class='nick'>Заметка</th></tr></thead>"
+              f"<tbody>{group_rows}</tbody></table></div>"
+            "<p class='actions' style='margin-top:10px'><button class='save'>↻ Применить выбранное</button>"
+            f"<a class='button' href='{url_for('day', date=date)}'>Отмена</a></p></form>")
+    else:
+        form = ("<p class='hint'>Менять нечего: все ники, которые можно определить однозначно, "
+                f"уже привязаны правильно. <a href='{url_for('day', date=date)}'>← к дню</a></p>")
+    kept_block = ""
+    if plan["kept"]:
+        kept_block = (
+            f"<details><summary>Останутся как есть ({kept_rows} строк): ник не опознан или у него несколько владельцев</summary>"
+            "<div class='scroll'><table><thead><tr><th class='nick'>Ник на табе</th><th>Строк</th>"
+            "<th class='nick'>Почему</th></tr></thead><tbody>"
+            + "".join(f"<tr><td class='nick'>{esc(k['nick'])}</td><td>{k['rows']}</td>"
+                      f"<td class='nick dim'>{esc(k['reason'])}</td></tr>" for k in plan["kept"])
+            + "</tbody></table></div></details>")
+    hist_block = ""
+    if history:
+        undo = url_for("day_relink_undo", date=date)
+        hist_block = (
+            "<h2>История перепривязок дня</h2><div class='scroll'><table><thead><tr><th>Когда (МСК)</th>"
+            "<th class='nick'>Ники</th><th>Строк</th><th></th></tr></thead><tbody>"
+            + "".join(
+                f"<tr><td>{esc(h['at'])}</td><td class='nick'>{esc(h['nicks'])}</td><td>{h['rows']}</td><td>"
+                + ("<span class='dim'>возвращено</span>" if h["undone"] else
+                   f"<form method='post' action='{undo}' data-confirm='Вернуть прежнюю привязку этих строк?' style='margin:0'>"
+                   f"<input type='hidden' name='batch' value='{esc(h['batch'])}'>"
+                   "<button>↩ Вернуть</button></form>")
+                + "</td></tr>" for h in history)
+            + "</tbody></table></div>")
+    body = (
+        f"<a class='back' href='{url_for('day', date=date)}'>← {fmt_date_ru(date)}</a>"
+        f"<div class='pagehead'><div><h1>Перепривязка ников</h1>"
+        f"<div class='subtitle'>{fmt_date_ru(date)} · {scope}</div></div></div>"
+        "<p class='hint'>Меняется только то, к какому игроку привязана строка таба. Цифры, отчёты, войс и составы "
+        "не трогаются, ничего не удаляется и не сливается. Применяйте к дням, когда ник уже принадлежал новому "
+        "игроку: в более старых днях тот же ник мог быть другим человеком. Всё можно вернуть.</p>"
+        f"<div class='chips'><span class='chip'>Строк в табах: {plan['total']}</span>"
+        f"<span class='chip'>Уже верно: {plan['unchanged']}</span>"
+        f"<span class='chip'>Изменится: {changes}</span>"
+        f"<span class='chip'>Останутся как есть: {kept_rows}</span></div>"
+        + form + kept_block + hist_block)
+    return render(f"Перепривязка · {date}", body)
+
+
+@app.post("/day/<date>/relink")
+def day_relink_apply(date: str):
+    date = _valid_day(date)
+    scan_id = _to_int(request.form.get("scan"))
+    _batch, moved = player_store.apply_scan_relink(DB_PATH, date, set(request.form.getlist("pick")), scan_id)
+    return redirect(url_for("day", date=date, relinked=moved), code=303)
+
+
+@app.post("/day/<date>/relink/undo")
+def day_relink_undo(date: str):
+    date = _valid_day(date)
+    restored, skipped = player_store.undo_scan_relink(DB_PATH, request.form.get("batch", ""))
+    return redirect(url_for("day", date=date, unrelinked=restored, skipped=skipped), code=303)
+
+
 @app.get("/archive")
 def archive():
     with closing(player_store.connect(DB_PATH)) as con:
-        rows = q(con, """
+        player_store.prepare_tab_filter(con)
+        played = player_store.played_filter("r.match_date", "p.player_id")
+        rows = q(con, f"""
             SELECT a.match_date date, a.archived_at,
                    (SELECT COUNT(*) FROM scans s WHERE s.match_date=a.match_date) tabs,
                    (SELECT COUNT(DISTINCT p.player_id) FROM kv_daily_reports r
                       JOIN kv_daily_players p ON p.report_id=r.id
-                      WHERE r.match_date=a.match_date) players,
+                      WHERE r.match_date=a.match_date AND {played}) players,
                    (SELECT SUM(p.total_grenades) FROM kv_daily_reports r
                       JOIN kv_daily_players p ON p.report_id=r.id
-                      WHERE r.match_date=a.match_date) grenades,
+                      WHERE r.match_date=a.match_date AND {played}) grenades,
                    (SELECT SUM(p.voice_seconds) FROM kv_daily_reports r
                       JOIN kv_daily_players p ON p.report_id=r.id
-                      WHERE r.match_date=a.match_date) voice
+                      WHERE r.match_date=a.match_date AND {played}) voice
             FROM archived_days a ORDER BY a.match_date DESC""")
     trs = "".join(
         f"<tr><td class='nick'><a href='{url_for('day', date=r['date'])}'>{fmt_date_ru(r['date'])}</a></td>"

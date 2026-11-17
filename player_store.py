@@ -7,8 +7,9 @@ import re
 import shutil
 import sqlite3
 import unicodedata
+import uuid
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -590,6 +591,225 @@ def _reconcile_unicode_identities(con: sqlite3.Connection) -> None:
 def not_archived(column: str) -> str:
     """SQL-условие «этот день КВ не в архиве» (NULL-безопасно, колонка — например s.match_date)."""
     return f"NOT EXISTS (SELECT 1 FROM archived_days _arch WHERE _arch.match_date={column})"
+
+
+# ---------------------------------------------------------------------------
+# Кто «реально играл» в день КВ — по табу.
+# Таб привязывается к дню уже после КВ, поэтому отчёт гранат/войса (kv_daily_*) всегда пишется
+# на весь состав. Как только к дню привязан таб, в статистику этого дня идут только игроки с таба:
+# остальных (не играли) в статистике нет — ни в днях, ни в гранатах, ни в войсе, ни в EFF.
+# Их строки в базе остаются нетронутыми (это и есть «архив»): удалили/поправили таб, добавили
+# игроку алиас — и он сразу возвращается. Дни без таба считаются как раньше, по всему отчёту.
+# ---------------------------------------------------------------------------
+def tab_roster_by_day(con: sqlite3.Connection, match_date: str | None = None) -> dict[str, set[int]]:
+    """match_date → id игроков, найденных на табах этого дня (по одному дню, если дата задана).
+
+    Строки таба без привязки (player_id IS NULL) сверяются по нику так же, как на странице дня
+    в админ-панели. Дни, где ни один ник таба не опознан, в результат не попадают: такой «пустой»
+    таб не должен скрывать весь состав.
+    """
+    sql = """SELECT s.match_date AS day, sp.player_id AS pid, sp.nick AS nick
+             FROM scan_players sp JOIN scans s ON s.id=sp.scan_id
+             WHERE s.match_date IS NOT NULL"""
+    params: tuple[Any, ...] = ()
+    if match_date is not None:
+        sql += " AND s.match_date=?"
+        params = (match_date,)
+    roster: dict[str, set[int]] = {}
+    resolved: dict[str, int | None] = {}
+    for row in con.execute(sql, params).fetchall():
+        pid = row["pid"]
+        if pid is None:
+            nick = str(row["nick"] or "")
+            if nick not in resolved:
+                resolved[nick] = resolve_player_id_in_connection(con, nick)
+            pid = resolved[nick]
+        if pid is not None:
+            roster.setdefault(str(row["day"]), set()).add(int(pid))
+    return roster
+
+
+def prepare_tab_filter(con: sqlite3.Connection) -> None:
+    """Заполнить на этом соединении временную таблицу kv_tab_roster(match_date, player_id).
+
+    Нужна перед любым SQL с played_filter(); таблица живёт только на этом соединении.
+    """
+    con.execute("CREATE TEMP TABLE IF NOT EXISTS kv_tab_roster("
+                "match_date TEXT NOT NULL, player_id INTEGER NOT NULL, PRIMARY KEY(match_date, player_id))")
+    con.execute("DELETE FROM kv_tab_roster")
+    con.executemany(
+        "INSERT INTO kv_tab_roster(match_date, player_id) VALUES(?,?)",
+        [(day, pid) for day, ids in tab_roster_by_day(con).items() for pid in sorted(ids)],
+    )
+
+
+def played_filter(date_col: str, player_col: str) -> str:
+    """SQL-условие «игрок играл в этот день»: у дня нет таба или игрок есть на табе.
+
+    Строки kv_daily_players без player_id при наличии таба считаются не игравшими.
+    Требует prepare_tab_filter(con) на том же соединении.
+    """
+    return (f"(NOT EXISTS (SELECT 1 FROM kv_tab_roster _tr0 WHERE _tr0.match_date={date_col}) "
+            f"OR EXISTS (SELECT 1 FROM kv_tab_roster _tr1 "
+            f"WHERE _tr1.match_date={date_col} AND _tr1.player_id={player_col}))")
+
+
+# ---------------------------------------------------------------------------
+# Перепривязка строк табов к игрокам.
+# Игрок у строки таба выбирается один раз — при загрузке скриншота (по нику). Если ник потом сменил
+# владельца (старый игрок сел на другой ник, а старым ником стал играть новый человек), уже сохранённые
+# табы остаются у прежнего игрока. Здесь — ручная перепривязка ОДНОГО дня (или одного таба):
+#   · меняется только scan_players.player_id; цифры таба, отчёты, войс, составы не трогаются;
+#   · ничего не сливается и не удаляется; другие дни не затрагиваются;
+#   · меняются только однозначные совпадения ника (точный ник/алиас); нечёткие и неопознанные строки остаются;
+#   · каждая смена пишется в журнал scan_relink_log, пачку можно откатить.
+# ---------------------------------------------------------------------------
+def _ensure_relink_log(con: sqlite3.Connection) -> None:
+    con.execute("""CREATE TABLE IF NOT EXISTS scan_relink_log(
+        id INTEGER PRIMARY KEY, batch TEXT NOT NULL, scan_player_id INTEGER NOT NULL,
+        old_player_id INTEGER, new_player_id INTEGER NOT NULL,
+        match_date TEXT NOT NULL, nick TEXT NOT NULL,
+        created_at TEXT NOT NULL, undone_at TEXT)""")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_relink_log_batch ON scan_relink_log(batch)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_relink_log_day ON scan_relink_log(match_date)")
+
+
+def _now_msk() -> str:
+    return datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def plan_scan_relink(con: sqlite3.Connection, match_date: str, scan_id: int | None = None) -> dict[str, Any]:
+    """Что изменится при перепривязке табов дня (или одного таба). Ничего не пишет.
+
+    Ник строки сверяется с игроками ТОЧНО (основной ник или алиас, без нечёткого поиска):
+      · один владелец            → строка идёт к нему;
+      · основной ник у одного, а такой же алиас ещё у других → отдаём основному (conflict=True);
+      · иначе (ника нет / владельцев несколько) → строка остаётся как есть.
+    Результат: groups (одна группа = один ник «было → станет»), unchanged (уже верно), kept (оставлены).
+    """
+    day = parse_match_date(match_date)
+    sql = """SELECT sp.id, sp.nick, sp.player_id FROM scan_players sp
+             JOIN scans s ON s.id=sp.scan_id WHERE s.match_date=?"""
+    params: list[Any] = [day]
+    if scan_id is not None:
+        sql += " AND s.id=?"
+        params.append(int(scan_id))
+    rows = con.execute(sql + " ORDER BY s.id, sp.place", tuple(params)).fetchall()
+
+    names: dict[int, str] = {}
+    canon: dict[str, set[int]] = {}
+    alias: dict[str, set[int]] = {}
+    for row in con.execute("SELECT id,canonical_nick FROM players"):
+        names[int(row["id"])] = str(row["canonical_nick"])
+        canon.setdefault(_norm(row["canonical_nick"]), set()).add(int(row["id"]))
+    for row in con.execute("SELECT alias,player_id FROM player_aliases"):
+        alias.setdefault(_norm(row["alias"]), set()).add(int(row["player_id"]))
+
+    groups: dict[str, dict[str, Any]] = {}
+    kept: dict[str, dict[str, Any]] = {}
+    unchanged = 0
+    for row in rows:
+        key = _norm(str(row["nick"]))
+        owners_c, owners_a = canon.get(key, set()), alias.get(key, set())
+        owners = owners_c | owners_a
+        conflict = False
+        if len(owners) == 1:
+            target: int | None = next(iter(owners))
+        elif len(owners) > 1 and len(owners_c) == 1:
+            target, conflict = next(iter(owners_c)), True
+        else:
+            target = None
+        if target is None:
+            k = kept.setdefault(key, {"nick": str(row["nick"]), "rows": 0,
+                                      "reason": "ник принадлежит нескольким игрокам" if owners
+                                                else "ника нет в базе"})
+            k["rows"] += 1
+            continue
+        old = row["player_id"]
+        if old is not None and int(old) == target:
+            unchanged += 1
+            continue
+        gkey = f"{int(old) if old is not None else 0}-{target}-{hashlib.sha1(key.encode()).hexdigest()[:10]}"
+        g = groups.setdefault(gkey, {
+            "key": gkey, "nick": str(row["nick"]),
+            "old_id": int(old) if old is not None else None,
+            "old_nick": names.get(int(old)) if old is not None else None,
+            "new_id": target, "new_nick": names.get(target, f"#{target}"),
+            "conflict": conflict,
+            "also": sorted(names.get(i, f"#{i}") for i in owners if i != target) if conflict else [],
+            "rows": [],
+        })
+        g["rows"].append(int(row["id"]))
+    return {"date": day, "scan_id": scan_id, "total": len(rows), "unchanged": unchanged,
+            "groups": sorted(groups.values(), key=lambda g: (g["conflict"], g["nick"].casefold())),
+            "kept": sorted(kept.values(), key=lambda k: k["nick"].casefold())}
+
+
+def apply_scan_relink(db_path: Path | str, match_date: str, selected: set[str] | list[str],
+                      scan_id: int | None = None) -> tuple[str, int]:
+    """Применить выбранные группы плана (по их key). Возвращает (номер пачки, сколько строк перепривязано).
+
+    План строится заново внутри транзакции, поэтому устаревшая страница предпросмотра ничего не испортит;
+    строка меняется, только если она всё ещё привязана к тому же игроку, что и в плане.
+    """
+    chosen = {str(x) for x in selected}
+    ensure_schema(db_path)
+    with closing(connect(db_path)) as con:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            _ensure_relink_log(con)
+            plan = plan_scan_relink(con, match_date, scan_id)
+            batch = uuid.uuid4().hex[:12]
+            at, moved = _now_msk(), 0
+            for g in plan["groups"]:
+                if g["key"] not in chosen:
+                    continue
+                for row_id in g["rows"]:
+                    cur = con.execute("UPDATE scan_players SET player_id=? WHERE id=? AND player_id IS ?",
+                                      (g["new_id"], row_id, g["old_id"]))
+                    if cur.rowcount:
+                        con.execute("""INSERT INTO scan_relink_log(batch,scan_player_id,old_player_id,new_player_id,
+                                       match_date,nick,created_at) VALUES(?,?,?,?,?,?,?)""",
+                                    (batch, row_id, g["old_id"], g["new_id"], plan["date"], g["nick"], at))
+                        moved += 1
+            con.commit()
+            return (batch if moved else ""), moved
+        except Exception:
+            con.rollback()
+            raise
+
+
+def undo_scan_relink(db_path: Path | str, batch: str) -> tuple[int, int]:
+    """Откатить пачку: (возвращено строк, пропущено). Пропускаются строки, которые с тех пор менялись или удалены."""
+    ensure_schema(db_path)
+    with closing(connect(db_path)) as con:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            _ensure_relink_log(con)
+            restored = skipped = 0
+            for row in con.execute("""SELECT id,scan_player_id,old_player_id,new_player_id FROM scan_relink_log
+                                      WHERE batch=? AND undone_at IS NULL ORDER BY id""", (str(batch),)).fetchall():
+                cur = con.execute("UPDATE scan_players SET player_id=? WHERE id=? AND player_id IS ?",
+                                  (row["old_player_id"], row["scan_player_id"], row["new_player_id"]))
+                restored += 1 if cur.rowcount else 0
+                skipped += 0 if cur.rowcount else 1
+            con.execute("UPDATE scan_relink_log SET undone_at=? WHERE batch=? AND undone_at IS NULL",
+                        (_now_msk(), str(batch)))
+            con.commit()
+            return restored, skipped
+        except Exception:
+            con.rollback()
+            raise
+
+
+def relink_history(con: sqlite3.Connection, match_date: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Последние пачки перепривязки дня: batch, at, rows, nicks, undone."""
+    _ensure_relink_log(con)
+    return [dict(r) for r in con.execute(
+        """SELECT batch, MIN(created_at) AS at, COUNT(*) AS rows,
+                  GROUP_CONCAT(DISTINCT nick) AS nicks, MIN(undone_at IS NOT NULL) AS undone
+           FROM scan_relink_log WHERE match_date=? GROUP BY batch ORDER BY MIN(id) DESC LIMIT ?""",
+        (parse_match_date(match_date), int(limit)))]
 
 
 def connect(db_path: Path | str) -> sqlite3.Connection:
@@ -2260,11 +2480,16 @@ def collect_kv_daily_stats(db_path, date_from=None, date_to=None, guild_id=None)
             report_filters.append("r.guild_id=?")
             report_params.append(int(guild_id))
         report_where = " WHERE " + " AND ".join(report_filters) if report_filters else ""
-        report_sql = """SELECT r.match_date,p.player_id,p.raw_nick,p.squad_label,p.total_grenades,p.voice_seconds
-                        FROM kv_daily_reports r
-                        JOIN kv_daily_players p ON p.report_id=r.id""" + report_where + " ORDER BY r.match_date,r.id"
+        # день с табом: гранаты и войс считаются только у игроков с таба (см. tab_roster_by_day)
+        prepare_tab_filter(con)
+        report_sql = ("SELECT r.match_date,p.player_id,p.raw_nick,p.squad_label,p.total_grenades,p.voice_seconds,"
+                      f"CASE WHEN {played_filter('r.match_date', 'p.player_id')} THEN 1 ELSE 0 END AS played "
+                      """FROM kv_daily_reports r
+                        JOIN kv_daily_players p ON p.report_id=r.id""" + report_where + " ORDER BY r.match_date,r.id")
         for row in con.execute(report_sql, report_params):
             completed_dates.add(str(row["match_date"]))
+            if not row["played"]:
+                continue
             add(row["player_id"], "grenades", row["total_grenades"])
             add(row["player_id"], "voice_seconds", row["voice_seconds"])
             if row["player_id"] is not None:
