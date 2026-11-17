@@ -447,49 +447,104 @@ def index():
 
 # Веса EFF. Войс в EFF не входит. Гранаты — самая «шумная» часть (их часто не успевают
 # отсканировать), поэтому их вес снижен; остальное — бой по табу.
-EFF_WEIGHTS = {"kills_per_tab": 0.30, "kda": 0.30, "score_per_tab": 0.25, "grenades": 0.15}
+EFF_WEIGHTS = {"kills": 0.30, "kda": 0.30, "score": 0.25, "grenades": 0.15}
+COMBAT_KEYS = ("kills", "kda", "score")
+# Меньше стольких игроков сравнивать не с кем: таб (или гранаты дня) в EFF не участвует.
+MIN_COMPARE = 2
+# В базе нули гранат бывают «пустышками»: раньше сохранение страницы дня превращало
+# неотсканированные гранаты (NULL) в 0. Поэтому 0 считается «данных нет» и игрока не штрафует.
+# Поставь False, если нужно, чтобы реальный ноль снижал EFF.
+GRENADES_ZERO_IS_MISSING = True
 
 
-def tab_metrics(tabs: Any, kills: Any, deaths: Any, assists: Any, score: Any,
-                grenades: Any = None) -> dict[str, float | None]:
-    """Показатели игрока за день из сумм по его табам (+ гранаты, если они известны)."""
-    n = max(int(tabs or 0), 1)
+def percentile_ranks(values: dict[Any, float]) -> dict[Any, float]:
+    """Место каждого среди остальных, шкала 0–100: лучший 100, худший 0, при равенстве — среднее.
+
+    Ранг, а не min–max: один игрок с рекордом не прижимает всех остальных к нулю.
+    """
+    n = len(values)
+    if n < 2:
+        return {key: 50.0 for key in values}
+    items = list(values.values())
+    ranks: dict[Any, float] = {}
+    for key, value in values.items():
+        less = sum(1 for other in items if other < value)
+        equal = sum(1 for other in items if other == value)
+        ranks[key] = (less + (equal - 1) / 2) / (n - 1) * 100.0
+    return ranks
+
+
+def tab_metrics(kills: Any, deaths: Any, assists: Any, score: Any) -> dict[str, float | None]:
+    """Показатели одной строки одного таба."""
     k, d, a = int(kills or 0), int(deaths or 0), int(assists or 0)
     return {
-        "kills_per_tab": k / n,
+        "kills": float(k),
         "kda": ((k + a) / d) if d else float(k + a),
-        "score_per_tab": float(score or 0) / n,
-        "grenades": None if grenades is None else float(grenades),
+        "score": None if score is None else float(score),
     }
 
 
-def day_efficiency(stats: dict[int, dict[str, float | None]]) -> dict[int, float]:
-    """EFF каждого игрока внутри одного дня КВ, шкала 0–100.
+def tab_efficiency(entries: list[tuple[int, dict[str, float | None]]]) -> list[float | None]:
+    """Боевой EFF каждой строки ОДНОГО таба относительно остальных в этом же табе (0–100).
 
-    Каждый показатель нормируется по min–max среди игроков этого дня. Игрок получает EFF,
-    если у него есть таб. Если гранат нет (не отсканировали, не попал в отчёт), EFF считается
-    по табу, а веса остальных показателей пересчитываются. Гранаты участвуют, только когда за
-    день есть из чего сравнивать: у двух и более игроков и не у всех одно и то же число
-    (иначе, например, единственный отсканированный получил бы условные 50 и просел).
+    Условия у всех в табе одинаковые (карта, соперник), поэтому сравнивать честно только так.
+    Если в табе меньше MIN_COMPARE игроков — None. Метрика без значения (например, не
+    распознан счёт) пропускается, веса остальных пересчитываются.
     """
-    bounds: dict[str, tuple[float, float]] = {}
-    for key in EFF_WEIGHTS:
-        values = [v[key] for v in stats.values() if v.get(key) is not None]
-        if not values or (key == "grenades" and max(values) == min(values)):
-            continue
-        bounds[key] = (min(values), max(values))
-    result: dict[int, float] = {}
-    for player_id, values in stats.items():
+    if len(entries) < MIN_COMPARE:
+        return [None] * len(entries)
+    ranked: dict[str, dict[int, float]] = {}
+    for key in COMBAT_KEYS:
+        values = {i: m[key] for i, (_, m) in enumerate(entries) if m.get(key) is not None}
+        if len(values) >= MIN_COMPARE:
+            ranked[key] = percentile_ranks(values)
+    result: list[float | None] = []
+    for i in range(len(entries)):
         total = weight_sum = 0.0
-        for key, (low, high) in bounds.items():
-            value = values.get(key)
-            if value is None:
-                continue
-            normalized = 50.0 if high == low else (value - low) / (high - low) * 100.0
-            total += normalized * EFF_WEIGHTS[key]
-            weight_sum += EFF_WEIGHTS[key]
-        if weight_sum:
-            result[int(player_id)] = total / weight_sum
+        for key, ranks in ranked.items():
+            if i in ranks:
+                total += ranks[i] * EFF_WEIGHTS[key]
+                weight_sum += EFF_WEIGHTS[key]
+        result.append(total / weight_sum if weight_sum else None)
+    return result
+
+
+def day_efficiency(tabs: list[list[tuple[int, dict[str, float | None]]]],
+                   grenades: dict[int, Any] | None = None) -> dict[int, float]:
+    """EFF каждого игрока за один день КВ, шкала 0–100.
+
+    tabs — табы дня; таб — список (player_id, tab_metrics(...)) по его строкам.
+    grenades — player_id → гранат за день; None / нет в словаре — не отсканировано.
+
+    Бой: каждый таб сравнивается отдельно (см. tab_efficiency), у игрока берётся среднее по
+    его табам. Гранаты: место по «гранатам на таб» среди игроков дня, у которых они есть.
+    Нет гранат (или 0, см. GRENADES_ZERO_IS_MISSING), либо сравнивать не с кем — игрок
+    считается только по табу, гранаты его не штрафуют.
+    """
+    combat: dict[int, list[float]] = {}
+    tab_count: dict[int, int] = {}
+    for entries in tabs:
+        for (player_id, _), value in zip(entries, tab_efficiency(entries)):
+            tab_count[int(player_id)] = tab_count.get(int(player_id), 0) + 1
+            if value is not None:
+                combat.setdefault(int(player_id), []).append(value)
+    rates: dict[int, float] = {}
+    for player_id, total in (grenades or {}).items():
+        player_id = int(player_id)
+        if player_id not in combat or total is None:
+            continue
+        if total == 0 and GRENADES_ZERO_IS_MISSING:
+            continue
+        rates[player_id] = float(total) / tab_count[player_id]
+    grenade_rank: dict[int, float] = {}
+    if len(rates) >= MIN_COMPARE and max(rates.values()) != min(rates.values()):
+        grenade_rank = percentile_ranks(rates)
+    weight = EFF_WEIGHTS["grenades"]
+    result: dict[int, float] = {}
+    for player_id, values in combat.items():
+        fight = sum(values) / len(values)
+        result[player_id] = (fight * (1 - weight) + grenade_rank[player_id] * weight
+                             if player_id in grenade_rank else fight)
     return result
 
 
@@ -497,23 +552,12 @@ def average_player_efficiencies(con: Any, only_dates: Any = None) -> dict[int, f
     """Средний EFF игрока по дням КВ (архивные дни не учитываются).
 
     only_dates — набор дат, по которым считать среднее (например, последние N дней КВ);
-    None — за всё время. EFF каждого дня считается по табу, гранаты — только если есть.
+    None — за всё время. EFF каждого дня считается по табам, гранаты — только если есть.
     """
     _ensure_archive_table(con)
     allowed = None if only_dates is None else {str(d) for d in only_dates}
     rows = q(con, """
-        WITH tabs AS (
-            SELECT s.match_date date, sp.player_id,
-                   COUNT(*) tabs,
-                   SUM(sp.kills) kills,
-                   SUM(sp.deaths) deaths,
-                   SUM(sp.assists) assists,
-                   COALESCE(SUM(sp.score), 0) score
-            FROM scans s
-            JOIN scan_players sp ON sp.scan_id=s.id
-            WHERE s.match_date IS NOT NULL AND sp.player_id IS NOT NULL
-            GROUP BY s.match_date, sp.player_id
-        ), grenades AS (
+        WITH grenades AS (
             SELECT r.match_date date, k.player_id,
                    MAX(k.total_grenades) grenades
             FROM kv_daily_reports r
@@ -521,24 +565,29 @@ def average_player_efficiencies(con: Any, only_dates: Any = None) -> dict[int, f
             WHERE k.player_id IS NOT NULL AND k.total_grenades IS NOT NULL
             GROUP BY r.match_date, k.player_id
         )
-        SELECT t.date, t.player_id, t.tabs, t.kills, t.deaths,
-               t.assists, t.score, g.grenades
-        FROM tabs t
-        LEFT JOIN grenades g ON g.date=t.date AND g.player_id=t.player_id
-        WHERE NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=t.date)
-        ORDER BY t.date, t.player_id
+        SELECT s.match_date date, s.id scan_id, sp.player_id,
+               sp.kills, sp.deaths, sp.assists, sp.score, g.grenades
+        FROM scans s
+        JOIN scan_players sp ON sp.scan_id=s.id
+        LEFT JOIN grenades g ON g.date=s.match_date AND g.player_id=sp.player_id
+        WHERE s.match_date IS NOT NULL AND sp.player_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=s.match_date)
+        ORDER BY s.match_date, s.id, sp.place
     """)
-    by_day: dict[str, dict[int, dict[str, float | None]]] = {}
+    tabs_by_day: dict[str, dict[int, list[tuple[int, dict[str, float | None]]]]] = {}
+    grenades_by_day: dict[str, dict[int, Any]] = {}
     for row in rows:
         date = str(row["date"])
         if allowed is not None and date not in allowed:
             continue
-        by_day.setdefault(date, {})[int(row["player_id"])] = tab_metrics(
-            row["tabs"], row["kills"], row["deaths"], row["assists"], row["score"],
-            row["grenades"])
+        player_id = int(row["player_id"])
+        tabs_by_day.setdefault(date, {}).setdefault(int(row["scan_id"]), []).append(
+            (player_id, tab_metrics(row["kills"], row["deaths"], row["assists"], row["score"])))
+        if row["grenades"] is not None:
+            grenades_by_day.setdefault(date, {})[player_id] = row["grenades"]
     samples: dict[int, list[float]] = {}
-    for stats in by_day.values():
-        for player_id, value in day_efficiency(stats).items():
+    for date, tabs in tabs_by_day.items():
+        for player_id, value in day_efficiency(list(tabs.values()), grenades_by_day.get(date)).items():
             samples.setdefault(player_id, []).append(value)
     return {player_id: round(sum(values) / len(values), 1)
             for player_id, values in samples.items()}
@@ -670,8 +719,9 @@ def players():
         bodies.append(
             f"<tbody class='squad-group'><tr class='squad-title'><td colspan='4'>{label}</td></tr>"
             f"{member_rows}</tbody>")
-    tip = ("Среднее EFF за выбранные дни КВ. Считается по табу: У/таб 30%, KDA 30%, Счёт/таб 25%, "
-           "Гранаты 15%. Если гранат нет — только по табу.")
+    tip = ("Среднее EFF за выбранные дни КВ. Каждый таб сравнивается отдельно: место среди игроков "
+           "на этом табе по убийствам 30%, KDA 30%, счёту 25%; гранаты 15% (место по гранатам на таб). "
+           "Нет гранат — считается только по табу.")
     body = ("<div class='pagehead'><div><h1>Игроки</h1>"
             f"<div class='subtitle'>{esc(_period_label(period, dates, len(available_dates)))}</div>"
             "</div><div class='actions'>"
@@ -872,7 +922,7 @@ def _day_data(con: Any, date: str):
             for r in con.execute("""SELECT stage_no, grenades FROM kv_daily_grenade_stages
                                     WHERE report_id=? AND row_no=?""",
                                   (report["id"], k["row_no"])):
-                stages[int(r["stage_no"])] = int(r["grenades"] or 0)
+                stages[int(r["stage_no"])] = None if r["grenades"] is None else int(r["grenades"])
             k["stages"] = stages
     return scans, report, krows
 
@@ -930,17 +980,16 @@ def day(date: str):
             "voice_seconds": None, "attended": None, "stages": {},
             "scan_only": True,
         })
-    # EFF считается внутри этого дня по табу; гранаты учитываются, только если они есть.
+    # EFF: каждый таб сравнивается отдельно; гранаты учитываются, только если они есть.
     grenades_by_player = {int(k["player_id"]): k["total_grenades"] for k in krows
                           if k.get("player_id") is not None and k.get("total_grenades") is not None}
-    day_eff = {
-        player_id: round(value, 1)
-        for player_id, value in day_efficiency({
-            int(player_id): tab_metrics(t["n"], t["k"], t["d"], t["a"], t["s"],
-                                        grenades_by_player.get(int(player_id)))
-            for player_id, t in tab_sum.items() if player_id is not None
-        }).items()
-    }
+    day_tabs = [
+        [(int(r["player_id"]), tab_metrics(r["kills"], r["deaths"], r["assists"], r["score"]))
+         for r in scan["players"] if r["player_id"] is not None]
+        for scan in scans
+    ]
+    day_eff = {player_id: round(value, 1)
+               for player_id, value in day_efficiency(day_tabs, grenades_by_player).items()}
 
     has_tabs = bool(scans)
     max_stage = max((max(k["stages"], default=0) for k in krows), default=0)
@@ -989,12 +1038,14 @@ def day(date: str):
                     shown = "" if val is None else val
                     gcells += (f"<td class='gcol'><input type='number' min='0' "
                                f"name='g{row_no}_{i}' value='{shown}' placeholder='·'></td>")
-                total_cell = f"<td class='total'>{k['total_grenades'] or 0}</td>"
+                total_cell = (f"<td class='total'>{k['total_grenades']}</td>" if k['total_grenades'] is not None
+                              else "<td class='total dim' title='не отсканировано'>—</td>")
             else:
                 gcells = ""
                 total_cell = (f"<td class='gcol'><input type='number' min='0' "
-                              f"name='w{row_no}' value='{k['total_grenades'] or 0}' "
-                              f"title='гранат за день (всего)'></td>")
+                              f"name='w{row_no}' placeholder='—' "
+                              f"value='{'' if k['total_grenades'] is None else k['total_grenades']}' "
+                              f"title='гранат за день (всего); пусто — не отсканировано'></td>")
             voice_cell = (f"<td><input type='text' inputmode='numeric' name='v{row_no}' "
                           f"value='{fmt_sec(k['voice_seconds'] or 0)}' title='минуты:секунды'></td>")
             action_cell = (f"<td><button class='danger' name='__del_row' value='{row_no}' "
@@ -1141,7 +1192,7 @@ def day(date: str):
                 "<th class='sortable' data-sort='number'>П</th>"
                 "<th class='sortable' data-sort='number'>Счёт</th>"
                 "<th class='sortable' data-sort='number'>KDA</th>"
-                "<th class='sortable' data-sort='number' title='EFF дня по табу: У/таб 30%, KDA 30%, Счёт/таб 25%, Гранаты 15% (нет гранат — считается по табу)'>EFF</th>"
+                "<th class='sortable' data-sort='number' title='EFF дня: каждый таб сравнивается отдельно — убийства 30%, KDA 30%, счёт 25%; гранаты 15% (нет гранат — только по табу)'>EFF</th>"
                 if has_tabs else "")
     toggle = ("<div class='seg'>" + ("<b>Всего</b>" if mode == "total" else f"<a href='{url_for('day',date=date,mode='total')}'>Всего</a>") + (f"<a href='{url_for('day',date=date,mode='stages')}'>По этапам</a>" if mode == "total" else "<b>По этапам</b>") + "</div>")
 

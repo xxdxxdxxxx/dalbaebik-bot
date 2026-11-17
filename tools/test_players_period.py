@@ -20,6 +20,12 @@ GUILD = 1
 
 
 class DayEfficiencyUnitTests(unittest.TestCase):
+    """Подробные тесты формулы — в test_admin_efficiency.py; тут только то, на что опирается страница."""
+
+    @staticmethod
+    def tab(*rows):
+        return [(pid, admin_ui.tab_metrics(*stats)) for pid, stats in rows]
+
     def test_weights_sum_to_one_and_grenades_weigh_less_than_before(self):
         self.assertAlmostEqual(sum(admin_ui.EFF_WEIGHTS.values()), 1.0)
         # раньше гранаты весили 0.20 из 0.90 (≈22%); теперь заметно меньше
@@ -27,36 +33,20 @@ class DayEfficiencyUnitTests(unittest.TestCase):
         self.assertEqual(admin_ui.EFF_WEIGHTS["grenades"], 0.15)
 
     def test_eff_exists_with_tab_only(self):
-        stats = {
-            1: admin_ui.tab_metrics(1, 10, 2, 5, 3000),
-            2: admin_ui.tab_metrics(1, 5, 5, 1, 1000),
-        }
-        eff = admin_ui.day_efficiency(stats)
+        tab = self.tab((1, (10, 2, 5, 3000)), (2, (5, 5, 1, 1000)))
+        eff = admin_ui.day_efficiency([tab])
         self.assertEqual({k: round(v, 1) for k, v in eff.items()}, {1: 100.0, 2: 0.0})
 
     def test_missing_grenades_do_not_punish_player(self):
         # p1 лучший по табу, но гранат нет; p2 хуже по табу, зато гранаты максимальные
-        stats = {
-            1: admin_ui.tab_metrics(1, 10, 2, 5, 3000),
-            2: admin_ui.tab_metrics(1, 5, 5, 1, 1000, grenades=80),
-            3: admin_ui.tab_metrics(1, 7, 3, 2, 2000, grenades=10),
-        }
-        eff = admin_ui.day_efficiency(stats)
+        tab = self.tab((1, (10, 2, 5, 3000)), (2, (5, 5, 1, 1000)), (3, (7, 3, 2, 2000)))
+        eff = admin_ui.day_efficiency([tab], {2: 80, 3: 10})
         self.assertEqual(round(eff[1], 1), 100.0)          # без гранат — чистый таб
         self.assertEqual(round(eff[2], 1), 15.0)           # 0 по табу + 100 за гранаты × 0.15
         self.assertGreater(eff[3], eff[2])
 
-    def test_grenades_ignored_when_nothing_to_compare(self):
-        for grenades in (0, 30):                           # у всех поровну / только у одного
-            stats = {
-                1: admin_ui.tab_metrics(1, 10, 2, 5, 3000, grenades=grenades),
-                2: admin_ui.tab_metrics(1, 5, 5, 1, 1000),
-            }
-            eff = admin_ui.day_efficiency(stats)
-            self.assertEqual({k: round(v, 1) for k, v in eff.items()}, {1: 100.0, 2: 0.0})
-
     def test_no_players_no_eff(self):
-        self.assertEqual(admin_ui.day_efficiency({}), {})
+        self.assertEqual(admin_ui.day_efficiency([]), {})
 
 
 class PlayersPeriodTests(unittest.TestCase):
@@ -129,7 +119,7 @@ class PlayersPeriodTests(unittest.TestCase):
         self.assertEqual(table, {
             "Alpha": (3, 145, 66.7),
             "Beta": (3, 110, 33.3),      # D3: в отчёте нет, но таб есть → день засчитан
-            "Gamma": (1, 0, 44.1),       # только таб, без гранат — EFF всё равно есть
+            "Gamma": (1, 0, 50.0),       # только таб, без гранат — EFF всё равно есть
         })
         self.assertEqual(self.table("?days=all")[0], table)
         self.assertIn("<b>Всё время</b>", html)
@@ -140,7 +130,7 @@ class PlayersPeriodTests(unittest.TestCase):
         self.assertEqual(table, {
             "Alpha": (1, 40, 100.0),
             "Beta": (1, 0, 0.0),
-            "Gamma": (1, 0, 44.1),
+            "Gamma": (1, 0, 50.0),
         })
         self.assertIn("<b>1</b>", html)
         self.assertIn("Последний день КВ: 05.11.26", html)
@@ -150,7 +140,7 @@ class PlayersPeriodTests(unittest.TestCase):
         self.assertEqual(table, {
             "Alpha": (2, 45, 50.0),      # D1 (100 гранат) в период не входит
             "Beta": (2, 90, 50.0),
-            "Gamma": (1, 0, 44.1),
+            "Gamma": (1, 0, 50.0),
         })
         self.assertIn("<b>2</b>", html)
         self.assertIn("Последние 2 дня КВ", html)
@@ -196,7 +186,7 @@ class PlayersPeriodTests(unittest.TestCase):
     def test_day_page_gives_eff_to_players_without_grenades(self):
         html = self.get(f"/day/{D3}").get_data(as_text=True)
         self.assertIn("<td class='eff'>100.0</td>", html)     # Alpha
-        self.assertIn("<td class='eff'>44.1</td>", html)      # Gamma: только таб, нет в отчёте
+        self.assertIn("<td class='eff'>50.0</td>", html)      # Gamma: только таб, нет в отчёте
         self.assertIn("<td class='eff'>0.0</td>", html)       # Beta: таб есть, гранат нет
         self.assertNotIn("<td class='eff'>—</td>", html)
 
@@ -204,9 +194,9 @@ class PlayersPeriodTests(unittest.TestCase):
         with closing(player_store.connect(self.db)) as con:
             avg = admin_ui.average_player_efficiencies(con)
             only_last = admin_ui.average_player_efficiencies(con, {D3})
-        self.assertEqual(avg[self.ids["Gamma"]], 44.1)
+        self.assertEqual(avg[self.ids["Gamma"]], 50.0)
         self.assertEqual(only_last, {self.ids["Alpha"]: 100.0, self.ids["Beta"]: 0.0,
-                                     self.ids["Gamma"]: 44.1})
+                                     self.ids["Gamma"]: 50.0})
 
     def test_empty_database_renders(self):
         for path in (Path(self.tmp.name) / "empty.sqlite3",):
