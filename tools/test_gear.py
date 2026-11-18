@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -107,7 +108,9 @@ class GearPageTests(unittest.TestCase):
         html = self.page()
         gauss = self.slot_tag(html, self.alpha, "gauss")
         self.assertIn("border-color:#CC9933", gauss)               # легендарный — золотая рамка
-        self.assertIn(">+15</span>", gauss)
+        self.assertIn(">Гаусс</span>", gauss)                       # в «Снайпах» вместо «+15» — название
+        self.assertNotIn("g-lv", gauss)
+        self.assertIn("Снайпы: Гаусс +15", gauss)                  # заточка при этом сохранена и видна в подсказке
         self.assertIn("/gear/icon/gauss.webp", gauss)
         flamer = self.slot_tag(html, self.alpha, "flamer")
         self.assertIn("border-color:#933", flamer)                 # исключительный — красная
@@ -163,6 +166,139 @@ class GearPageTests(unittest.TestCase):
         self.assertEqual(r.get_json(), {"ok": True, "item": "", "level": 0, "text": ""})
         self.assertEqual(self.stored(), {})
 
+    # ------------------------------------------------------- название вместо заточки в «Снайпах»
+    def test_sniper_slots_show_the_name_instead_of_the_level(self):
+        for item, name in (("gauss", "Гаусс"), ("sniper1", "EBR"), ("sniper2", "pZB"), ("sniper3", "СВД-м")):
+            for level in (0, 7, 15):
+                with self.subTest(item=item, level=level):
+                    self.assertEqual(self.put(self.alpha, "gauss", item=item, level=level).status_code, 200)
+                    tag = self.slot_tag(self.page(), self.alpha, "gauss")
+                    self.assertIn(f"<span class='g-nm'>{name}</span>", tag)     # название — и при +0, и при +15
+                    self.assertNotIn("g-lv", tag)                               # «+N» в слоте не рисуется
+                    self.assertNotIn(f">+{level}</span>", tag)
+                    self.assertIn(f"Снайпы: {name}" + (f" +{level}" if level else "") + "'", tag)   # заточка — в подсказке
+
+    def test_name_label_is_only_in_the_sniper_column(self):
+        for col, item in (("hammer", "hammer"), ("bio", "zivk"), ("heavy", "chief"), ("flamer", "flamer")):
+            self.put(self.alpha, col, item=item, level=12)
+        html = self.page()
+        for col in ("hammer", "bio", "heavy", "flamer"):
+            with self.subTest(col=col):
+                tag = self.slot_tag(html, self.alpha, col)
+                self.assertIn(">+12</span>", tag)                               # там по-прежнему заточка
+                self.assertNotIn("g-nm", tag)
+
+    def test_name_label_not_drawn_for_unset_or_empty_sniper_slot(self):
+        self.put(self.alpha, "gauss", item="none")
+        html = self.page()
+        self.assertNotIn("g-nm", self.slot_tag(html, self.alpha, "gauss"))      # «Пусто» — ровный пустой слот
+        self.assertNotIn("g-nm", self.slot_tag(html, self.bravo, "gauss"))      # «не указано» — «+»
+
+    def test_name_label_is_white_centered_at_the_bottom_without_outline(self):
+        css = re.search(r"\.g-nm\{([^}]*)\}", self.page()).group(1)
+        self.assertIn("color:#fff", css)
+        self.assertIn("bottom:", css)                                           # внизу иконки, где была заточка
+        self.assertIn("left:0;right:0", css)                                    # на всю ширину слота
+        self.assertIn("text-align:center", css)                                 # по центру
+        self.assertNotIn("text-shadow", css)                                    # без чёрной обводки
+        self.assertNotIn("-webkit-text-stroke", css)
+        self.assertNotIn("monospace", css)                                      # обычный шрифт страницы, не моноширинный
+
+    def test_page_script_draws_the_name_for_show_name_columns(self):
+        html = self.page()
+        cfg = json.loads(re.search(r"id='gear-cfg'>(.*?)</script>", html, re.S).group(1))
+        show = {c["key"]: c["showName"] for c in cfg["columns"]}
+        self.assertEqual(show, {"gauss": True, "hammer": False, "bio": False, "heavy": False, "flamer": False, "speed": False})
+        self.assertIn("if(col.showName)btn.append(el('span','g-nm',it.name))", html)   # перерисовка после выбора в окне
+
+    # ------------------------------------------------------- «Пусто» = предмета нет
+    def test_empty_choice_is_saved_and_shown_as_plain_slot_without_plus(self):
+        r = self.put(self.alpha, "hammer", item=gear.NONE_KEY)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json(), {"ok": True, "item": "none", "level": 0, "text": ""})
+        self.assertEqual(self.stored(), {(self.alpha, "hammer"): ("none", 0, "")})   # запись есть — «нет» помнится
+        html = self.page()
+        tag = self.slot_tag(html, self.alpha, "hammer")
+        self.assertIn("class='g-slot none'", tag)                   # ровный пустой слот
+        self.assertNotIn("g-plus", tag)                             # без «+»
+        self.assertNotIn("<img", tag)
+        self.assertNotIn("g-lv", tag)
+        self.assertNotIn("border-color", tag)                       # рамка без цвета редкости
+        self.assertIn("Кувалда: нет", tag)                          # понятно и по подсказке
+        self.assertIn("class='g-slot empty'", self.slot_tag(html, self.alpha, "gauss"))   # «не указано» — по-прежнему с «+»
+        self.assertIn("g-plus", self.slot_tag(html, self.alpha, "gauss"))
+        self.assertIn("Снайпы: не указано", self.slot_tag(html, self.alpha, "gauss"))
+        self.assertEqual(len(re.findall(r"class='g-slot none'", html)), 1)
+        self.assertEqual(len(re.findall(r"class='g-slot empty'", html)), 14)
+
+    def test_empty_choice_works_in_every_item_column_and_ignores_level(self):
+        for col in ("gauss", "hammer", "bio", "heavy", "flamer"):
+            with self.subTest(col=col):
+                r = self.put(self.alpha, col, item="none", level=99)       # заточка у «нет» не проверяется и не хранится
+                self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+                self.assertEqual(r.get_json(), {"ok": True, "item": "none", "level": 0, "text": ""})
+                self.assertEqual(self.stored()[(self.alpha, col)], ("none", 0, ""))
+        self.assertEqual(len(re.findall(r"class='g-slot none'", self.page())), 5)
+
+    def test_empty_choice_can_be_replaced_by_item_and_reset_to_unset(self):
+        self.put(self.alpha, "bio", item="none")
+        self.put(self.alpha, "bio", item="zivk", level=9)                  # потом выяснилось, что предмет есть
+        self.assertEqual(self.stored()[(self.alpha, "bio")], ("zivk", 9, ""))
+        self.put(self.alpha, "bio", item="none")                           # и снова «нет»: заточка не остаётся
+        self.assertEqual(self.stored()[(self.alpha, "bio")], ("none", 0, ""))
+        r = self.put(self.alpha, "bio", item="")                           # «Сбросить» — снова «не указано»
+        self.assertEqual(r.get_json(), {"ok": True, "item": "", "level": 0, "text": ""})
+        self.assertEqual(self.stored(), {})
+        self.assertIn("class='g-slot empty'", self.slot_tag(self.page(), self.alpha, "bio"))
+
+    def test_empty_choice_does_not_touch_speed_or_other_players(self):
+        self.put(self.alpha, "speed", text="39")
+        self.put(self.alpha, "hammer", item="none")
+        self.assertEqual(self.stored()[(self.alpha, "speed")], ("", 0, "39"))
+        self.assertEqual(self.speed_value(self.page(), self.alpha), "39")
+        self.assertIn("class='g-slot empty'", self.slot_tag(self.page(), self.bravo, "hammer"))
+
+    def test_only_the_none_marker_is_accepted_besides_real_items(self):
+        for bad in ("none ", "None", "NONE", "nothing", "empty", "-"):
+            with self.subTest(item=bad):
+                r = self.put(self.alpha, "hammer", item=bad)
+                if bad.strip() == "none":                                     # пробелы вокруг обрезаются, как у остальных ключей
+                    self.assertEqual(r.status_code, 200)
+                else:
+                    self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.stored(), {(self.alpha, "hammer"): ("none", 0, "")})
+
+    def test_empty_choice_follows_the_player_when_swapping_cells(self):
+        self.put(self.alpha, "flamer", item="none")
+        self.put(self.alpha, "gauss", item="gauss", level=15)
+        before = self.stored()
+        self.swap((1, 1), (1, 2))
+        self.assertEqual(self.stored(), before)
+        html = self.page()
+        self.assertIn("class='g-slot none'", self.slot_tag(html, self.alpha, "flamer"))
+        self.assertIn("class='g-slot empty'", self.slot_tag(html, self.bravo, "flamer"))
+
+    def test_merging_duplicates_moves_the_empty_choice_too(self):
+        self.put(self.bravo, "heavy", item="none")
+        with closing(player_store.connect(self.db)) as con:
+            con.execute("BEGIN IMMEDIATE")
+            player_store._merge_player_everywhere(con, self.alpha, self.bravo)
+            con.execute("COMMIT")
+        self.assertEqual(self.stored(), {(self.alpha, "heavy"): ("none", 0, "")})
+
+    def test_page_script_knows_the_none_marker_and_slot_styles(self):
+        html = self.page()
+        self.assertIn('"noneKey": "none"', html)
+        self.assertRegex(html, r"\.g-slot\.none\{[^}]*border-style:solid")            # сплошная рамка, не пунктир
+        self.assertNotRegex(html, r"\.g-slot\.none[^{]*\{[^}]*background:repeating")   # без штриховки «не указано»
+        self.assertRegex(html, r"\.g-slot\.empty\{border-style:dashed\}")             # «не указано» осталось пунктирным
+        self.assertIn("Сбросить", html)                                               # возврат к «не указано»
+
+    def test_slot_background_is_lighter_than_before(self):
+        html = self.page()
+        self.assertRegex(html, r"\.g-slot\{--g-bg:#222b36;--g-bg-hi:#2d3844;")           # заливка и наведение — через переменные
+        self.assertIn("),var(--g-bg);color:#fff;cursor:pointer}", html)                 # штриховка лежит поверх var(--g-bg), цвет не зашит
+
     def test_bad_input_is_rejected_and_nothing_is_saved(self):
         cases = [
             dict(col="bio", item="gauss", level=15),        # предмет из чужой категории
@@ -211,7 +347,7 @@ class GearPageTests(unittest.TestCase):
         self.assertEqual(self.stored(), before)
         html = self.page()
         self.assertIn("border-color:#CC9933", self.slot_tag(html, self.alpha, "gauss"))
-        self.assertIn(">+15</span>", self.slot_tag(html, self.alpha, "gauss"))
+        self.assertIn("Снайпы: Гаусс +15", self.slot_tag(html, self.alpha, "gauss"))
         self.assertIn("class='g-slot empty'", self.slot_tag(html, self.bravo, "gauss"))
         self.assertIn(">+3</span>", self.slot_tag(html, self.bravo, "hammer"))
         self.assertEqual(self.speed_value(html, self.alpha), "39")      # скорость тоже едет с игроком
@@ -235,7 +371,7 @@ class GearPageTests(unittest.TestCase):
         self.assertEqual(self.stored(), before)
         html = self.page()
         self.assertIn("Отряд 4", html)
-        self.assertIn(">+15</span>", self.slot_tag(html, self.alpha, "gauss"))
+        self.assertIn("Снайпы: Гаусс +15", self.slot_tag(html, self.alpha, "gauss"))
 
     def test_gear_survives_remove_command_and_adding_back(self):
         before = self.fill_known_gear()
@@ -246,7 +382,7 @@ class GearPageTests(unittest.TestCase):
         self.place(3, 1, "Alpha")                              # снова добавили на доске отрядов
         self.assertEqual(self.pid("Alpha"), self.alpha)         # тот же игрок, а не новая запись
         html = self.page()
-        self.assertIn(">+15</span>", self.slot_tag(html, self.alpha, "gauss"))
+        self.assertIn("Снайпы: Гаусс +15", self.slot_tag(html, self.alpha, "gauss"))
         self.assertEqual(self.speed_value(html, self.alpha), "39")
         self.assertIn("Отряд 3", html)
 
@@ -275,12 +411,23 @@ class GearPageTests(unittest.TestCase):
         self.assertEqual(gear.ITEMS["zivk"].name, "Зивка")
         self.assertEqual(gear.ITEMS["tank"].name, "SBA ТАНК")
         self.assertEqual(gear.ITEMS["chief"].name, "Вождь")
+        self.assertEqual(gear.ITEMS["sniper1"].name, "EBR")
+        self.assertEqual(gear.ITEMS["sniper2"].name, "pZB")
+        self.assertEqual(gear.ITEMS["sniper3"].name, "СВД-м")
         self.put(self.alpha, "bio", item="assault", level=5)
         self.put(self.alpha, "heavy", item="tank", level=7)
         html = self.page()
         self.assertIn("Био: Штурма +5", html)
         self.assertIn("Тяж: SBA ТАНК +7", html)
         self.assertIn('"name": "Зивка"', html)                              # окно выбора берёт имена из конфига
+        self.put(self.alpha, "gauss", item="sniper3", level=4)
+        html = self.page()
+        self.assertIn("Снайпы: СВД-м +4", html)
+        self.assertNotIn("Снайп 1", html)                                    # старых временных названий нет нигде
+        self.assertNotIn("Снайп 2", html)
+        self.assertNotIn("Снайп 3", html)
+        for name in ("EBR", "pZB", "СВД-м"):
+            self.assertIn(f'"name": "{name}"', html)
 
     def squad_order_on_squads_page(self):
         """Ники в порядке «отряд → место», как их видно на странице «Отряды»."""

@@ -5,6 +5,9 @@
 Снайпы · Кувалда · Био · Тяж · Огнемёт · Скорость. Клик по слоту открывает выбор предмета
 и заточки (+0…+15), «Скорость» — двузначное число 10–99 (39, 40, 25…) или прочерк (пусто).
 
+У слота три состояния: не указано (пунктирный слот с «+»), «Пусто» — у игрока этого предмета нет (ровный пустой слот
+без «+», сохраняется как отметка NONE_KEY) и выбранный предмет.
+
 Как добавить или поменять предмет — см. ITEMS и COLUMNS ниже; иконка лежит в tools/gear_icons/
 (достаточно заменить файл с тем же именем). Данные — в таблице player_gear базы бота.
 """
@@ -24,6 +27,9 @@ ICON_DIR = Path(__file__).resolve().parent / "gear_icons"
 MAX_LEVEL = 15           # заточка +0 … +15
 SPEED_RE = re.compile(r"[1-9][0-9]")        # скорость: ровно две цифры, 10…99 (только ASCII-цифры)
 SPEED_HINT = "Скорость — двузначное число (10–99) или прочерк"
+# Отметка «у игрока этого предмета нет»: лежит в player_gear.item вместо ключа предмета, заточка 0.
+# Пустой item (нет записи) — это «не указано», а не «нет».
+NONE_KEY = "none"
 
 # Цвет рамки слота по редкости: легендарный — золотой, исключительный — красный.
 RARITY = {
@@ -42,6 +48,7 @@ class Column(NamedTuple):
     key: str
     title: str
     items: tuple[str, ...]      # ключи из ITEMS; пусто у текстовой колонки
+    show_name: bool = False     # в слоте вместо «+N» писать название предмета (белым, внизу иконки)
 
     @property
     def is_text(self) -> bool:
@@ -50,11 +57,11 @@ class Column(NamedTuple):
 
 ITEMS: dict[str, Item] = {
     "gauss": Item("Гаусс", "legendary", "gauss.webp"),
-    # Новые снайперские винтовки — исключительные (красная рамка). Названия временные: в игре они называются иначе,
-    # поменять достаточно здесь (ключи sniper1…3 не трогать — они записаны в базе у игроков).
-    "sniper1": Item("Снайп 1", "exceptional", "sniper1.webp"),
-    "sniper2": Item("Снайп 2", "exceptional", "sniper2.webp"),
-    "sniper3": Item("Снайп 3", "exceptional", "sniper3.webp"),
+    # Новые снайперские винтовки — исключительные (красная рамка). Названия меняются здесь,
+    # ключи sniper1…3 не трогать — они записаны в базе у игроков.
+    "sniper1": Item("EBR", "exceptional", "sniper1.webp"),
+    "sniper2": Item("pZB", "exceptional", "sniper2.webp"),
+    "sniper3": Item("СВД-м", "exceptional", "sniper3.webp"),
     "hammer": Item("Кувалда", "legendary", "hammer.webp"),
     "assault": Item("Штурма", "legendary", "assault.webp"),
     "zivk": Item("Зивка", "legendary", "zivk.webp"),
@@ -65,7 +72,7 @@ ITEMS: dict[str, Item] = {
 
 COLUMNS: tuple[Column, ...] = (
     # Ключ gauss остался от прежней категории «Гаусс» — по нему шмот лежит в базе, переименовывать нельзя.
-    Column("gauss", "Снайпы", ("gauss", "sniper1", "sniper2", "sniper3")),
+    Column("gauss", "Снайпы", ("gauss", "sniper1", "sniper2", "sniper3"), show_name=True),
     Column("hammer", "Кувалда", ("hammer",)),
     Column("bio", "Био", ("assault", "zivk")),
     Column("heavy", "Тяж", ("tank", "chief")),
@@ -135,7 +142,8 @@ def parse_level(value: Any) -> int:
 
 def set_slot(con: sqlite3.Connection, player_id: int, slot: str, item: Any = "", level: Any = 0,
              text: Any = "") -> dict[str, Any]:
-    """Записать слот игрока. Пустой предмет / пустой текст удаляют запись. Возвращает итог для страницы."""
+    """Записать слот игрока. Пустой предмет / пустой текст удаляют запись («не указано»); NONE_KEY сохраняет
+    «предмета нет». Возвращает итог для страницы."""
     column = COLUMN_BY_KEY.get(slot)
     if column is None:
         raise ValueError("Неизвестная категория")
@@ -145,9 +153,9 @@ def set_slot(con: sqlite3.Connection, player_id: int, slot: str, item: Any = "",
         value, key, lv = clean_speed(text), "", 0
     else:
         value, key = "", str(item or "").strip()
-        if key and key not in column.items:
+        if key and key != NONE_KEY and key not in column.items:
             raise ValueError(f"Этот предмет не подходит для «{column.title}»")
-        lv = parse_level(level) if key else 0
+        lv = parse_level(level) if key and key != NONE_KEY else 0
     if not (key or value):
         con.execute("DELETE FROM player_gear WHERE player_id=? AND slot=?", (player_id, slot))
     else:
@@ -160,13 +168,18 @@ def set_slot(con: sqlite3.Connection, player_id: int, slot: str, item: Any = "",
 # ----------------------------------------------------------------- страница --
 
 CSS = r"""
-.g-slot{position:relative;display:grid;place-items:center;width:36px;height:36px;min-height:0;margin:0 auto;padding:0;overflow:hidden;border:2px solid rgba(127,127,127,.4);border-radius:7px;background:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 3px,transparent 3px 6px),#0f1419;color:#fff;cursor:pointer}
-.g-slot:hover{background:repeating-linear-gradient(135deg,rgba(255,255,255,.09) 0 3px,transparent 3px 6px),#18202a}
+/* Фон слота: --g-bg (был #0f1419 — тёмные иконки сливались с ним), при наведении — --g-bg-hi. */
+.g-slot{--g-bg:#222b36;--g-bg-hi:#2d3844;position:relative;display:grid;place-items:center;width:36px;height:36px;min-height:0;margin:0 auto;padding:0;overflow:hidden;border:2px solid rgba(127,127,127,.4);border-radius:7px;background:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 3px,transparent 3px 6px),var(--g-bg);color:#fff;cursor:pointer}
+.g-slot:hover{background:repeating-linear-gradient(135deg,rgba(255,255,255,.09) 0 3px,transparent 3px 6px),var(--g-bg-hi)}
 .g-slot:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
 .g-slot:not(.empty){border-width:1.5px}.g-slot.empty{border-style:dashed}.g-slot.err{box-shadow:0 0 0 2px var(--red)}
+/* «Пусто» = у игрока этого предмета нет: ровная заливка без «+» и без штриховки, сплошная тонкая рамка. */
+.g-slot.none{border-width:1px;border-style:solid;border-color:rgba(127,127,127,.3);background:var(--g-bg)}.g-slot.none:hover{background:var(--g-bg-hi)}
 .g-slot img{position:absolute;top:0;left:0;width:100%;height:100%;padding:1px;object-fit:contain;pointer-events:none;-webkit-user-drag:none}
 .g-plus{font:400 17px/1 -apple-system,"Segoe UI",Arial,sans-serif;color:rgba(255,255,255,.3)}.g-slot:hover .g-plus{color:rgba(255,255,255,.65)}
 .g-lv{position:absolute;right:2px;bottom:1px;font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#fff;text-shadow:0 0 2px #000,0 0 3px #000,1px 1px 0 #000;pointer-events:none}
+/* Название предмета вместо «+N» (колонки с show_name): белое, по центру внизу иконки, без обводки. */
+.g-nm{position:absolute;left:0;right:0;bottom:2px;text-align:center;white-space:nowrap;pointer-events:none;font:600 9px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#fff}
 .g-mini{width:32px;height:32px;margin:0;flex:none;cursor:inherit}
 /* Панель на всю ширину, как в «Игроках»: ник слева, иконки и скорость примерно по центру, справа свободное место (.g-f).
    overflow:visible, как у «Бафов», — иначе шапка не залипает при прокрутке страницы. */
@@ -186,7 +199,7 @@ CSS = r"""
 .g-gh{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:0 2px 6px;color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.05em}.g-gh b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:12px;text-transform:none;letter-spacing:0}
 .g-opt{display:flex;align-items:center;justify-content:flex-start;gap:10px;width:100%;min-height:42px;padding:3px 6px;border:1px solid transparent;border-radius:8px;background:transparent;text-align:left;font-weight:700}
 .g-opt:hover,.g-opt:focus-visible{background:var(--soft);outline:none}.g-opt.on{background:var(--blue2);border-color:var(--blue)}
-.g-rr{display:block;font-size:10px;font-weight:650;line-height:1.2}.g-clear{min-height:32px;color:var(--dim);font-weight:650}
+.g-rr{display:block;font-size:10px;font-weight:650;line-height:1.2}.g-clear{min-height:32px;color:var(--dim);font-weight:650}.g-reset{min-height:28px;font-size:12px;font-weight:600}
 .g-lvl{display:flex;align-items:center;gap:6px;margin:8px 2px 0;padding-top:8px;border-top:1px solid var(--line);color:var(--dim);font-weight:650}
 .g-lvl input{width:60px;margin-left:auto;text-align:center;font:inherit;font-weight:700;color:var(--text)}
 .g-status{position:fixed;right:16px;bottom:16px;z-index:70;padding:6px 11px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 6px 18px rgba(0,0,0,.2);color:var(--dim);font-weight:650}.g-status:empty{display:none}.g-status.ok{color:var(--green)}.g-status.err{color:var(--red)}
@@ -194,7 +207,7 @@ CSS = r"""
 
 SCRIPT = r"""<script>
 (()=>{const cfg=JSON.parse(document.getElementById('gear-cfg').textContent),cols={};cfg.columns.forEach(c=>cols[c.key]=c);
-const pop=document.getElementById('gear-pop'),stat=document.getElementById('gear-status'),MAXL=cfg.maxLevel;
+const pop=document.getElementById('gear-pop'),stat=document.getElementById('gear-status'),MAXL=cfg.maxLevel,NONE=cfg.noneKey;
 let cur=null,lastLevel=MAXL,pending=0,chain=Promise.resolve(),timer=0;
 const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e};
 const clamp=v=>Math.max(0,Math.min(MAXL,parseInt(v,10)||0));
@@ -202,11 +215,12 @@ const show=(t,k='')=>{clearTimeout(timer);stat.textContent=t;stat.className='g-s
 const post=data=>fetch('/gear/set',{method:'POST',keepalive:true,credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:new URLSearchParams(data)}).then(async r=>{let j=null;try{j=await r.json()}catch(e){}if(!r.ok||!j||!j.ok)throw new Error((j&&j.error)||('Ошибка '+r.status));return j});
 const run=(label,job)=>{pending++;show(label);const next=chain.then(job);chain=next.catch(()=>{}).then(()=>{pending--});return next};
 window.addEventListener('beforeunload',e=>{if(pending>0){e.preventDefault();e.returnValue=''}});
-function paint(btn,item,level){const col=cols[btn.dataset.col],it=item?cfg.items[item]:null;level=it?level:0;
-btn.dataset.item=it?item:'';btn.dataset.level=String(level);btn.replaceChildren();
-if(it){btn.className='g-slot';btn.style.borderColor=it.color;const img=el('img');img.src=it.icon;img.alt='';img.draggable=false;btn.append(img);if(level>0)btn.append(el('span','g-lv','+'+level))}
+function paint(btn,item,level){const col=cols[btn.dataset.col],none=item===NONE,it=item&&!none?cfg.items[item]:null;level=it?level:0;
+btn.dataset.item=it?item:(none?NONE:'');btn.dataset.level=String(level);btn.replaceChildren();
+if(it){btn.className='g-slot';btn.style.borderColor=it.color;const img=el('img');img.src=it.icon;img.alt='';img.draggable=false;btn.append(img);if(col.showName)btn.append(el('span','g-nm',it.name));else if(level>0)btn.append(el('span','g-lv','+'+level))}
+else if(none){btn.className='g-slot none';btn.style.borderColor=''}
 else{btn.className='g-slot empty';btn.style.borderColor='';btn.append(el('span','g-plus','+'))}
-const state=it?it.name+(level>0?' +'+level:''):'пусто';btn.title=col.title+': '+state;btn.setAttribute('aria-label',col.title+', '+btn.dataset.nick+': '+state)}
+const state=it?it.name+(level>0?' +'+level:''):(none?'нет':'не указано');btn.title=col.title+': '+state;btn.setAttribute('aria-label',col.title+', '+btn.dataset.nick+': '+state)}
 function save(btn,item,level){const prev={item:btn.dataset.item,level:+btn.dataset.level};paint(btn,item,level);
 return run('Сохранение…',()=>post({player:btn.dataset.player,col:btn.dataset.col,item:item,level:level})).then(r=>{paint(btn,r.item,r.level);show('Сохранено','ok')},e=>{paint(btn,prev.item,prev.level);btn.classList.add('err');show((e.message||'Ошибка')+' — не сохранено','err')})}
 function close(back){pop.hidden=true;const b=cur;cur=null;if(back&&b)b.focus()}
@@ -214,7 +228,7 @@ function place(btn){const r=btn.getBoundingClientRect(),sx=window.scrollX,sy=win
 const w=pop.offsetWidth,h=pop.offsetHeight;let x=r.left+sx+r.width/2-w/2,y=r.bottom+sy+6;
 x=Math.max(sx+8,Math.min(x,sx+document.documentElement.clientWidth-w-8));
 if(r.bottom+h+12>window.innerHeight&&r.top-h-12>0)y=r.top+sy-h-6;pop.style.left=x+'px';pop.style.top=y+'px'}
-function open(btn){cur=btn;const col=cols[btn.dataset.col],item=btn.dataset.item,lvl=item?+btn.dataset.level:lastLevel;pop.replaceChildren();
+function open(btn){cur=btn;const col=cols[btn.dataset.col],item=btn.dataset.item,real=!!item&&item!==NONE,lvl=real?+btn.dataset.level:lastLevel;pop.replaceChildren();
 const head=el('div','g-gh');head.append(el('span',null,col.title),el('b',null,btn.dataset.nick));pop.append(head);
 const input=el('input');input.type='number';input.min=0;input.max=MAXL;input.step=1;input.value=lvl;input.setAttribute('aria-label','Заточка');
 let first=null;
@@ -222,9 +236,10 @@ col.items.forEach(k=>{const it=cfg.items[k],o=el('button','g-opt'+(k===item?' on
 const s=el('span','g-slot g-mini');s.style.borderColor=it.color;const im=el('img');im.src=it.icon;im.alt='';s.append(im);
 const t=el('span');t.append(el('span',null,it.name));const rr=el('span','g-rr',it.rarityName);rr.style.color=it.color;t.append(rr);o.append(s,t);
 o.addEventListener('click',()=>{lastLevel=clamp(input.value);close(true);save(btn,k,lastLevel)});pop.append(o);if(!first||k===item)first=o});
-const clr=el('button','g-opt g-clear','✕  Пусто');clr.type='button';clr.addEventListener('click',()=>{close(true);save(btn,'',0)});pop.append(clr);
+const clr=el('button','g-opt g-clear'+(item===NONE?' on':''),'✕  Пусто');clr.type='button';clr.title='У игрока этого предмета нет';clr.addEventListener('click',()=>{close(true);save(btn,NONE,0)});pop.append(clr);
+if(item){const rst=el('button','g-opt g-clear g-reset','↺  Сбросить');rst.type='button';rst.title='Вернуть «не указано»';rst.addEventListener('click',()=>{close(true);save(btn,'',0)});pop.append(rst)}
 const row=el('label','g-lvl');row.append(el('span',null,'Заточка +'),input);pop.append(row);
-input.addEventListener('change',()=>{const v=clamp(input.value);input.value=v;lastLevel=v;if(btn.dataset.item)save(btn,btn.dataset.item,v)});
+input.addEventListener('change',()=>{const v=clamp(input.value);input.value=v;lastLevel=v;const it=btn.dataset.item;if(it&&it!==NONE)save(btn,it,v)});
 input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();input.dispatchEvent(new Event('change'));close(true)}});
 pop.hidden=false;place(btn);(first||clr).focus()}
 document.querySelector('.gt').addEventListener('click',e=>{const b=e.target.closest('.g-slot');if(!b)return;if(!pop.hidden&&cur===b)close(true);else open(b)});
@@ -243,8 +258,11 @@ def _e(value: Any) -> str:
 
 
 def _slot_state(column: Column, entry: dict[str, Any] | None) -> tuple[str, int]:
-    """Ключ предмета и заточка из записи; предмет, которого нет в настройках категории, считается пустым."""
+    """Ключ предмета и заточка из записи; NONE_KEY — «предмета нет»; предмет, которого нет в настройках категории,
+    считается неуказанным."""
     key = entry["item"] if entry else ""
+    if key == NONE_KEY:
+        return NONE_KEY, 0
     if key not in column.items:
         return "", 0
     return key, int(entry["level"])
@@ -253,14 +271,19 @@ def _slot_state(column: Column, entry: dict[str, Any] | None) -> tuple[str, int]
 def _slot_html(player_id: int, nick: str, column: Column, entry: dict[str, Any] | None, icon_url) -> str:
     key, level = _slot_state(column, entry)
     item = ITEMS.get(key)
-    state = "пусто" if item is None else item.name + (f" +{level}" if level > 0 else "")
+    state = ("нет" if key == NONE_KEY else "не указано") if item is None else item.name + (f" +{level}" if level > 0 else "")
     attrs = (f"type='button' data-player='{player_id}' data-col='{column.key}' data-nick='{_e(nick)}' "
              f"data-item='{_e(key)}' data-level='{level}' title='{_e(column.title)}: {_e(state)}' "
              f"aria-label='{_e(column.title)}, {_e(nick)}: {_e(state)}'")
+    if key == NONE_KEY:                      # предмета нет: ровный пустой слот, без «+»
+        return f"<button class='g-slot none' {attrs}></button>"
     if item is None:
         return f"<button class='g-slot empty' {attrs}><span class='g-plus'>+</span></button>"
     color = RARITY[item.rarity][1]
-    badge = f"<span class='g-lv'>+{level}</span>" if level > 0 else ""
+    if column.show_name:                     # «Снайпы»: внизу иконки название, заточка — только в подсказке и в окне выбора
+        badge = f"<span class='g-nm'>{_e(item.name)}</span>"
+    else:
+        badge = f"<span class='g-lv'>+{level}</span>" if level > 0 else ""
     return (f"<button class='g-slot' style='border-color:{color}' {attrs}>"
             f"<img src='{_e(icon_url(item.icon))}' alt=''>{badge}</button>")
 
@@ -268,7 +291,8 @@ def _slot_html(player_id: int, nick: str, column: Column, entry: dict[str, Any] 
 def _config(icon_url) -> str:
     cfg = {
         "maxLevel": MAX_LEVEL,
-        "columns": [{"key": c.key, "title": c.title, "items": list(c.items)} for c in COLUMNS],
+        "noneKey": NONE_KEY,
+        "columns": [{"key": c.key, "title": c.title, "items": list(c.items), "showName": c.show_name} for c in COLUMNS],
         "items": {key: {"name": i.name, "rarityName": RARITY[i.rarity][0], "color": RARITY[i.rarity][1],
                         "icon": icon_url(i.icon)} for key, i in ITEMS.items()},
     }

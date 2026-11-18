@@ -155,6 +155,64 @@ class TabFilterTests(unittest.TestCase):
         self.assertIn("<b>100</b>", row(D3))
         self.assertIn("<td class='hide-sm'>3</td>", row(D1))   # игроков с табом: 3, не 4
 
+    # ── «Игроков» в списке дней = сколько всего на табе (как на странице дня) ──────────────────────
+    def add_tab_only_player(self, nick="Epsilon", day=D1):
+        """Игрок есть на табе дня, но в отчёте гранат/войса его нет («только таб»)."""
+        pid = player_store.upsert_binding(self.db, 900, nick, guild_id=GUILD)
+        with closing(player_store.connect(self.db)) as con:
+            con.execute("""INSERT INTO scan_players(scan_id,place,nick,kills,deaths,assists,score,player_id)
+                           VALUES(?,9,?,5,2,1,300,?)""", (self.scan_d1, nick, pid))
+        return pid
+
+    @staticmethod
+    def day_row(page, day, cell="td class='nick grow'"):
+        return re.search(rf"<{cell}><a href='/day/{day}'>.*?</tr>", page, re.S).group(0)
+
+    @staticmethod
+    def cells(row):
+        return re.findall(r"<td class='hide-sm'>(.*?)</td>", row)
+
+    def test_overview_players_counts_tab_only_player_like_the_day_page(self):
+        self.add_tab_only_player()
+        day = self.get(f"/day/{D1}").get_data(as_text=True)
+        self.assertIn("<span class='chip'>Игроков: 4</span>", day)          # 3 из отчёта + 1 «только таб»
+        self.assertIn("только таб", day)
+        row = self.day_row(self.get("/").get_data(as_text=True), D1)
+        self.assertEqual(self.cells(row)[:2], ["1", "4"])                     # табов 1, игроков 4 — то же число, что на странице дня
+
+    def test_overview_players_without_tab_or_with_unrecognized_tab_is_scanned_count(self):
+        index = self.get("/").get_data(as_text=True)
+        self.assertEqual(self.cells(self.day_row(index, D2))[:2], ["0", "4"])  # табов нет → сколько просканировано
+        self.assertEqual(self.cells(self.day_row(index, D3))[:2], ["1", "4"])  # таб есть, но ники не опознаны → тоже по отчёту
+        for day in (D2, D3):
+            self.assertIn("<span class='chip'>Игроков: 4</span>", self.get(f"/day/{day}").get_data(as_text=True))
+
+    def test_overview_players_for_day_with_tab_but_no_report_is_tab_size(self):
+        d4 = "2026-11-12"
+        scan = self.seed_scan(d4, [("Alpha", self.pid["Alpha"]), ("Beta", self.pid["Beta"])])   # отчёта гранат/войса за день нет
+        row = self.day_row(self.get("/").get_data(as_text=True), d4)
+        self.assertEqual(self.cells(row)[:2], ["1", "2"])
+        self.assertIn("<span class='chip'>Игроков: 2</span>", self.get(f"/day/{d4}").get_data(as_text=True))
+
+    def test_overview_players_count_is_distinct_players_not_tab_rows(self):
+        self.seed_scan(D1, [("Alpha", self.pid["Alpha"]), ("Beta", self.pid["Beta"])])         # второй таб того же дня, те же игроки
+        row = self.day_row(self.get("/").get_data(as_text=True), D1)
+        self.assertEqual(self.cells(row)[:2], ["2", "3"])                     # табов 2, а игроков по-прежнему 3
+
+    def test_overview_totals_do_not_change_when_a_tab_only_player_appears(self):
+        before = self.day_row(self.get("/").get_data(as_text=True), D1)
+        self.add_tab_only_player()
+        after = self.day_row(self.get("/").get_data(as_text=True), D1)
+        self.assertIn("<b>60</b>", after)                                     # гранаты те же: у «только таб» их нет
+        self.assertEqual(re.search(r"<b>60</b>", before).group(0), re.search(r"<b>60</b>", after).group(0))
+
+    def test_archive_players_counts_tab_only_player_too(self):
+        self.add_tab_only_player()
+        self.post(f"/day/{D1}/archive")
+        archive = self.get("/archive").get_data(as_text=True)
+        row = self.day_row(archive, D1, cell="td class='nick'")
+        self.assertEqual(re.findall(r"<td>(\d+)</td>", row)[:2], ["1", "4"])
+
     def test_players_page_counts_days_and_grenades_only_when_player_was_on_tab(self):
         page = self.get("/players").get_data(as_text=True)
         # Alpha: 3 дня, 10+10+10 | Delta: D1 не считается → 2 дня, 40+40

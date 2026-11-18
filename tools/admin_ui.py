@@ -380,8 +380,10 @@ def index():
     with closing(player_store.connect(DB_PATH)) as con:
         player_store.prepare_tab_filter(con)
         played = player_store.played_filter("r.match_date", "p.player_id")
+        # «Игроков» — как на странице дня: есть таб → сколько игроков на табе (в том числе тех, кого нет в отчёте
+        # гранат/войса, «только таб»); табов нет → сколько просканировано в отчёте.
         rows = q(con, f"""
-            SELECT d.date, COALESCE(t.tabs,0) tabs, COALESCE(g.players,0) players,
+            SELECT d.date, COALESCE(t.tabs,0) tabs, COALESCE(tr.n, g.players, 0) players,
                    COALESCE(g.grenades,0) grenades, COALESCE(g.voice,0) voice
             FROM (SELECT match_date date FROM scans WHERE {na('scans.match_date')} UNION
                   SELECT match_date FROM kv_daily_reports WHERE {na('kv_daily_reports.match_date')} UNION
@@ -389,6 +391,8 @@ def index():
                   WHERE match_date IS NOT NULL AND {na('grenade_session_stats.match_date')}) d
             LEFT JOIN (SELECT match_date, COUNT(*) tabs FROM scans GROUP BY match_date) t
                    ON t.match_date=d.date
+            LEFT JOIN (SELECT match_date, COUNT(*) n FROM kv_tab_roster GROUP BY match_date) tr
+                   ON tr.match_date=d.date
             LEFT JOIN (SELECT r.match_date, COUNT(DISTINCT p.player_id) players,
                               SUM(p.total_grenades) grenades, SUM(p.voice_seconds) voice
                        FROM kv_daily_reports r JOIN kv_daily_players p ON p.report_id=r.id
@@ -1378,9 +1382,10 @@ def archive():
         rows = q(con, f"""
             SELECT a.match_date date, a.archived_at,
                    (SELECT COUNT(*) FROM scans s WHERE s.match_date=a.match_date) tabs,
-                   (SELECT COUNT(DISTINCT p.player_id) FROM kv_daily_reports r
-                      JOIN kv_daily_players p ON p.report_id=r.id
-                      WHERE r.match_date=a.match_date AND {played}) players,
+                   COALESCE(NULLIF((SELECT COUNT(*) FROM kv_tab_roster tr WHERE tr.match_date=a.match_date), 0),
+                            (SELECT COUNT(DISTINCT p.player_id) FROM kv_daily_reports r
+                               JOIN kv_daily_players p ON p.report_id=r.id
+                               WHERE r.match_date=a.match_date AND {played})) players,
                    (SELECT SUM(p.total_grenades) FROM kv_daily_reports r
                       JOIN kv_daily_players p ON p.report_id=r.id
                       WHERE r.match_date=a.match_date AND {played}) grenades,
