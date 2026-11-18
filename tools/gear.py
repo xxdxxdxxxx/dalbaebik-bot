@@ -168,8 +168,9 @@ def set_slot(con: sqlite3.Connection, player_id: int, slot: str, item: Any = "",
 # ----------------------------------------------------------------- страница --
 
 CSS = r"""
-/* Фон слота: --g-bg (был #0f1419 — тёмные иконки сливались с ним), при наведении — --g-bg-hi. */
-.g-slot{--g-bg:#222b36;--g-bg-hi:#2d3844;position:relative;display:grid;place-items:center;width:36px;height:36px;min-height:0;margin:0 auto;padding:0;overflow:hidden;border:2px solid rgba(127,127,127,.4);border-radius:7px;background:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 3px,transparent 3px 6px),var(--g-bg);color:#fff;cursor:pointer}
+/* Фон слота под иконкой: --g-bg, при наведении — --g-bg-hi. Светлее фон — лучше видны тёмные иконки
+   (пробовали #222b36 / #2d3844 — не понравилось, вернули тёмный). */
+.g-slot{--g-bg:#0f1419;--g-bg-hi:#18202a;position:relative;display:grid;place-items:center;width:36px;height:36px;min-height:0;margin:0 auto;padding:0;overflow:hidden;border:2px solid rgba(127,127,127,.4);border-radius:7px;background:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 3px,transparent 3px 6px),var(--g-bg);color:#fff;cursor:pointer}
 .g-slot:hover{background:repeating-linear-gradient(135deg,rgba(255,255,255,.09) 0 3px,transparent 3px 6px),var(--g-bg-hi)}
 .g-slot:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
 .g-slot:not(.empty){border-width:1.5px}.g-slot.empty{border-style:dashed}.g-slot.err{box-shadow:0 0 0 2px var(--red)}

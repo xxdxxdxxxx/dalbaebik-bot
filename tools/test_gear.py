@@ -294,9 +294,9 @@ class GearPageTests(unittest.TestCase):
         self.assertRegex(html, r"\.g-slot\.empty\{border-style:dashed\}")             # «не указано» осталось пунктирным
         self.assertIn("Сбросить", html)                                               # возврат к «не указано»
 
-    def test_slot_background_is_lighter_than_before(self):
+    def test_slot_background_is_the_original_dark_one_set_via_variables(self):
         html = self.page()
-        self.assertRegex(html, r"\.g-slot\{--g-bg:#222b36;--g-bg-hi:#2d3844;")           # заливка и наведение — через переменные
+        self.assertRegex(html, r"\.g-slot\{--g-bg:#0f1419;--g-bg-hi:#18202a;")           # заливка и наведение — через переменные
         self.assertIn("),var(--g-bg);color:#fff;cursor:pointer}", html)                 # штриховка лежит поверх var(--g-bg), цвет не зашит
 
     def test_bad_input_is_rejected_and_nothing_is_saved(self):
