@@ -5,8 +5,8 @@
 Снайпы · Кувалда · Био · Тяж · Огнемёт · Скорость. Клик по слоту открывает выбор предмета
 и заточки (+0…+15), «Скорость» — двузначное число 10–99 (39, 40, 25…) или прочерк (пусто).
 
-У слота три состояния: не указано (пунктирный слот с «+»), «Пусто» — у игрока этого предмета нет (ровный пустой слот
-без «+», сохраняется как отметка NONE_KEY) и выбранный предмет.
+У слота три состояния: не указано (пунктирная рамка, штриховка и «+»), «Пусто» — у игрока этого предмета нет (тот же
+штрихованный фон, но без «+» и со сплошной рамкой; сохраняется как отметка NONE_KEY) и выбранный предмет.
 
 Как добавить или поменять предмет — см. ITEMS и COLUMNS ниже; иконка лежит в tools/gear_icons/
 (достаточно заменить файл с тем же именем). Данные — в таблице player_gear базы бота.
@@ -174,8 +174,9 @@ CSS = r"""
 .g-slot:hover{background:repeating-linear-gradient(135deg,rgba(255,255,255,.09) 0 3px,transparent 3px 6px),var(--g-bg-hi)}
 .g-slot:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
 .g-slot:not(.empty){border-width:1.5px}.g-slot.empty{border-style:dashed}.g-slot.err{box-shadow:0 0 0 2px var(--red)}
-/* «Пусто» = у игрока этого предмета нет: ровная заливка без «+» и без штриховки, сплошная тонкая рамка. */
-.g-slot.none{border-width:1px;border-style:solid;border-color:rgba(127,127,127,.3);background:var(--g-bg)}.g-slot.none:hover{background:var(--g-bg-hi)}
+/* «Пусто» = у игрока этого предмета нет: фон со штриховкой такой же, как у остальных слотов (берётся из .g-slot),
+   от «не указано» отличается только тем, что нет «+» и рамка сплошная тонкая, а не пунктирная. */
+.g-slot.none{border-width:1px;border-style:solid;border-color:rgba(127,127,127,.3)}
 .g-slot img{position:absolute;top:0;left:0;width:100%;height:100%;padding:1px;object-fit:contain;pointer-events:none;-webkit-user-drag:none}
 .g-plus{font:400 17px/1 -apple-system,"Segoe UI",Arial,sans-serif;color:rgba(255,255,255,.3)}.g-slot:hover .g-plus{color:rgba(255,255,255,.65)}
 .g-lv{position:absolute;right:2px;bottom:1px;font:700 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#fff;text-shadow:0 0 2px #000,0 0 3px #000,1px 1px 0 #000;pointer-events:none}
@@ -276,7 +277,7 @@ def _slot_html(player_id: int, nick: str, column: Column, entry: dict[str, Any] 
     attrs = (f"type='button' data-player='{player_id}' data-col='{column.key}' data-nick='{_e(nick)}' "
              f"data-item='{_e(key)}' data-level='{level}' title='{_e(column.title)}: {_e(state)}' "
              f"aria-label='{_e(column.title)}, {_e(nick)}: {_e(state)}'")
-    if key == NONE_KEY:                      # предмета нет: ровный пустой слот, без «+»
+    if key == NONE_KEY:                      # предмета нет: тот же штрихованный фон, но без «+»
         return f"<button class='g-slot none' {attrs}></button>"
     if item is None:
         return f"<button class='g-slot empty' {attrs}><span class='g-plus'>+</span></button>"

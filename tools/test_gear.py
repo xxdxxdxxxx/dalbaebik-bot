@@ -191,7 +191,7 @@ class GearPageTests(unittest.TestCase):
     def test_name_label_not_drawn_for_unset_or_empty_sniper_slot(self):
         self.put(self.alpha, "gauss", item="none")
         html = self.page()
-        self.assertNotIn("g-nm", self.slot_tag(html, self.alpha, "gauss"))      # «Пусто» — ровный пустой слот
+        self.assertNotIn("g-nm", self.slot_tag(html, self.alpha, "gauss"))      # «Пусто» — пустой слот без «+»
         self.assertNotIn("g-nm", self.slot_tag(html, self.bravo, "gauss"))      # «не указано» — «+»
 
     def test_name_label_is_white_centered_at_the_bottom_without_outline(self):
@@ -219,7 +219,7 @@ class GearPageTests(unittest.TestCase):
         self.assertEqual(self.stored(), {(self.alpha, "hammer"): ("none", 0, "")})   # запись есть — «нет» помнится
         html = self.page()
         tag = self.slot_tag(html, self.alpha, "hammer")
-        self.assertIn("class='g-slot none'", tag)                   # ровный пустой слот
+        self.assertIn("class='g-slot none'", tag)                   # пустой слот
         self.assertNotIn("g-plus", tag)                             # без «+»
         self.assertNotIn("<img", tag)
         self.assertNotIn("g-lv", tag)
@@ -290,7 +290,12 @@ class GearPageTests(unittest.TestCase):
         html = self.page()
         self.assertIn('"noneKey": "none"', html)
         self.assertRegex(html, r"\.g-slot\.none\{[^}]*border-style:solid")            # сплошная рамка, не пунктир
-        self.assertNotRegex(html, r"\.g-slot\.none[^{]*\{[^}]*background:repeating")   # без штриховки «не указано»
+        none_css = re.search(r"\.g-slot\.none\{([^}]*)\}", html).group(1)
+        self.assertNotIn("background", none_css)                                      # фон не переопределён → штриховка как у остальных слотов
+        self.assertNotRegex(html, r"\.g-slot\.none:hover")                             # и при наведении тоже обычная
+        self.assertIn("border-color:rgba(127,127,127,.3)", none_css)                  # рамка «Пусто» прежняя: сплошная тонкая
+        self.assertIn("border-width:1px", none_css)
+        self.assertRegex(html, r"\.g-slot\{[^}]*background:repeating-linear-gradient")   # штриховка лежит в базовом .g-slot
         self.assertRegex(html, r"\.g-slot\.empty\{border-style:dashed\}")             # «не указано» осталось пунктирным
         self.assertIn("Сбросить", html)                                               # возврат к «не указано»
 
