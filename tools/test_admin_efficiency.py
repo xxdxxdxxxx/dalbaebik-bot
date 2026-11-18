@@ -81,16 +81,16 @@ class EfficiencyFormulaTests(unittest.TestCase):
         self.assertEqual(eff([self._three()], {1: None, 2: 80, 3: 10}),
                          eff([self._three()], {2: 80, 3: 10}))
 
-    def test_zero_grenades_are_treated_as_not_scanned(self):
-        # раньше сохранение страницы дня превращало «не отсканировано» (NULL) в 0
+    def test_zero_grenades_is_a_real_zero_and_lowers_eff(self):
+        # p1 лучший по табу, но кинул 0 гранат, когда остальные кидали: это минус
         result = eff([self._three()], {1: 0, 2: 80, 3: 10})
-        self.assertEqual(result[1], 100.0)
-        self.assertEqual(result, eff([self._three()], {2: 80, 3: 10}))
-
-    def test_zero_grenades_can_be_made_to_count(self):
-        with patch.object(admin_ui, "GRENADES_ZERO_IS_MISSING", False):
-            result = eff([self._three()], {1: 0, 2: 80, 3: 10})
         self.assertEqual(result, {1: 85.0, 2: 15.0, 3: 50.0})
+
+    def test_zero_is_not_the_same_as_not_scanned(self):
+        scanned_zero = eff([self._three()], {1: 0, 2: 80, 3: 10})
+        not_scanned = eff([self._three()], {1: None, 2: 80, 3: 10})
+        self.assertEqual(scanned_zero[1], 85.0)       # нулю гранат — минус 15 очков
+        self.assertEqual(not_scanned[1], 100.0)       # не отсканировано — гранаты просто пропущены
 
     def test_grenades_ignored_when_nothing_to_compare(self):
         pair = [(1, T(10, 2, 5, 3000)), (2, T(5, 5, 1, 1000))]
@@ -121,13 +121,13 @@ class AverageEfficiencyTests(unittest.TestCase):
         con.row_factory = sqlite3.Row
         con.executescript("""
             CREATE TABLE scans(id INTEGER PRIMARY KEY, match_date TEXT);
-            CREATE TABLE scan_players(scan_id INTEGER, place INTEGER, player_id INTEGER, kills INTEGER, deaths INTEGER, assists INTEGER, score INTEGER);
+            CREATE TABLE scan_players(scan_id INTEGER, place INTEGER, player_id INTEGER, nick TEXT, kills INTEGER, deaths INTEGER, assists INTEGER, score INTEGER);
             CREATE TABLE kv_daily_reports(id INTEGER PRIMARY KEY, match_date TEXT);
             CREATE TABLE kv_daily_players(report_id INTEGER, player_id INTEGER, total_grenades INTEGER);
             INSERT INTO scans VALUES(1,'2026-09-10'),(2,'2026-09-11');
             INSERT INTO scan_players VALUES
-              (1,1,1,10,2,5,3000),(1,2,2,5,5,1,1000),
-              (2,1,1,7,3,2,2000),(2,2,2,9,1,4,2500);
+              (1,1,1,'a',10,2,5,3000),(1,2,2,'b',5,5,1,1000),
+              (2,1,1,'a',7,3,2,2000),(2,2,2,'b',9,1,4,2500);
             INSERT INTO kv_daily_reports VALUES(1,'2026-09-10'),(2,'2026-09-11');
             INSERT INTO kv_daily_players VALUES(1,1,40),(1,2,10),(2,1,20);
         """)
@@ -135,6 +135,43 @@ class AverageEfficiencyTests(unittest.TestCase):
         self.assertEqual(admin_ui.average_player_efficiencies(con), {1: 50.0, 2: 50.0})
         self.assertEqual(admin_ui.average_player_efficiencies(con, {"2026-09-11"}), {1: 0.0, 2: 100.0})
         con.close()
+
+
+class PeriodMatchesDayPageTests(unittest.TestCase):
+    """EFF на «Игроках» (по периоду) не должен расходиться с EFF на странице дня."""
+    DAY = "2026-11-12"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self.tmp.name) / "scan_stats.sqlite3"
+        player_store.ensure_schema(self.db)
+        player_store.upsert_guild_config(self.db, 1)
+        self.ids = {name: player_store.upsert_binding(self.db, 300 + i, name, guild_id=1)
+                    for i, name in enumerate(("Alpha", "Beta", "Gamma"))}
+        rows = [("Alpha", self.ids["Alpha"], 20, 3, 5, 3000), ("Beta", self.ids["Beta"], 10, 8, 2, 1500),
+                ("Gamma", None, 15, 5, 3, 2200)]      # ник Gamma в табе не привязан, но такой игрок есть
+        with closing(player_store.connect(self.db)) as con:
+            scan = con.execute("""INSERT INTO scans(stage,map,guild_id,channel_id,user_id,scanned_at,source_filename,match_date)
+                                  VALUES(1,'m',1,1,1,'t','a.png',?)""", (self.DAY,)).lastrowid
+            for place, (nick, pid, k, d, a, s) in enumerate(rows, 1):
+                con.execute("""INSERT INTO scan_players(scan_id,place,nick,kills,deaths,assists,score,player_id)
+                               VALUES(?,?,?,?,?,?,?,?)""", (scan, place, nick, k, d, a, s, pid))
+            con.commit()
+        self.patch = patch.object(admin_ui, "DB_PATH", self.db)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def test_unbound_tab_nick_gets_eff_in_period_like_on_the_day_page(self):
+        html = admin_ui.app.test_client().get(f"/day/{self.DAY}", base_url="http://localhost:8787").get_data(as_text=True)
+        page = {n: float(v) for n, v in re.findall(r"<td class='nick[^>]*><a[^>]*>([^<]+)</a>.*?<td class='eff'>([\d.]+)</td>",
+                                                    html, flags=re.S)}
+        with closing(player_store.connect(self.db)) as con:
+            period = admin_ui.average_player_efficiencies(con)
+        self.assertEqual(page, {"Alpha": 100.0, "Beta": 0.0, "Gamma": 50.0})
+        self.assertEqual({n: period[i] for n, i in self.ids.items()}, page)
 
 
 class DayFormKeepsMissingGrenadesTests(unittest.TestCase):

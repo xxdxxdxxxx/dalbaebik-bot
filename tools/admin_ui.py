@@ -455,10 +455,6 @@ EFF_WEIGHTS = {"kills": 0.30, "kda": 0.30, "score": 0.25, "grenades": 0.15}
 COMBAT_KEYS = ("kills", "kda", "score")
 # Меньше стольких игроков сравнивать не с кем: таб (или гранаты дня) в EFF не участвует.
 MIN_COMPARE = 2
-# В базе нули гранат бывают «пустышками»: раньше сохранение страницы дня превращало
-# неотсканированные гранаты (NULL) в 0. Поэтому 0 считается «данных нет» и игрока не штрафует.
-# Поставь False, если нужно, чтобы реальный ноль снижал EFF.
-GRENADES_ZERO_IS_MISSING = True
 
 
 def percentile_ranks(values: dict[Any, float]) -> dict[Any, float]:
@@ -522,8 +518,8 @@ def day_efficiency(tabs: list[list[tuple[int, dict[str, float | None]]]],
 
     Бой: каждый таб сравнивается отдельно (см. tab_efficiency), у игрока берётся среднее по
     его табам. Гранаты: место по «гранатам на таб» среди игроков дня, у которых они есть.
-    Нет гранат (или 0, см. GRENADES_ZERO_IS_MISSING), либо сравнивать не с кем — игрок
-    считается только по табу, гранаты его не штрафуют.
+    0 гранат — это настоящий ноль, он снижает EFF. Нет данных (None, не отсканировано), либо
+    сравнивать не с кем — гранаты в EFF игрока пропускаются: он считается только по табу.
     """
     combat: dict[int, list[float]] = {}
     tab_count: dict[int, int] = {}
@@ -536,8 +532,6 @@ def day_efficiency(tabs: list[list[tuple[int, dict[str, float | None]]]],
     for player_id, total in (grenades or {}).items():
         player_id = int(player_id)
         if player_id not in combat or total is None:
-            continue
-        if total == 0 and GRENADES_ZERO_IS_MISSING:
             continue
         rates[player_id] = float(total) / tab_count[player_id]
     grenade_rank: dict[int, float] = {}
@@ -561,34 +555,43 @@ def average_player_efficiencies(con: Any, only_dates: Any = None) -> dict[int, f
     _ensure_archive_table(con)
     allowed = None if only_dates is None else {str(d) for d in only_dates}
     rows = q(con, """
-        WITH grenades AS (
-            SELECT r.match_date date, k.player_id,
-                   MAX(k.total_grenades) grenades
-            FROM kv_daily_reports r
-            JOIN kv_daily_players k ON k.report_id=r.id
-            WHERE k.player_id IS NOT NULL AND k.total_grenades IS NOT NULL
-            GROUP BY r.match_date, k.player_id
-        )
-        SELECT s.match_date date, s.id scan_id, sp.player_id,
-               sp.kills, sp.deaths, sp.assists, sp.score, g.grenades
+        SELECT s.match_date date, s.id scan_id, sp.player_id, sp.nick,
+               sp.kills, sp.deaths, sp.assists, sp.score
         FROM scans s
         JOIN scan_players sp ON sp.scan_id=s.id
-        LEFT JOIN grenades g ON g.date=s.match_date AND g.player_id=sp.player_id
-        WHERE s.match_date IS NOT NULL AND sp.player_id IS NOT NULL
+        WHERE s.match_date IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=s.match_date)
         ORDER BY s.match_date, s.id, sp.place
     """)
+    totals = {(str(r["date"]), int(r["player_id"])): r["grenades"] for r in q(con, """
+        SELECT r.match_date date, k.player_id, MAX(k.total_grenades) grenades
+        FROM kv_daily_reports r
+        JOIN kv_daily_players k ON k.report_id=r.id
+        WHERE k.player_id IS NOT NULL AND k.total_grenades IS NOT NULL
+        GROUP BY r.match_date, k.player_id
+    """)}
     tabs_by_day: dict[str, dict[int, list[tuple[int, dict[str, float | None]]]]] = {}
     grenades_by_day: dict[str, dict[int, Any]] = {}
+    resolved: dict[str, int | None] = {}
     for row in rows:
         date = str(row["date"])
         if allowed is not None and date not in allowed:
             continue
-        player_id = int(row["player_id"])
+        player_id = row["player_id"]
+        if player_id is None:
+            # ник в табе не привязан к игроку — узнаём по нику, как на странице дня и в составе дня
+            nick = str(row["nick"] or "")
+            if nick not in resolved:
+                resolved[nick] = player_store.resolve_player_id_in_connection(con, nick)
+            player_id = resolved[nick]
+        if player_id is None:
+            continue
+        player_id = int(player_id)
         tabs_by_day.setdefault(date, {}).setdefault(int(row["scan_id"]), []).append(
             (player_id, tab_metrics(row["kills"], row["deaths"], row["assists"], row["score"])))
-        if row["grenades"] is not None:
-            grenades_by_day.setdefault(date, {})[player_id] = row["grenades"]
+        total = totals.get((date, player_id))
+        if total is not None:
+            grenades_by_day.setdefault(date, {})[player_id] = total
     samples: dict[int, list[float]] = {}
     for date, tabs in tabs_by_day.items():
         for player_id, value in day_efficiency(list(tabs.values()), grenades_by_day.get(date)).items():
