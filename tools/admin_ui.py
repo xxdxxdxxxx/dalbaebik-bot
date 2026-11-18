@@ -10,7 +10,8 @@
                     гранаты по этапам, войс; правка гранат/войса прямо в строке,
                     исходные табы — в раскрывающемся разделе. Если у дня есть таб, в таблице
                     и итогах только игроки с таба, остальные — в свёрнутом списке «Не в табе»;
-  /players, /player/<id> — история игрока по дням (поиск накруток);
+  /players, /player/<id> — история игрока по дням КВ (гранаты за день, войс, явка, табы; дни без игрока
+                    на табе помечены «Неявка»; только дни из «Обзора», без архива);
   /players/voice  — «Заход войс»: игроки из отрядов × дни КВ → время первого захода в войс.
 
 Правки сразу видны в /stats бота (исторические данные читаются из SQLite).
@@ -23,6 +24,7 @@ import hmac
 import html
 import os
 import secrets
+import sqlite3
 import sys
 import threading
 import time
@@ -546,11 +548,11 @@ def day_efficiency(tabs: list[list[tuple[int, dict[str, float | None]]]],
     return result
 
 
-def average_player_efficiencies(con: Any, only_dates: Any = None) -> dict[int, float]:
-    """Средний EFF игрока по дням КВ (архивные дни не учитываются).
+def day_efficiencies(con: Any, only_dates: Any = None) -> dict[str, dict[int, float]]:
+    """EFF каждого игрока по каждому дню КВ: дата → player_id → EFF, шкала 0–100 (архивные дни не учитываются).
 
-    only_dates — набор дат, по которым считать среднее (например, последние N дней КВ);
-    None — за всё время. EFF каждого дня считается по табам, гранаты — только если есть.
+    only_dates — набор дат, по которым считать (None — все). EFF дня считается по табам, гранаты — только если есть.
+    Игрока без таба в этот день в словаре дня нет.
     """
     _ensure_archive_table(con)
     allowed = None if only_dates is None else {str(d) for d in only_dates}
@@ -592,9 +594,19 @@ def average_player_efficiencies(con: Any, only_dates: Any = None) -> dict[int, f
         total = totals.get((date, player_id))
         if total is not None:
             grenades_by_day.setdefault(date, {})[player_id] = total
+    return {date: day_efficiency(list(tabs.values()), grenades_by_day.get(date))
+            for date, tabs in tabs_by_day.items()}
+
+
+def average_player_efficiencies(con: Any, only_dates: Any = None) -> dict[int, float]:
+    """Средний EFF игрока по дням КВ (архивные дни не учитываются).
+
+    only_dates — набор дат, по которым считать среднее (например, последние N дней КВ);
+    None — за всё время. EFF каждого дня считается по табам, гранаты — только если есть.
+    """
     samples: dict[int, list[float]] = {}
-    for date, tabs in tabs_by_day.items():
-        for player_id, value in day_efficiency(list(tabs.values()), grenades_by_day.get(date)).items():
+    for by_player in day_efficiencies(con, only_dates).values():
+        for player_id, value in by_player.items():
             samples.setdefault(player_id, []).append(value)
     return {player_id: round(sum(values) / len(values), 1)
             for player_id, values in samples.items()}
@@ -816,86 +828,306 @@ def players_voice():
     return render("Заход в войс", body)
 
 
+PLAYER_CSS = """<style>
+.ph{--red-soft:#fef4f2;--red-pill:#fbdcd8;--red-ink:#b42318}
+@media(prefers-color-scheme:dark){.ph{--red-soft:#2b2120;--red-pill:#5a2a26;--red-ink:#ffb4ab}}
+.ph .meta{display:flex;flex-wrap:wrap;gap:2px 14px;margin-top:3px;color:var(--dim);font-size:12px}
+.ph .metrics{margin:12px 0 14px}.ph .metric b .of{font-size:12px;font-weight:500;color:var(--dim);letter-spacing:0;margin-left:5px}
+.ph .gear{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
+.ph .gi{display:inline-flex;align-items:center;gap:7px;min-height:36px;padding:3px 11px 3px 4px;border:1px solid var(--line);border-radius:9px;background:var(--panel);font-weight:650}
+.ph .gi.txt{padding-left:11px}.ph .gi img{width:28px;height:28px;object-fit:contain;border:1.5px solid;border-radius:6px;background:#0f1419}.ph .gi .lv{margin-left:3px;color:var(--dim);font-weight:650}.ph .gi .gs{color:var(--dim);font-weight:500}
+.ph table th:first-child,.ph table td:first-child{text-align:left}
+.ph tr.absent td{background:var(--red-soft)}.ph tr.absent:hover td{background:var(--red-soft)}.ph tr.nodata td{color:var(--dim)}.ph td.note{text-align:left;color:var(--dim);font-size:11px}
+.ph .pill{display:inline-flex;align-items:center;min-height:20px;padding:0 9px;border-radius:999px;background:var(--red-pill);color:var(--red-ink);font-size:11px;font-weight:750}
+.ph .yes{color:var(--green);font-weight:750}.ph .no{color:var(--red);font-weight:750}.ph .na,.ph .sub{color:var(--dim)}.ph .sub{font-size:11px;margin-left:4px}
+.ph .empty{padding:28px 0;text-align:center;color:var(--dim)}
+@media(max-width:560px){.ph .meter{display:none}.ph .mcell b{min-width:0}}
+</style>"""
+
+
+def _player_history(con: Any, player_id: int) -> dict[str, Any]:
+    """История игрока по дням КВ для /player/<id>: ровно те дни, что в «Обзоре» (без архива).
+
+    status дня:
+      played — игрок на табе дня (в дне без таба — есть в отчёте или в счётчике гранат);
+      absent — у дня есть таб, а игрока на нём нет → неявка;
+      nodata — таба нет и в отчёте игрока тоже нет.
+    Игрок на табе — это явка, даже если его не успели просканировать в войсе/гранатах: цифр просто нет.
+    Дни раньше первого упоминания игрока (отчёт, таб, счётчик) не показываются: его ещё не было в клане.
+    """
+    dates = all_dates(con)                                  # новые сверху, как в «Обзоре»
+    allowed = set(dates)
+    player_store.prepare_tab_filter(con)
+    roster_days = {r["match_date"] for r in q(con, "SELECT DISTINCT match_date FROM kv_tab_roster")}
+    on_tab = {r["match_date"] for r in q(
+        con, "SELECT match_date FROM kv_tab_roster WHERE player_id=?", (player_id,))}
+    reports = {r["date"]: r for r in q(con, """
+        SELECT r.match_date date, MAX(k.total_grenades) total, MAX(k.voice_seconds) voice,
+               MAX(k.attended) attended
+        FROM kv_daily_players k JOIN kv_daily_reports r ON r.id=k.report_id
+        WHERE k.player_id=? GROUP BY r.match_date""", (player_id,)) if r["date"] in allowed}
+    tabs: dict[str, list[dict[str, Any]]] = {}
+    resolved: dict[str, int | None] = {}
+    for r in q(con, """
+            SELECT s.match_date date, s.stage stage, sp.player_id pid, sp.nick nick,
+                   sp.kills k, sp.deaths d, sp.assists a, sp.score sc
+            FROM scan_players sp JOIN scans s ON s.id=sp.scan_id
+            WHERE s.match_date IS NOT NULL AND (sp.player_id=? OR sp.player_id IS NULL)
+            ORDER BY s.match_date, COALESCE(s.stage, 99), s.id, sp.place""", (player_id,)):
+        if r["date"] not in allowed:
+            continue
+        if r["pid"] is None:    # ник на табе не привязан — опознаём по нику, как на странице дня
+            nick = str(r["nick"] or "")
+            if nick not in resolved:
+                resolved[nick] = player_store.resolve_player_id_in_connection(con, nick)
+            if resolved[nick] != player_id:
+                continue
+        tabs.setdefault(r["date"], []).append(r)
+    # живой счётчик гранат (runtime): сам не показываем, он лишь говорит, что игрок в этот день был
+    snap_days = {r["match_date"] for r in q(con, f"""
+        SELECT DISTINCT match_date FROM grenade_session_stats
+        WHERE player_id=? AND match_date IS NOT NULL
+          AND {player_store.not_archived('grenade_session_stats.match_date')}""", (player_id,))}
+    joins: dict[str, str] = {}          # первый заход в войс явки (бот пишет его только игрокам из отрядов)
+    try:
+        for r in q(con, f"""
+                SELECT match_date, MIN(joined_at) joined_at FROM voice_join_times
+                WHERE player_id=? AND {player_store.not_archived('voice_join_times.match_date')}
+                GROUP BY match_date""", (player_id,)):
+            joins[r["match_date"]] = r["joined_at"]
+    except sqlite3.OperationalError:    # таблицы нет в совсем старой базе — страница от этого не ломается
+        pass
+    eff_by_day = {d: v[player_id] for d, v in day_efficiencies(con).items() if player_id in v}
+
+    seen = set(reports) | on_tab | set(tabs) | snap_days
+    first = min(seen) if seen else None
+    days: list[dict[str, Any]] = []
+    for d in dates:
+        if first is None or d < first:
+            continue
+        rep = reports.get(d)
+        if d in roster_days:
+            status = "played" if d in on_tab else "absent"
+        else:
+            status = "played" if (rep or d in snap_days) else "nodata"
+        row: dict[str, Any] = {"date": d, "status": status, "on_tab": d in on_tab, "total": None, "voice": None,
+                               "attended": None, "joined": None, "eff": None, "tabs": tabs.get(d, []), "note": ""}
+        if status == "played":
+            row["joined"] = joins.get(d)
+            row["eff"] = eff_by_day.get(d)
+            if rep:
+                row.update(total=rep["total"], voice=rep["voice"], attended=rep["attended"])
+        elif status == "absent":
+            # в отчёте/войсе у него есть следы, а на табе его нет: возможно, ник не опознан — подсказка админу
+            bits = []
+            if rep and rep["total"]:
+                bits.append(f"{rep['total']} гран.")
+            if rep and rep["voice"]:
+                bits.append(f"войс {fmt_sec(rep['voice'])}")
+            parts = []
+            if bits:
+                parts.append("в отчёте: " + ", ".join(bits))
+            if joins.get(d):
+                parts.append(f"в войсе с {fmt_clock(joins[d])}")
+            row["note"] = " · ".join(parts)
+        days.append(row)
+    return {"days": days, "has_join": any(r["joined"] for r in days)}
+
+
+def _player_profile(con: Any, player_id: int) -> dict[str, Any]:
+    """Отряд, Discord и прочие ники игрока — шапка страницы."""
+    squad = one(con, """SELECT MIN(squad_id) sid FROM roster_memberships
+                        WHERE player_id=? AND active=1 AND (squad_id BETWEEN 1 AND 6 OR squad_id=99)""", (player_id,))
+    discords = [r["name"] for r in q(con, """
+        SELECT COALESCE(NULLIF(discord_username,''), NULLIF(discord_name,'')) name
+        FROM discord_bindings WHERE player_id=? ORDER BY updated_at DESC""", (player_id,)) if r["name"]]
+    nick = (one(con, "SELECT canonical_nick FROM players WHERE id=?", (player_id,)) or {}).get("canonical_nick", "")
+    aliases = [r["alias"] for r in q(con, "SELECT alias FROM player_aliases WHERE player_id=? ORDER BY alias COLLATE NOCASE",
+                                     (player_id,)) if str(r["alias"]).lower() != str(nick).lower()]
+    return {"squad": squad["sid"] if squad and squad["sid"] is not None else None,
+            "discords": discords, "aliases": aliases}
+
+
+def _gear_chips(con: Any, player_id: int) -> str:
+    """Шмот игрока (то, что указано на странице «Шмот») — только для чтения.
+
+    Шмот — отдельный необязательный модуль: нет его или иконок — страница игрока просто без этой строки.
+    """
+    try:
+        from tools import gear as gear_mod
+        entries = {r["slot"]: dict(r) for r in con.execute(
+            "SELECT slot, item, level, text FROM player_gear WHERE player_id=?", (player_id,))}
+        chips = []
+        for column in gear_mod.COLUMNS:
+            entry = entries.get(column.key)
+            if column.is_text:
+                text = str((entry or {}).get("text") or "")
+                if text:
+                    chips.append(f"<span class='gi txt' title='Скорость'><span class='gs'>Скорость</span>{esc(text)}</span>")
+                continue
+            key, level = gear_mod._slot_state(column, entry)
+            item = gear_mod.ITEMS.get(key)
+            if item is None:                    # не указано или «предмета нет» — не показываем
+                continue
+            color = gear_mod.RARITY[item.rarity][1]
+            lv = f"<span class='lv'>+{level}</span>" if level > 0 else ""
+            tip = f"{column.title}: {item.name}" + (f" +{level}" if level > 0 else "")
+            chips.append(f"<span class='gi' title='{esc(tip)}'>"
+                         f"<img src='{esc(gear_mod._icon_url(item.icon))}' alt='' style='border-color:{color}'>"
+                         f"<span>{esc(item.name)}{lv}</span></span>")
+        return f"<div class='gear'>{''.join(chips)}</div>" if chips else ""
+    except Exception:       # noqa: BLE001 — шмот не должен ломать профиль
+        return ""
+
+
+def _fmt_num(value: Any) -> str:
+    try:
+        return f"{int(value):,}".replace(",", " ")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _tab_cells(tabs: list[dict[str, Any]]) -> tuple[str, str]:
+    """Табы дня → (У/С/П, счёт): суммы по всем табам дня, как на странице дня."""
+    if not tabs:
+        return "<td class='na'>—</td>", "<td class='na'>—</td>"
+    k = sum(int(t["k"] or 0) for t in tabs)
+    d = sum(int(t["d"] or 0) for t in tabs)
+    a = sum(int(t["a"] or 0) for t in tabs)
+    scores = [int(t["sc"]) for t in tabs if t["sc"] is not None]
+    each = " | ".join(f"{t['k']}/{t['d']}/{t['a']} · {t['sc'] if t['sc'] is not None else '—'}" for t in tabs)
+    more = f"<span class='sub'>×{len(tabs)}</span>" if len(tabs) > 1 else ""
+    kda = f"<td title='{esc(each)}'>{k}/{d}/{a}{more}</td>"
+    score = f"<td>{_fmt_num(sum(scores))}</td>" if scores else "<td class='na'>—</td>"
+    return kda, score
+
+
+def _attendance_cell(row: dict[str, Any]) -> str:
+    """Явка. Игрок на табе — явка есть (даже если войс не просканирован); в дне без таба — отметка из отчёта."""
+    if row["on_tab"]:
+        return "<td class='yes' title='Был на табе'>✓</td>"
+    value = row["attended"]
+    if value is None:
+        return "<td class='na' title='Таба у дня нет, отметки в отчёте тоже'>—</td>"
+    if int(value):
+        return "<td class='yes' title='Отметился на явке'>✓</td>"
+    return "<td class='no' title='Не отметился на явке (таба у дня пока нет)'>✕</td>"
+
+
+def _tile(label: str, value: str, sub: str = "", title: str = "") -> str:
+    tip = f" title='{esc(title)}'" if title else ""
+    extra = f"<span class='of'>{sub}</span>" if sub else ""
+    return f"<div class='metric'{tip}><label>{esc(label)}</label><b>{value}{extra}</b></div>"
+
+
 @app.get("/player/<int:player_id>")
 def player(player_id: int):
     with closing(player_store.connect(DB_PATH)) as con:
         p = one(con, "SELECT canonical_nick FROM players WHERE id=?", (player_id,))
         if not p:
             return render("Нет игрока", "<p>Игрок не найден.</p>"), 404
-        tabs = q(con, """SELECT s.match_date date, sp.kills k, sp.deaths d, sp.assists a,
-                                sp.score sc, s.stage
-                         FROM scan_players sp JOIN scans s ON s.id=sp.scan_id
-                         WHERE sp.player_id=?
-                           AND NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=s.match_date)
-                         ORDER BY s.match_date DESC, s.stage, s.id""",
-                 (player_id,))
-        # дни, где у игрока есть отчёт, но его нет на табе этого дня, в историю не попадают
-        player_store.prepare_tab_filter(con)
-        days = q(con, f"""SELECT r.match_date date, k.total_grenades total,
-                                k.voice_seconds voice, k.attended attended,
-                                GROUP_CONCAT(g.stage_no||':'||g.grenades) stages
-                         FROM kv_daily_players k
-                         JOIN kv_daily_reports r ON r.id=k.report_id
-                         LEFT JOIN kv_daily_grenade_stages g
-                           ON g.report_id=k.report_id AND g.row_no=k.row_no
-                         WHERE k.player_id=?
-                           AND NOT EXISTS (SELECT 1 FROM archived_days _a WHERE _a.match_date=r.match_date)
-                           AND {player_store.played_filter('r.match_date', 'k.player_id')}
-                         GROUP BY r.match_date, k.report_id, k.row_no
-                         ORDER BY r.match_date DESC""", (player_id,))
-        snaps = q(con, f"""SELECT match_date date, GROUP_CONCAT(stat_key||'='||value) snap
-                          FROM grenade_session_stats WHERE player_id=?
-                          AND match_date IS NOT NULL
-                          AND NOT EXISTS (SELECT 1 FROM archived_days _a
-                                          WHERE _a.match_date=grenade_session_stats.match_date)
-                          AND {player_store.played_filter('grenade_session_stats.match_date', 'grenade_session_stats.player_id')}
-                          GROUP BY match_date ORDER BY match_date DESC""", (player_id,))
-    max_stage = 0
-    for r in days:
-        stages = {}
-        for part in (r.get("stages") or "").split(","):
-            if ":" in part:
-                sn, val = part.split(":", 1)
-                stages[int(sn)] = val if val != "" else "·"
-        r["stages"] = stages
-        max_stage = max([max_stage, *stages.keys()])
-    stage_cols = "".join(f"<th class='gcol sortable' data-sort='number'>{stage_label(i)}</th>"
-                         for i in range(1, max_stage + 1))
-    max_total = max((r["total"] or 0) for r in days) if days else 0
+        hist = _player_history(con, player_id)
+        profile = _player_profile(con, player_id)
+        gear_html = _gear_chips(con, player_id)
+    days = hist["days"]
+    show_join = hist["has_join"]
+    ncols = 7 + (1 if show_join else 0)
+    played = [r for r in days if r["status"] == "played"]
+    absent = [r for r in days if r["status"] == "absent"]
+
+    # ── сводка ──
+    totals = [(int(r["total"]), r["date"]) for r in played if r["total"] is not None]
+    max_total = max((t for t, _ in totals), default=0)
+    grenades = sum(t for t, _ in totals)
+    voice = sum(int(r["voice"]) for r in played if r["voice"] is not None)
+    tab_rows = [t for r in played for t in r["tabs"]]
+    kills = sum(int(t["k"] or 0) for t in tab_rows)
+    deaths = sum(int(t["d"] or 0) for t in tab_rows)
+    assists = sum(int(t["a"] or 0) for t in tab_rows)
+    scores = [int(t["sc"]) for t in tab_rows if t["sc"] is not None]
+    effs = [float(r["eff"]) for r in played if r["eff"] is not None]
+    n_days = len(played) + len(absent)
+    # гранаты на таб: только дни, где есть и отчёт, и табы (иначе делить не на что)
+    with_tabs = [r for r in played if r["total"] is not None and r["tabs"]]
+    per_tab_grenades = sum(int(r["total"]) for r in with_tabs)
+    per_tab_count = sum(len(r["tabs"]) for r in with_tabs)
+
+    tiles = [
+        _tile("Явка", f"{len(played)}", f"из {n_days} · {round(100 * len(played) / n_days)}%" if n_days else "",
+              "Дни КВ, где игрок был на табе, из всех дней с табом"),
+        _tile("EFF", f"{sum(effs) / len(effs):.1f}" if effs else "—", "из 100" if effs else "",
+              "Средний EFF по дням с табом (как на странице «Игроки»)"),
+        _tile("KDA", f"{(kills + assists) / deaths:.2f}" if deaths else (f"{kills + assists}" if tab_rows else "—"),
+              f"{kills}/{deaths}/{assists}" if tab_rows else "", "(Убийства + Помощь) / Смерти по всем табам; в подписи сумма У/С/П"),
+        _tile("Счёт за таб", _fmt_num(round(sum(scores) / len(scores))) if scores else "—", "", "Средний счёт за один таб"),
+        _tile("Гранат", _fmt_num(grenades) if totals else "—"),
+        _tile("Ср. гранат за КВ", f"{grenades / len(totals):.0f}" if totals else "—", "",
+              "Среднее за день КВ, где есть отчёт"),
+        _tile("Ср. гранат за таб", f"{per_tab_grenades / per_tab_count:.1f}" if per_tab_count else "—", "",
+              "Гранаты за день, поделённые на число табов дня (дни с отчётом и табом)"),
+        _tile("Войс", fmt_sec(voice) if voice else "—", f"{fmt_sec(voice // len(played))} за КВ" if voice and played else "",
+              "Сумма времени в войсе по просканированным дням"),
+    ]
+    summary = f"<div class='metrics'>{''.join(tiles)}</div>" if days else ""
+
+    # ── таблица по дням ──
     trs = []
     for r in days:
-        cells = "".join(f"<td class='gcol'>{esc(r['stages'].get(i, '—'))}</td>"
-                        for i in range(1, max_stage + 1))
-        flag = (" <span class='flag'>⚠</span>"
-                if r["total"] and r["total"] == max_total and max_total > 150 else "")
-        trs.append(
-            f"<tr><td class='nick'><a href='{url_for('day', date=r['date'])}'>"
-            f"{fmt_date_ru(r['date'])}</a></td>{cells}"
-            f"<td class='total'>{r['total']}</td><td>{fmt_sec(r['voice'])}</td>"
-            f"<td>{fmt_attended(r['attended'])}</td><td>{flag}</td></tr>")
-    tab_rows = "".join(
-        "<tr><td class='nick'><a href='{u}'>{d}</a></td><td>{st}</td>"
-        "<td>{k}/{dt}/{a}</td><td>{sc}</td></tr>".format(
-            u=url_for("day", date=t["date"]), d=fmt_date_ru(t["date"]),
-            st=stage_label(t["stage"]), k=t["k"], dt=t["d"], a=t["a"], sc=t["sc"])
-        for t in tabs)
-    snap_rows = "".join(
-        f"<tr><td>{fmt_date_ru(s['date'])}</td><td>{esc(s['snap'])}</td></tr>"
-        for s in snaps)
-    body = (f"<a class='back' href='{url_for('players')}'>← Игроки</a>"
-            f"<h1>👤 {esc(p['canonical_nick'])}</h1>"
-            "<h2>💣 Гранаты по этапам и 🎙 войс по дням</h2>"
-            f"<div class='panel'><div class='scroll'><table><thead><tr><th>Дата</th>"
-            f"{stage_cols}<th>Всего</th><th>Войс</th><th>Явка</th><th></th></tr></thead>"
-            f"<tbody>{''.join(trs)}</tbody></table></div></div>"
-            "<h2>📄 Табы (У/С/П · СЧЁТ)</h2>"
-            "<div class='panel'><div class='scroll'><table><thead><tr><th>Дата</th>"
-            f"<th>Этап</th><th>У/С/П</th><th>СЧЁТ</th></tr></thead>"
-            f"<tbody>{tab_rows}</tbody></table></div></div>")
-    if snap_rows:
-        body += ("<h2>Счётчик-снапшоты (runtime)</h2>"
-                 "<div class='panel'><table><thead><tr><th>Дата</th><th>Значения</th>"
-                 f"</tr></thead><tbody>{snap_rows}</tbody></table></div>")
+        link = f"<td class='nick grow'><a href='{url_for('day', date=r['date'])}'>{fmt_date_ru(r['date'])}</a></td>"
+        if r["status"] == "absent":
+            trs.append(f"<tr class='absent'>{link}<td title='Нет на табе этого дня'><span class='pill'>Неявка</span></td>"
+                       f"<td class='note' colspan='{ncols - 2}'>{esc(r['note'])}</td></tr>")
+            continue
+        if r["status"] == "nodata":
+            trs.append(f"<tr class='nodata'>{link}<td colspan='{ncols - 1}'>нет данных</td></tr>")
+            continue
+        if r["total"] is None:
+            gren = "<td class='na'>—</td>"
+        else:
+            flag = (" <span class='flag' title='Максимум и больше 150 — проверить на накрутку'>⚠</span>"
+                    if r["total"] == max_total and max_total > 150 else "")
+            gren = (f"<td class='total'><span class='mcell'>{meter(r['total'], max_total)}"
+                    f"<b>{r['total']}</b></span>{flag}</td>")
+        join = ""
+        if show_join:
+            join = (f"<td class='vj' title='{esc(str(r['joined'])[11:19])} МСК'>{esc(fmt_clock(r['joined']))}</td>"
+                    if r["joined"] else "<td class='na'>—</td>")
+        eff = (f"<td>{_eff_cell(round(float(r['eff']), 1))}</td>" if r["eff"] is not None else "<td class='na'>—</td>")
+        kda, score = _tab_cells(r["tabs"])
+        trs.append(f"<tr>{link}{_attendance_cell(r)}{gren}<td>{fmt_sec(r['voice'])}</td>{join}{kda}{score}{eff}</tr>")
+
+    if days:
+        table = ("<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Дата</th>"
+                 "<th title='Игрок на табе дня = явка'>Явка</th><th>Гранаты</th><th>Войс</th>"
+                 + ("<th title='Во сколько зашёл в войс явки'>Зашёл</th>" if show_join else "") +
+                 "<th title='Убийства / Смерти / Помощь за день (сумма по табам)'>У/С/П</th>"
+                 "<th title='Сумма счёта по табам дня'>Счёт</th>"
+                 "<th title='EFF за этот день: место среди игроков на табе (как на странице «Игроки»)'>EFF</th>"
+                 f"</tr></thead><tbody>{''.join(trs)}</tbody></table></div>")
+        span = (f"КВ с {fmt_date_ru(days[-1]['date'])} по {fmt_date_ru(days[0]['date'])}"
+                if len(days) > 1 else f"КВ {fmt_date_ru(days[0]['date'])}")
+    else:
+        table = "<div class='empty'>По этому игроку пока нет дней КВ.</div>"
+        span = ""
+
+    meta = []
+    if profile["squad"] is not None:
+        meta.append(esc(squad_label(int(profile["squad"]))))
+    if profile["discords"]:
+        meta.append("Discord: " + esc(", ".join(profile["discords"])))
+    if profile["aliases"]:
+        shown = profile["aliases"][:6]
+        more = f" +{len(profile['aliases']) - 6}" if len(profile["aliases"]) > 6 else ""
+        meta.append("Также: " + esc(", ".join(shown)) + more)
+    if span:
+        meta.append(esc(span))
+    meta_html = "".join(f"<span>{m}</span>" for m in meta)
+
+    body = (PLAYER_CSS + "<div class='ph'>"
+            f"<a class='back' href='{url_for('players')}'>← Игроки</a>"
+            f"<div class='pagehead'><div><h1>{esc(p['canonical_nick'])}</h1>"
+            f"<div class='meta'>{meta_html}</div></div></div>"
+            + summary + gear_html + table + "</div>")
     return render(p["canonical_nick"], body)
 
 

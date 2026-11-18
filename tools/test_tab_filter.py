@@ -219,13 +219,18 @@ class TabFilterTests(unittest.TestCase):
         self.assertIn("<td>3</td><td class='total'>30</td>", self.player_row(page, "Alpha"))
         self.assertIn("<td>2</td><td class='total'>80</td>", self.player_row(page, "Delta"))
 
-    def test_player_page_hides_day_where_player_was_not_on_tab(self):
+    def test_player_page_shows_day_where_player_was_not_on_tab_as_absence(self):
+        def day_row(page, day):
+            return re.search(rf"<tr[^>]*><td class='nick grow'><a href='/day/{day}'>.*?</tr>", page, re.S).group(0)
+
         delta = self.get(f"/player/{self.pid['Delta']}").get_data(as_text=True)
-        self.assertNotIn(f"/day/{D1}", delta)
+        row = day_row(delta, D1)
+        self.assertIn("Неявка", row)                           # день виден, но как неявка
+        self.assertNotIn("<b>40</b>", row)                     # гранаты из отчёта за этот день не засчитываются
         self.assertNotIn("20:00=7", delta)                     # runtime-снапшот этого дня тоже спрятан
-        self.assertIn(f"/day/{D2}", delta)
+        self.assertNotIn("Неявка", day_row(delta, D2))         # D2 без таба — считается по отчёту
         alpha = self.get(f"/player/{self.pid['Alpha']}").get_data(as_text=True)
-        self.assertIn(f"/day/{D1}", alpha)
+        self.assertNotIn("Неявка", day_row(alpha, D1))
 
     def test_collect_kv_daily_stats_ignores_non_tab_players(self):
         stats = player_store.collect_kv_daily_stats(self.db)["samples"]
