@@ -225,7 +225,8 @@ class TabFilterTests(unittest.TestCase):
 
         delta = self.get(f"/player/{self.pid['Delta']}").get_data(as_text=True)
         row = day_row(delta, D1)
-        self.assertIn("Неявка", row)                           # день виден, но как неявка
+        self.assertIn("Не играл", row)                         # день виден: пришёл (есть в отчёте), но на табе его нет
+        self.assertNotIn("Неявка", row)
         self.assertNotIn("<b>40</b>", row)                     # гранаты из отчёта за этот день не засчитываются
         self.assertNotIn("20:00=7", delta)                     # runtime-снапшот этого дня тоже спрятан
         self.assertNotIn("Неявка", day_row(delta, D2))         # D2 без таба — считается по отчёту
