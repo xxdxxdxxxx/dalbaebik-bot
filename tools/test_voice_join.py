@@ -156,7 +156,7 @@ class VoiceJoinPageTests(unittest.TestCase):
     def test_button_on_players_page_leads_to_voice_page(self):
         html = self.get("/players").get_data(as_text=True)
         self.assertIn("href='/players/voice'", html)
-        self.assertIn("Заход войс", html)
+        self.assertIn("Заход в войс", html)
 
     def test_table_has_nick_and_non_archived_dates_newest_first(self):
         html = self.page()

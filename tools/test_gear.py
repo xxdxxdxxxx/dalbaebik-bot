@@ -74,7 +74,7 @@ class GearPageTests(unittest.TestCase):
     def test_page_lists_squad_players_with_empty_slots_and_nav_link(self):
         html = self.page()
         self.assertIn(">Шмот</a>", html)
-        self.assertRegex(html, r"class='active' href='/gear'")
+        self.assertRegex(html, r'class="active" aria-current="page" href="/gear"')
         heads = re.findall(r"<th class='g-c[^']*'>([^<]+)</th>", html)
         self.assertEqual(heads, ["Снайпы", "Кувалда", "Био", "Тяж", "Огнемёт", "Скорость"])   # порядок слева направо
         self.assertIn("Отряд 1", html)
@@ -399,10 +399,11 @@ class GearPageTests(unittest.TestCase):
         self.assertRegex(html, r"\.gt td\.g-f,\.gt th\.g-f\{width:25%")      # пустая колонка справа уже ников → блок категорий правее центра
         self.assertRegex(html, r"\.g-slot:not\(\.empty\)\{border-width:1\.5px\}")   # рамка заполненных слотов тоньше пустых
         self.assertNotRegex(html, r"\.gt td\.nick,\.gt th\.nick\{[^}]*width:")   # у ника нет своей ширины
-        self.assertRegex(html, r"\.g-panel\{overflow:visible\}")            # без этого шапка не залипает
-        self.assertRegex(html, r"\.gt thead th\{top:50px")                  # под верхней панелью, как в «Бафах»
+        self.assertRegex(html, r"\.panel\{[^}]*overflow:clip")                # clip, а не hidden/auto: шапка залипает
+        self.assertNotRegex(html, r"\.g-panel\{overflow:(hidden|auto)")
+        self.assertRegex(html, r"th\{position:sticky;top:var\(--head\)")      # под верхней панелью, как в «Бафах»
         self.assertNotIn("class='scroll'", html)                            # обёртка со своим скроллом ломала бы sticky
-        self.assertIn("<main class=\"wrap layout-players\">", html)         # ширина страницы как у «Игроков»
+        self.assertIn('<main class="wrap">', html)                           # та же ширина, что у «Игроков»: один контейнер
         self.assertEqual(html.count("<th class='g-f'></th>"), 1)           # пустая колонка справа
         self.assertEqual(html.count("<td class='g-f'></td>"), 3)           # по одной на игрока
 

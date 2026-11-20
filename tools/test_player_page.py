@@ -160,13 +160,13 @@ class PlayerPageTests(unittest.TestCase):
         html = self.page()
         d6, d7 = self.row(html, D6), self.row(html, D7)
         self.assertIn("<b>30</b>", d6)                          # таба нет, но по отчёту был — явка и цифры
-        self.assertIn("class='yes'", d6)
+        self.assertIn("class='yes c'", d6)
         self.assertIn("<td class='note' colspan='3'>нет таба</td>", d6)    # вместо трёх прочерков одна пометка
         self.assertNotIn("Неявка", d6)
         self.assertIn("class='notab'", d7)                      # таба нет и данных нет — день целиком «не просканирован»
         self.assertIn("<span class='pill gry'>Не просканирован</span></td><td class='note' colspan='5'></td>", d7)   # без текста
         self.assertNotIn("таба нет", d7)
-        for word in ("Неявка", "Не играл", "class='yes'", "class='no'"):
+        for word in ("Неявка", "Не играл", "class='yes c'", "class='no'"):
             self.assertNotIn(word, d7)
 
     def test_no_cross_or_dash_in_attendance_column(self):
@@ -174,7 +174,7 @@ class PlayerPageTests(unittest.TestCase):
         self.assertNotIn("class='no'", html)                    # красных ✕ больше нет нигде
         self.assertNotIn("✕", html)
         for day in (D1, D2, D6):
-            self.assertIn("<td class='yes'", self.row(html, day))
+            self.assertIn("<td class='yes c'", self.row(html, day))
 
     def test_unbound_tab_row_counts_as_presence_by_nick(self):
         self.seed_tab(D4, [(None, 6, 2, 1, 700)], nick_override="Alpha")
@@ -206,10 +206,10 @@ class PlayerPageTests(unittest.TestCase):
     def test_player_on_tab_has_attendance_even_when_report_says_no_or_has_no_voice(self):
         html = self.page()
         d2 = self.row(html, D2)                           # на табе; в отчёте «не отметился»
-        self.assertIn("class='yes'", d2)
+        self.assertIn("class='yes c'", d2)
         self.assertNotIn("class='no'", d2)
         g1 = self.row(self.page(self.gamma), D1)          # на табе, а в отчёте (войс/гранаты) его вообще нет
-        self.assertIn("class='yes'", g1)
+        self.assertIn("class='yes c'", g1)
         self.assertNotIn("Неявка", g1)
 
     def test_player_on_tab_but_not_in_report_is_played_without_numbers(self):

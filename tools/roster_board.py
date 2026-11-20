@@ -5,7 +5,7 @@ import html
 import sqlite3
 from contextlib import closing
 
-from flask import request, url_for
+from flask import request
 
 SUBS_ID = 99
 ORDER = (1, 2, 3, SUBS_ID, 4, 5, 6)
@@ -23,8 +23,44 @@ def slots_for(squad_id):
     return SUBS_SLOTS if squad_id == SUBS_ID else SLOTS
 
 CSS = r"""
-.layout-squads{max-width:940px}main h1+.squads-zone{margin-top:14px}.sheet-cell.err{box-shadow:inset 0 0 0 2px var(--red)}.sheet-cell.saving{opacity:.7}.squads-zone{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.sheet-main{min-width:0}.sheet-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));background:var(--panel)}.sheet-grid-bottom{border-top:1px solid var(--line)}.sheet-col{min-width:0;border-right:1px solid var(--line)}.sheet-subs{border-right:0}.sheet-cell.above-band{border-bottom:0}.sheet-head{height:38px;display:grid;place-items:center;background:var(--soft);border-bottom:1px solid var(--line);font-size:14px;font-weight:800;text-align:center}.sheet-cell,.sheet-note{display:block;width:100%;height:36px;border:0;border-bottom:1px solid rgba(127,127,127,.17);border-radius:0;background:var(--panel);color:var(--text);font:550 14px/36px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;text-align:center;padding:0 8px;outline:0}.sheet-cell:last-child,.sheet-note:last-child{border-bottom:0}.sheet-head.sheet-band{height:39px;border-top:1px solid var(--line)}.sheet-cell.sheet-mid{height:39px;line-height:37px;border-top:1px solid var(--line)}.sheet-cell:focus,.sheet-note:focus{background:var(--blue2);box-shadow:inset 0 0 0 1px var(--blue)}.sheet-cell.dragging{opacity:.4}.sheet-cell.drag-over{background:var(--blue2);box-shadow:inset 0 0 0 2px var(--blue)}.notes-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:16px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)}.note-col{min-width:0;border-right:1px solid var(--line)}.note-col:last-child{border-right:0}.sheet-status{height:20px;margin-top:8px;color:var(--dim);font-size:11px;text-align:right}.sheet-status.ok{color:var(--green)}.sheet-status.err{color:var(--red)}
-@media(max-width:760px){.squads-zone{grid-template-columns:1fr}.sheet-grid,.notes-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.sheet-col:nth-child(2n),.note-col:nth-child(2n){border-right:0}.sheet-col:nth-child(n+3),.note-col:nth-child(n+3){border-top:1px solid var(--line)}.sheet-subs{border-top:1px solid var(--line)}.sheet-head.sheet-band{display:none}.sheet-cell.above-band{border-bottom:1px solid rgba(127,127,127,.17)}.sheet-cell.sheet-mid{height:36px;line-height:36px;border-top:0}}@media(max-width:430px){.sheet-grid,.notes-grid{grid-template-columns:1fr}.sheet-col,.note-col{border-right:0!important;border-top:1px solid var(--line)}.sheet-col:first-child,.note-col:first-child{border-top:0}}
+.squads-zone{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);margin-top:14px;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:var(--panel)}
+.sheet-main{min-width:0}
+.sheet-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));background:var(--panel)}
+.sheet-grid-bottom{border-top:1px solid var(--line)}
+.sheet-col{min-width:0;border-right:1px solid var(--line)}
+.sheet-subs{border-right:0}
+.sheet-head{height:38px;display:grid;place-items:center;background:var(--soft);border-bottom:1px solid var(--line);font-size:13px;font-weight:650;color:var(--dim);text-align:center}
+.sheet-head.sheet-band{height:39px;border-top:1px solid var(--line)}
+.sheet-cell,.sheet-note{display:block;width:100%;height:36px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);font:550 14px/36px var(--font);text-align:center;padding:0 8px;outline:0}
+.sheet-cell:last-child,.sheet-note:last-child{border-bottom:0}
+.sheet-cell.above-band{border-bottom:0}
+.sheet-cell.sheet-mid{height:39px;line-height:37px;border-top:1px solid var(--line)}
+.sheet-cell:focus,.sheet-note:focus{background:var(--blue2);box-shadow:inset 0 0 0 1px var(--blue)}
+.sheet-cell.err{box-shadow:inset 0 0 0 2px var(--red)}
+.sheet-cell.saving{opacity:.7}
+.sheet-cell.dragging{opacity:.4}
+.sheet-cell.drag-over{background:var(--blue2);box-shadow:inset 0 0 0 2px var(--blue)}
+.notes-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:16px;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:var(--panel)}
+.note-col{min-width:0;border-right:1px solid var(--line)}
+.note-col:last-child{border-right:0}
+.sheet-status{height:20px;margin-top:8px;color:var(--dim);font-size:12px;text-align:right}
+.sheet-status.ok{color:var(--green)}
+.sheet-status.err{color:var(--red)}
+@media(max-width:760px){
+  .squads-zone{grid-template-columns:1fr}
+  .sheet-grid,.notes-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .sheet-col:nth-child(2n),.note-col:nth-child(2n){border-right:0}
+  .sheet-col:nth-child(n+3),.note-col:nth-child(n+3){border-top:1px solid var(--line)}
+  .sheet-subs{border-top:1px solid var(--line)}
+  .sheet-head.sheet-band{display:none}
+  .sheet-cell.above-band{border-bottom:1px solid var(--line)}
+  .sheet-cell.sheet-mid{height:36px;line-height:36px;border-top:0}
+}
+@media(max-width:430px){
+  .sheet-grid,.notes-grid{grid-template-columns:1fr}
+  .sheet-col,.note-col{border-right:0!important;border-top:1px solid var(--line)}
+  .sheet-col:first-child,.note-col:first-child{border-top:0}
+}
 """
 
 SCRIPT = r"""<script>
@@ -151,18 +187,8 @@ def install(admin):
     if getattr(admin.app, "_roster_board_installed", False):
         return
     admin.app._roster_board_installed = True
-    admin.PAGE = admin.PAGE.replace("</style>", CSS.replace("{", "{{").replace("}", "}}") + "\n</style>")
-    base_render = admin.render
-
-    def render(title, body):
-        page = base_render(title, body)
-        active = "active" if request.path.startswith("/squads") else ""
-        link = f"<a class='{active}' href='{url_for('squads')}'>Отряды</a>"
-        if "<!--navx-->" in page:
-            return page.replace("<!--navx-->", link, 1)
-        return page.replace("</nav></div></header>", link + "</nav></div></header>", 1)
-
-    admin.render = render
+    admin.add_css(CSS)
+    admin.register_nav("Отряды", "squads", order=30, prefixes=("/squads",))
 
     @admin.app.get("/squads")
     def squads():

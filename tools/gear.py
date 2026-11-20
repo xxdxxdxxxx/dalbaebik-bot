@@ -185,25 +185,24 @@ CSS = r"""
 .g-mini{width:32px;height:32px;margin:0;flex:none;cursor:inherit}
 /* Панель на всю ширину, как в «Игроках»: ник слева, иконки и скорость примерно по центру, справа свободное место (.g-f).
    overflow:visible, как у «Бафов», — иначе шапка не залипает при прокрутке страницы. */
-.g-panel{overflow:visible}
 /* table-layout:fixed: иконки и скорость — заданной ширины, пустая колонка справа (.g-f) — 25% таблицы, ник забирает остаток.
    Чем шире .g-f, тем левее блок категорий; чем уже — тем он правее. */
 .gt{width:100%;table-layout:fixed}.gt td.nick,.gt th.nick{padding-left:8px}
-.gt td.g-c,.gt th.g-c{width:58px;padding:4px 0}.gt th.g-c{font-size:9px;letter-spacing:0}
+.gt td.g-c,.gt th.g-c{width:58px;padding:4px 0}
 .gt td.g-f,.gt th.g-f{width:25%;padding:0}
 /* Скорость: колонка по центру, число стоит ровно под заголовком «Скорость». */
 .gt td.g-w,.gt th.g-w{width:74px;padding:4px 0;text-align:center}
-.gt thead th{top:50px;box-shadow:0 1px 0 var(--line)}
-@media(max-width:760px){.g-panel{overflow-x:auto}.gt{min-width:720px}.gt thead th{top:0}}
+@media(max-width:760px){.g-panel{overflow-x:auto}.gt{min-width:720px}}
 .g-sp{display:block;width:52px;height:30px;min-height:30px;margin:0 auto;padding:0 4px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-weight:650;text-align:center;font-variant-numeric:tabular-nums}
 .g-sp::placeholder{color:var(--dim);opacity:.55}.g-sp:hover,.g-sp:focus{background:var(--panel);border-color:var(--line);outline:none}.g-sp:focus{border-color:var(--blue)}.g-sp.err{border-color:var(--red)}
 .g-pop{position:absolute;z-index:60;width:216px;padding:8px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.3)}.g-pop[hidden]{display:none}
-.g-gh{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:0 2px 6px;color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.05em}.g-gh b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:12px;text-transform:none;letter-spacing:0}
+.g-gh{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:0 2px 6px;color:var(--dim);font-size:12px;font-weight:600}.g-gh b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:12px;text-transform:none;letter-spacing:0}
 .g-opt{display:flex;align-items:center;justify-content:flex-start;gap:10px;width:100%;min-height:42px;padding:3px 6px;border:1px solid transparent;border-radius:8px;background:transparent;text-align:left;font-weight:700}
 .g-opt:hover,.g-opt:focus-visible{background:var(--soft);outline:none}.g-opt.on{background:var(--blue2);border-color:var(--blue)}
 .g-rr{display:block;font-size:10px;font-weight:650;line-height:1.2}.g-clear{min-height:32px;color:var(--dim);font-weight:650}.g-reset{min-height:28px;font-size:12px;font-weight:600}
 .g-lvl{display:flex;align-items:center;gap:6px;margin:8px 2px 0;padding-top:8px;border-top:1px solid var(--line);color:var(--dim);font-weight:650}
 .g-lvl input{width:60px;margin-left:auto;text-align:center;font:inherit;font-weight:700;color:var(--text)}
+.g-slot.empty{opacity:.6}.g-slot.empty:hover,.g-slot.empty:focus-visible{opacity:1}
 .g-status{position:fixed;right:16px;bottom:16px;z-index:70;padding:6px 11px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 6px 18px rgba(0,0,0,.2);color:var(--dim);font-weight:650}.g-status:empty{display:none}.g-status.ok{color:var(--green)}.g-status.err{color:var(--red)}
 """
 
@@ -348,7 +347,7 @@ def render_body(admin: Any, roster: list[dict[str, Any]], gear: dict[tuple[int, 
         table = "<p class='hint'>В отрядах пока никого нет.</p>"
     return ("<div class='pagehead'><div><h1>Шмот</h1>"
             "</div></div>"
-            "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
+            f"<div class='toolbar'>{admin._search_box()}</div>"
             f"{table}<div id='gear-pop' class='g-pop' hidden role='dialog' aria-label='Выбор предмета'></div>"
             "<div id='gear-status' class='g-status' role='status' aria-live='polite'></div>"
             f"<script type='application/json' id='gear-cfg'>{_config(icons)}</script>"
@@ -361,21 +360,8 @@ def install(admin: Any) -> None:
     if getattr(admin.app, "_gear_installed", False):
         return
     admin.app._gear_installed = True
-    admin.PAGE = admin.PAGE.replace("</style>", CSS.replace("{", "{{").replace("}", "}}") + "\n</style>", 1)
-    base_render = admin.render
-
-    def render(title: str, body: str) -> str:
-        page = base_render(title, body)
-        active = "active" if request.path.startswith("/gear") else ""
-        link = f"<a class='{active}' href='{url_for('gear_page')}'>Шмот</a>"
-        logout = "<form method=\"post\" action=\"/logout\""
-        if "<!--navx-->" in page:
-            return page.replace("<!--navx-->", link, 1)
-        if logout in page:
-            return page.replace(logout, link + logout, 1)
-        return page.replace("</nav></div></header>", link + "</nav></div></header>", 1)
-
-    admin.render = render
+    admin.add_css(CSS)
+    admin.register_nav("Шмот", "gear_page", order=50, prefixes=("/gear",))
 
     @admin.app.get("/gear")
     def gear_page():

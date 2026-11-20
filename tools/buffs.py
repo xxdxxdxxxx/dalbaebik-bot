@@ -599,36 +599,55 @@ def _version(con: sqlite3.Connection, now: datetime) -> str:
 
 
 CSS = r"""
-.bt td.bc,.bt th.bh{width:66px;min-width:56px}.bt td.bc{font-weight:650}.bt td.bc .z{color:var(--dim);opacity:.4;font-weight:400}
-.bt tfoot td{border-top:1px solid var(--line);border-bottom:0;background:var(--soft);font-weight:750}.bt tfoot tr.rest td{background:transparent;border-top:0;color:var(--dim);font-weight:650}
-.bt td.nick .who{font-weight:650}.bt td.nick .typed,.bt td.nick .when{color:var(--dim);font-size:11px;margin-left:6px;font-weight:400}
+.bt{width:100%}
+.bt td.bc,.bt th.bh{width:66px;min-width:56px}
+.bt td.bc{font-weight:650}
+.bt td.bc .z{color:var(--dim);font-weight:400}
+.bt tfoot td{border-top:1px solid var(--line);border-bottom:0;background:var(--soft);font-weight:700}
+.bt tfoot tr.rest td{background:transparent;border-top:0;color:var(--dim);font-weight:650}
+.bt tfoot tr.totals td{border-top:1px solid var(--line);border-bottom:0;background:var(--soft);font-weight:700}
+.bt td.nick{max-width:420px;white-space:normal}
+.bt td.nick .who{font-weight:650}
+.bt td.nick .typed,.bt td.nick .when{color:var(--dim);font-size:12px;margin-left:8px;font-weight:400}
+.bt td.nick .bnote{display:block;margin-top:2px;font-size:12px;font-weight:400;line-height:1.35}
+.bt td.nick .bnote .ic{width:13px;height:13px;margin-right:4px}
 .bt td.tk,.bt th.tk{width:56px;text-align:center;position:sticky;right:0;background:var(--panel);border-left:1px solid var(--line)}
-.bt th.tk{background:var(--soft);z-index:3}.bt tfoot td.tk{background:var(--soft)}.bt tfoot tr.rest td.tk{background:var(--panel)}
-.bt tbody tr:hover td.tk{background:var(--blue2)}.bt tr.done td:not(.tk){color:var(--dim)}
-button.tick{width:30px;min-height:28px;height:28px;padding:0;border-radius:8px;color:var(--dim);background:transparent;font-size:15px;line-height:1;opacity:.55}
-button.tick:hover{opacity:1;border-color:var(--green);color:var(--green);background:transparent}button.tick.on{background:var(--green);border-color:var(--green);color:#fff;opacity:1}
-button.tick:disabled{opacity:.3}form.tickform{margin:0}
-.bdays{margin-top:2px;font-size:11px;font-weight:400;white-space:normal;color:var(--dim);line-height:1.5}.bdays span{margin-right:8px;display:inline-block}
-.bt td.nick.wrap2{white-space:normal;max-width:none}.rawtext{white-space:pre-wrap;text-align:left;font-family:inherit;margin:0;max-width:520px;color:var(--dim)}
-@media(max-width:760px){.bt td.nick,.bt th.nick{position:sticky;left:0;z-index:1;background:var(--panel);max-width:170px}
-.bt th.nick{background:var(--soft);z-index:3}.bt tfoot td.nick{background:var(--soft)}.bt tfoot tr.rest td.nick{background:var(--panel)}
-.bt tbody tr:hover td.nick{background:var(--blue2)}}
-.hintbox{padding:14px 16px;border:1px dashed var(--line);border-radius:10px;color:var(--dim);margin:10px 0}.hintbox code{background:var(--soft);padding:1px 5px;border-radius:5px;color:var(--text)}
-.bsearch{margin:2px 0 10px}
-.metrics.bcat{grid-template-columns:repeat(7,1fr);margin-top:-8px}@media(max-width:760px){.metrics.bcat{grid-template-columns:repeat(2,1fr)}}
-.bt tfoot tr.totals td{border-top:1px solid var(--line);border-bottom:0;background:var(--soft);font-weight:750}
-.bt a.cp{cursor:copy;color:inherit;text-decoration:none}.bt a.cp:hover{color:var(--blue)}.bt a.cp:focus-visible{outline:1px solid var(--blue);outline-offset:2px;border-radius:3px}
+.bt th.tk{z-index:3}
+.bt tfoot td.tk{background:var(--soft)}
+.bt tfoot tr.rest td.tk{background:var(--panel)}
+.bt tbody tr:hover td.tk{background:var(--blue2)}
+.bt tr.done td:not(.tk){color:var(--dim)}
+.bt.hide-done tr.done{display:none}
+button.tick{width:30px;min-height:28px;height:28px;padding:0;border-radius:var(--r);color:var(--dim);background:transparent}
+button.tick:hover{border-color:var(--green);color:var(--green);background:transparent}
+button.tick.on{background:var(--green);border-color:var(--green);color:var(--panel)}
+button.tick:disabled{opacity:.4}
+form.tickform{margin:0}
+.bdays{margin-top:2px;font-size:12px;font-weight:400;white-space:normal;color:var(--dim);line-height:1.5}
+.bdays span{margin-right:8px;display:inline-block}
+.bt td.nick.wrap2{white-space:normal;max-width:none}
+.rawtext{white-space:pre-wrap;text-align:left;font-family:inherit;margin:0;max-width:520px;color:var(--dim)}
+.hintbox{padding:14px 16px;border:1px dashed var(--line2);border-radius:var(--r-lg);color:var(--dim);margin:10px 0}
+.hintbox code{background:var(--soft);padding:1px 5px;border-radius:5px;color:var(--text)}
+.toggle{display:inline-flex;align-items:center;gap:8px;color:var(--dim);font-weight:550;cursor:pointer;user-select:none}
+.toggle input{width:16px;height:16px;margin:0;accent-color:var(--accent)}
+.metrics.bcat{grid-template-columns:repeat(7,1fr);margin-top:-6px}
+.bt a.cp{cursor:copy;color:inherit;text-decoration:none}
+.bt a.cp:hover{color:var(--blue)}
 .bt a.cp.copied{color:var(--green)}
-.bpanel{width:fit-content;max-width:100%;overflow:visible}
-.bt.bnow thead th{top:50px;box-shadow:0 1px 0 var(--line)}
-.bt.bnow{width:auto}.bt.bnow td.nick,.bt.bnow th.nick{width:auto;min-width:240px;max-width:420px}
-.bt.bnow td.bc,.bt.bnow th.bh{width:62px;min-width:56px}
-@media(max-width:760px){.bpanel{width:100%;overflow-x:auto}.bt.bnow thead th{top:0}.bt.bnow td.nick,.bt.bnow th.nick{min-width:0}}
+@media(max-width:760px){
+  .metrics.bcat{grid-template-columns:repeat(2,1fr)}
+  .bt td.nick,.bt th.nick{position:sticky;left:0;z-index:1;background:var(--panel);max-width:170px}
+  .bt th.nick{z-index:3}
+  .bt tfoot td.nick{background:var(--soft)}
+  .bt tfoot tr.rest td.nick{background:var(--panel)}
+  .bt tbody tr:hover td.nick{background:var(--blue2)}
+}
 """
 
 JS = r"""<script>
 (function(){
-var cur=__VER__, VURL=__VURL__, busy=false, N=__N__;
+var cur=__VER__, VURL=__VURL__, busy=false, N=__N__, pending=false;
 function cell(sel){return document.querySelectorAll(sel)}
 function recalc(){
   var tot=[],rest=[],i,done=0,all=0;for(i=0;i<N;i++){tot.push(0);rest.push(0)}
@@ -638,11 +657,22 @@ function recalc(){
   cell('#brow-rest td.bc').forEach(function(c,k){c.textContent=rest[k]||'·'});
   var chip=document.getElementById('chip-done');if(chip)chip.textContent=done+' из '+all;
 }
-var flt=document.getElementById('flt');
-function applyFilter(){var q=(flt.value||'').toLowerCase();
-  cell('tr.brow').forEach(function(r){r.style.display=r.querySelector('td.nick').textContent.toLowerCase().indexOf(q)>-1?'':'none'})}
+var flt=document.getElementById('flt'), hd=document.getElementById('hide-done');
+function applyFilter(){var q=flt?(flt.value||'').toLowerCase():'';
+  cell('tr.brow').forEach(function(r){r.style.display=r.querySelector('td.nick .who').textContent.toLowerCase().indexOf(q)>-1?'':'none'})}
+function applyHide(){var t=document.querySelector('table.bnow');if(t&&hd)t.classList.toggle('hide-done',hd.checked)}
 if(flt){try{flt.value=sessionStorage.getItem('buffs-flt')||''}catch(e){}applyFilter();   // поиск переживает автообновление
   flt.addEventListener('input',function(){try{sessionStorage.setItem('buffs-flt',flt.value)}catch(e){}applyFilter()})}
+if(hd){try{hd.checked=sessionStorage.getItem('buffs-hide')==='1'}catch(e){}applyHide();
+  hd.addEventListener('change',function(){try{sessionStorage.setItem('buffs-hide',hd.checked?'1':'0')}catch(e){}applyHide()})}
+// Подтянуть свежую доску без перезагрузки страницы: меняем только шапку и таблицу, поиск и фокус остаются
+function refresh(){
+  return fetch(location.href,{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.text():null}).then(function(t){
+    if(!t)return;var doc=new DOMParser().parseFromString(t,'text/html');
+    if(!!doc.getElementById('flt')!==!!document.getElementById('flt')){location.reload();return}
+    ['bhead','bbody'].forEach(function(id){var n=doc.getElementById(id),o=document.getElementById(id);if(n&&o)o.innerHTML=n.innerHTML});
+    var b=document.getElementById('bbody');if(b&&b.getAttribute('data-ver'))cur=b.getAttribute('data-ver');
+    applyHide();applyFilter();recalc()}).catch(function(){location.reload()})}
 document.addEventListener('submit',function(e){
   var f=e.target;if(!f.classList||!f.classList.contains('tickform'))return;
   e.preventDefault();var b=f.querySelector('button');if(b.disabled)return;b.disabled=true;busy=true;
@@ -650,13 +680,13 @@ document.addEventListener('submit',function(e){
   .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})})
   .then(function(x){
     if(!x.ok||!x.j.ok)throw new Error((x.j&&x.j.error)||'Не удалось сохранить');
-    if(x.j.before!==cur){location.reload();return}   // пока смотрели, что-то поменялось — перечитаем
+    if(x.j.before!==cur){return refresh()}   // пока смотрели, что-то поменялось — перечитаем
     cur=x.j.after;var tr=f.closest('tr');
-    tr.classList.toggle('done',x.j.issued);b.classList.toggle('on',x.j.issued);
+    tr.classList.toggle('done',x.j.issued);b.classList.toggle('on',x.j.issued);b.setAttribute('aria-pressed',x.j.issued?'true':'false');
     f.querySelector('[name=issued]').value=x.j.issued?'0':'1';
     b.title=x.j.issued?'Выдано сейчас · нажмите, чтобы снять отметку':'Отметить: бафы выданы';recalc();
   })
-  .catch(function(err){alert(err.message||'Ошибка. Обновите страницу.')})
+  .catch(function(err){window.toast(err.message||'Ошибка. Обновите страницу.','err')})
   .then(function(){b.disabled=false;busy=false});
 });
 function copyText(t){
@@ -671,7 +701,7 @@ document.addEventListener('click',function(e){var a=e.target.closest&&e.target.c
 document.addEventListener('keydown',function(e){if(e.key!=='Enter'&&e.key!==' ')return;var a=e.target.closest&&e.target.closest('a.cp');if(a){e.preventDefault();copyNick(a)}});
 function poll(){if(document.hidden||busy)return;
   fetch(VURL,{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null})
-  .then(function(j){if(j&&j.v&&j.v!==cur)location.reload()}).catch(function(){})}
+  .then(function(j){if(j&&j.v&&j.v!==cur)refresh()}).catch(function(){})}
 setInterval(poll,6000);document.addEventListener('visibilitychange',function(){if(!document.hidden)poll()});
 })();
 </script>"""
@@ -707,9 +737,11 @@ def _row_html(admin: Any, row: dict[str, Any]) -> str:
     if row["earlier"]:
         notes += (f" <span class='source-badge' title='Сегодня уже выдано: {esc(_counts_text(row['earlier']))}'>"
                   "уже выдавали</span>")
-    if row["unrecognized"]:
-        notes += (f" <span class='flag' title='Не распознано: {esc(row['unrecognized'])}' "
-                  "style='cursor:help'>⚠</span>")
+    notes_block = ""
+    if row["unrecognized"]:     # видно сразу, а не только во всплывающей подсказке
+        notes_block = (f"<span class='bnote flag'>{admin.icon('alert')}Не распознано: "
+                       f"{esc(row['unrecognized'])}</span>")
+    when = f"<span class='when'>{esc(_fmt_time(row['created_at']))}</span>"
     tip = " · ".join(filter(None, [f"{_fmt_dm(row['created_at'])} {_fmt_time(row['created_at'])}".strip(), row["author"]]))
     if row["issued"]:
         title = f"Выдано {_fmt_time(row['issued_at'])} · нажмите, чтобы снять отметку"
@@ -719,9 +751,9 @@ def _row_html(admin: Any, row: dict[str, Any]) -> str:
               f"<input type='hidden' name='key' value='{esc(row['key'])}'>"
               f"<input type='hidden' name='issued' value='{0 if row['issued'] else 1}'>"
               f"<button class='tick{' on' if row['issued'] else ''}' title='{esc(title)}' "
-              "aria-label='Бафы выданы'>✓</button></form>")
+              f"aria-label='Бафы выданы' aria-pressed='{'true' if row['issued'] else 'false'}'>{admin.icon('check')}</button></form>")
     return (f"<tr class='brow{' done' if row['issued'] else ''}'>"
-            f"<td class='nick' title='{esc(tip)}'><span class='who'>{name}</span>{notes}</td>"
+            f"<td class='nick' title='{esc(tip)}'><span class='who'>{name}</span>{when}{notes}{notes_block}</td>"
             f"{_buff_cells(row['counts'])}<td class='tk'>{button}</td></tr>")
 
 
@@ -743,10 +775,9 @@ def _render_board(admin: Any) -> str:
         return f"<tr id='{row_id}'{css}><td class='nick'>{label}</td>{cells}<td class='tk'></td></tr>"
 
     head = ("<th class='nick'>Ник</th>" + "".join(f"<th class='bh'>{esc(t)}</th>" for _, t in BUFFS)
-            + "<th class='tk' title='Бафы выданы'>✓</th>")
+            + f"<th class='tk' title='Бафы выданы'>{admin.icon('check')}</th>")
     if rows:
-        table = ("<input id='flt' class='bsearch' placeholder='Поиск по нику…' aria-label='Поиск игрока'>"
-                 "<div class='panel bpanel'><table class='tight bt bnow'><thead><tr>" + head + "</tr></thead><tbody>"
+        table = ("<div class='panel bpanel'><table class='bt bnow'><thead><tr>" + head + "</tr></thead><tbody>"
                  + "".join(_row_html(admin, r) for r in rows) + "</tbody><tfoot>"
                  + foot("brow-tot", "Итого", totals) + foot("brow-rest", "Осталось выдать", rest, " class='rest'")
                  + "</tfoot></table></div>")
@@ -770,10 +801,14 @@ def _render_board(admin: Any) -> str:
     chips = ("<div class='chips'>"
              f"<span class='chip'>В таблице: {len(rows)}</span>"
              f"<span class='chip'>Выдано: <b id='chip-done'>{done} из {len(rows)}</b></span></div>")
-    body = ("<div class='pagehead'><div><h1>Бафы</h1>"
+    toolbar = ("<div class='toolbar'><label class='search'>" + admin.icon("search")
+               + "<input id='flt' type='search' placeholder='Поиск по нику…' aria-label='Поиск игрока'></label>"
+               "<label class='toggle'><input type='checkbox' id='hide-done'> Скрыть выданные</label></div>"
+               if rows else "")
+    body = ("<div id='bhead'><div class='pagehead'><div><h1>Бафы</h1>"
             f"<div class='subtitle'>Выдача: {admin.fmt_date_ru(today)}</div></div>"
-            f"<div class='actions'><a class='button' href='{url_for('buffs_history')}'>📜 История</a></div></div>"
-            + chips + table + bad
+            f"<div class='actions'><a class='button' href='{url_for('buffs_history')}'>{admin.icon('clock')} История</a></div></div>"
+            + chips + "</div>" + toolbar + f"<div id='bbody' data-ver='{esc(version)}'>" + table + bad + "</div>"
             + JS.replace("__VER__", json.dumps(version)).replace("__VURL__", json.dumps(url_for("buffs_version")))
             .replace("__N__", str(len(BUFFS))))
     return admin.render("Бафы", body)
@@ -848,9 +883,9 @@ def _render_history(admin: Any, view: str) -> str:
                     f"<span class='typed dim' style='font-size:11px;margin-left:6px'>{esc(_fmt_time(e['at']))}</span></td>"
                     f"{counts_cells(e['counts'])}<td class='total'>{_total(e['counts'])}</td>"
                     f"<td class='act'><form method='post' action='{url_for('buffs_issue_delete', issued_id=e['id'])}' "
-                    f"data-confirm='{esc(confirm)}'><button class='quiet' title='Убрать эту выдачу из истории'>✕</button>"
+                    f"data-confirm='{esc(confirm)}'><button class='quiet' title='Убрать эту выдачу из истории' aria-label='Убрать выдачу'>{admin.icon('x')}</button>"
                     "</form></td></tr>")
-        table = ("<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Ник</th>" + th
+        table = ("<div class='panel'><table><thead><tr><th class='nick grow'>Ник</th>" + th
                  + "<th>Всего</th><th></th></tr></thead><tbody>" + "".join(parts) + "</tbody><tfoot>"
                  + totals_row("Итого за всё время", "", "<td></td>") + "</tfoot></table></div>")
     else:
@@ -861,11 +896,11 @@ def _render_history(admin: Any, view: str) -> str:
                 f"<tr><td class='nick grow wrap2'><span class='who'>{name(p['pid'], p['nick'])}</span>"
                 f"<div class='bdays'>{dates}</div></td><td>{len(p['days'])}</td>{counts_cells(p['counts'])}"
                 f"<td class='total'>{_total(p['counts'])}</td></tr>")
-        table = ("<div class='panel'><table class='tight bt'><thead><tr><th class='nick grow'>Ник</th>"
+        table = ("<div class='panel'><table class='bt'><thead><tr><th class='nick grow'>Ник</th>"
                  "<th title='Сколько дней игрок получал бафы'>Дней</th>" + th + "<th>Всего</th></tr></thead><tbody>"
                  + "".join(body_rows) + "</tbody><tfoot>"
                  + totals_row("Итого за всё время", "<td></td>") + "</tfoot></table></div>")
-    body = (f"<a class='back' href='{url_for('buffs')}'>← Бафы</a>"
+    body = (f"<a class='back' href='{url_for('buffs')}'>{admin.icon('arrow-left')} Бафы</a>"
             "<div class='pagehead'><div><h1>История бафов</h1>"
             "<div class='subtitle'>Сколько и каких бафов выдали каждому игроку и в какие дни</div></div></div>"
             + metrics + toggle + table)
@@ -878,21 +913,8 @@ def install(admin: Any) -> None:
     if getattr(admin.app, "_buffs_installed", False):
         return
     admin.app._buffs_installed = True
-    admin.PAGE = admin.PAGE.replace("</style>", CSS.replace("{", "{{").replace("}", "}}") + "\n</style>", 1)
-    base_render = admin.render
-
-    def render(title: str, body: str) -> str:
-        page = base_render(title, body)
-        active = "active" if request.path.startswith("/buffs") else ""
-        link = f"<a class='{active}' href='{url_for('buffs')}'>Бафы</a>"
-        logout = "<form method=\"post\" action=\"/logout\""
-        if "<!--navx-->" in page:
-            return page.replace("<!--navx-->", link, 1)
-        if logout in page:
-            return page.replace(logout, link + logout, 1)
-        return page.replace("</nav></div></header>", link + "</nav></div></header>", 1)
-
-    admin.render = render
+    admin.add_css(CSS)
+    admin.register_nav("Бафы", "buffs", order=40, prefixes=("/buffs",))
 
     @admin.app.get("/buffs")
     def buffs():

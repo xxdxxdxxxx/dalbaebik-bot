@@ -156,28 +156,59 @@ def _safe_next(target: str | None) -> str:
     return target  # type: ignore[return-value]
 
 
-LOGIN_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+ASSET_DIR = Path(__file__).resolve().parent / "assets"
+
+
+def _asset(name: str) -> str:
+    return (ASSET_DIR / name).read_text(encoding="utf-8")
+
+
+BASE_CSS = _asset("app.css")     # единая система оформления (токены, компоненты, страницы)
+BASE_JS = _asset("app.js")       # подтверждения, уведомления, панель сохранения, меню
+
+# Линейные иконки (24×24, штрих 1.7). Вместо эмодзи: одинаково выглядят в любой ОС.
+ICON_PATHS = {
+    "archive": "<rect x='3' y='4' width='18' height='4' rx='1'/><path d='M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8'/><path d='M10 12h4'/>",
+    "trash": "<path d='M4 7h16'/><path d='M9 7V4h6v3'/><path d='M6 7l1 13h10l1-13'/><path d='M10 11v5M14 11v5'/>",
+    "check": "<path d='M5 12.5l4.5 4.5L19 7.5'/>",
+    "x": "<path d='M6 6l12 12M18 6L6 18'/>",
+    "refresh": "<path d='M20 11a8 8 0 0 0-14.3-4.5L4 8'/><path d='M4 4v4h4'/><path d='M4 13a8 8 0 0 0 14.3 4.5L20 16'/><path d='M20 20v-4h-4'/>",
+    "undo": "<path d='M9 14L4 9l5-5'/><path d='M4 9h10a6 6 0 0 1 0 12h-3'/>",
+    "mic": "<rect x='9' y='3' width='6' height='11' rx='3'/><path d='M5 11a7 7 0 0 0 14 0'/><path d='M12 18v3'/>",
+    "clock": "<circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/>",
+    "left": "<path d='M15 5l-7 7 7 7'/>",
+    "right": "<path d='M9 5l7 7-7 7'/>",
+    "arrow-left": "<path d='M19 12H5'/><path d='M11 6l-6 6 6 6'/>",
+    "more": "<circle cx='5' cy='12' r='1.4' fill='currentColor' stroke='none'/><circle cx='12' cy='12' r='1.4' fill='currentColor' stroke='none'/><circle cx='19' cy='12' r='1.4' fill='currentColor' stroke='none'/>",
+    "search": "<circle cx='11' cy='11' r='6.5'/><path d='M16 16l4 4'/>",
+    "alert": "<path d='M12 4l9 16H3z'/><path d='M12 10v4'/><path d='M12 17.2v.1'/>",
+    "logout": "<path d='M10 4H5v16h5'/><path d='M15 8l4 4-4 4'/><path d='M19 12H9'/>",
+}
+
+
+def icon(name: str, cls: str = "") -> str:
+    extra = f" {cls}" if cls else ""
+    return f"<svg class='ic{extra}' aria-hidden='true'><use href='#i-{name}'/></svg>"
+
+
+def _sprite() -> str:
+    symbols = "".join(f"<symbol id='i-{n}' viewBox='0 0 24 24'>{d}</symbol>" for n, d in ICON_PATHS.items())
+    return f"<svg width='0' height='0' style='position:absolute' aria-hidden='true' focusable='false'>{symbols}</svg>"
+
+
+LOGIN_PAGE = ('''<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
-<title>Вход · Clan Analytics</title><style>
-:root{--bg:#f7f7f5;--panel:#fff;--line:#e5e5e2;--text:#242424;--dim:#787774;--blue:#2783de;--red:#e56458}
-@media(prefers-color-scheme:dark){:root{--bg:#191919;--panel:#202020;--line:#3b3b39;--text:#fff;--dim:#aaa;--blue:#5e9fe8;--red:#e97366}}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);
-font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
-form{width:min(340px,calc(100% - 32px));background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}
-h1{font-size:18px;margin:0 0 4px}p{margin:0 0 14px;color:var(--dim);font-size:12px}
-input{width:100%;height:38px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
-button{width:100%;height:38px;margin-top:10px;border:0;border-radius:8px;background:var(--blue);color:#fff;font:650 14px inherit;cursor:pointer}
-.err{color:var(--red);font-size:12px;margin:8px 0 0}
-</style></head><body><form method="post" action="/login">
-<h1>Clan Analytics</h1><p>Админ-панель клана. Введите пароль.</p>
+<meta name="color-scheme" content="light dark"><title>Вход · Clan Analytics</title><style>''' + BASE_CSS + '''</style></head>
+<body class="login-page"><form class="login" method="post" action="/login">
+<span class="logo">CA</span><h1>Clan Analytics</h1><p>Админ-панель клана. Введите пароль.</p>
 <input type="hidden" name="next" value="@@NEXT@@">
-<input type="password" name="password" placeholder="Пароль" autocomplete="current-password" autofocus required>
-@@ERR@@<button type="submit">Войти</button></form></body></html>"""
+<input type="password" name="password" placeholder="Пароль" aria-label="Пароль" autocomplete="current-password" autofocus required>
+@@ERR@@<button type="submit">Войти</button></form></body></html>''')
 
 
 def _login_page(next_url: str, error: str = "", status: int = 200) -> Response:
     body = LOGIN_PAGE.replace("@@NEXT@@", html.escape(next_url, quote=True)).replace(
-        "@@ERR@@", f'<div class="err">{html.escape(error)}</div>' if error else "")
+        "@@ERR@@", f'<div class="err" role="alert">{html.escape(error)}</div>' if error else "")
     return Response(body, status=status, mimetype="text/html")
 
 
@@ -304,12 +335,6 @@ def meter(value: Any, maximum: Any) -> str:
     return f"<span class='meter'><i style='width:{width:.1f}%'></i></span>"
 
 
-def fmt_attended(value: Any) -> str:
-    if value is None:
-        return "—"
-    return "✅" if int(value) else "❌"
-
-
 def stage_label(n: Any) -> str:
     try:
         return STAGE_ROMAN.get(int(n), str(n))
@@ -317,31 +342,60 @@ def stage_label(n: Any) -> str:
         return "?"
 
 
-PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} · Clan Analytics</title><style>
-:root{{--bg:#f7f7f5;--panel:#fff;--soft:#f1f1ef;--line:#e5e5e2;--text:#242424;--dim:#787774;--blue:#2783de;--blue2:#e5f2fc;--green:#46a171;--red:#e56458}}
-@media(prefers-color-scheme:dark){{:root{{color-scheme:dark;--bg:#191919;--panel:#202020;--soft:#292928;--line:#3b3b39;--text:#fff;--dim:#aaa;--blue:#5e9fe8;--blue2:#253343;--green:#72bc8f;--red:#e97366}}}}
-*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}}a{{color:inherit;text-decoration:none}}a:hover{{color:var(--blue)}}
-.top{{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line)}}.topin{{width:min(980px,calc(100% - 32px));margin:auto}}.wrap{{width:min(940px,calc(100% - 32px));margin:auto}}.layout-overview{{max-width:940px}}.layout-players{{max-width:820px}}.layout-day{{max-width:820px}}.topin{{height:50px;display:flex;align-items:center;justify-content:space-between}}.brand{{font-weight:750;display:flex;align-items:center;gap:9px}}.logo{{width:26px;height:26px;border-radius:8px;background:var(--text);color:var(--bg);display:grid;place-items:center;font-size:12px}}.nav{{display:flex;gap:4px;padding:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px}}.nav a{{min-height:30px;padding:0 10px;display:flex;align-items:center;border-radius:7px;color:var(--dim);font-weight:650}}.nav a.active{{background:var(--blue2);color:var(--blue)}}
-.wrap{{padding:20px 0 48px}}h1{{font-size:24px;line-height:1.15;letter-spacing:-.02em;margin:0 0 4px}}h2{{font-size:15px;margin:18px 0 8px}}.pagehead{{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-bottom:14px}}.subtitle,.hint,.dim,.chips{{color:var(--dim)}}
-.metrics{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 16px}}.metric,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:10px}}.panel{{overflow:auto}}.metric{{padding:10px 12px}}.metric label{{display:block;color:var(--dim);font-size:11px;font-weight:650}}.metric b{{display:block;font-size:20px;letter-spacing:-.03em;margin-top:2px}}.panel{{padding:8px;margin-bottom:10px}}
-.actions,.chips,nav.days{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}.button,button{{min-height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:650 12px inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}}.button:hover,button:hover{{background:var(--soft)}}button.save,.button.primary{{background:var(--blue);border-color:var(--blue);color:#fff}}button.danger{{min-height:31px;padding:0 9px;color:var(--red);background:transparent}}button:disabled{{opacity:.4}}
-.scroll{{overflow-x:auto;overflow-y:visible;max-height:none;border:1px solid var(--line);border-radius:8px}}.scroll,.panel{{scrollbar-width:thin;scrollbar-color:rgba(127,127,127,.45) transparent}}@supports not (scrollbar-color:auto){{.scroll::-webkit-scrollbar,.panel::-webkit-scrollbar{{height:8px;width:8px}}.scroll::-webkit-scrollbar-track,.panel::-webkit-scrollbar-track{{background:transparent}}.scroll::-webkit-scrollbar-thumb,.panel::-webkit-scrollbar-thumb{{background:rgba(127,127,127,.45);border-radius:4px}}}}table{{width:100%;border-collapse:collapse}}th,td{{padding:6px 8px;text-align:center;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}}th{{position:sticky;top:0;background:var(--soft);color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.035em;z-index:2}}tr:last-child td{{border-bottom:0}}tbody tr:hover{{background:var(--blue2)}}td.nick,th.nick{{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}}th.gcol,td.gcol{{background:transparent}}.total{{font-weight:750}}input[type=number],input#flt,select{{min-height:30px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);padding:0 9px}}input[type=number]{{width:58px;text-align:center}}.day-edit td{{height:31px;padding:2px 8px}}.day-edit input[type=number],.day-edit input[type=text]{{width:48px;height:21px;min-height:21px;padding:0 3px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:center}}.day-edit input[name$="_s"]{{width:64px}}.day-edit button.danger{{width:25px;min-height:21px;height:21px;padding:0;border-radius:5px}}.day-edit input[type=number]:hover,.day-edit input[type=number]:focus,.day-edit input[type=text]:hover,.day-edit input[type=text]:focus{{background:var(--panel);border-color:var(--line);outline:none}}.ok-match{{color:var(--green);font-weight:650}}.source-badge{{display:inline-block;margin-left:5px;padding:1px 4px;border:1px solid var(--line);border-radius:4px;color:var(--dim);font-size:9px;vertical-align:1px}}input#flt{{width:min(100%,300px)}}
-.chips{{margin:6px 0 10px}}.chip{{padding:3px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}}.seg{{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--soft);margin:2px 0 8px}}.seg a,.seg b{{min-height:28px;padding:0 9px;display:flex;align-items:center;border-radius:6px}}.seg b{{background:var(--panel)}}.float{{position:fixed;right:20px;bottom:20px;z-index:5;box-shadow:0 8px 24px #0003}}.back{{display:inline-flex;color:var(--dim);margin-bottom:8px}}.banner{{display:inline-flex;padding:8px 12px;border-radius:8px;background:#e8f1ec;color:var(--green);font-weight:700}}.flag{{color:var(--red)}}details summary{{cursor:pointer;color:var(--blue);padding:6px 0}}nav.days{{margin:7px 0}}nav.days select{{max-width:210px}}.month{{color:var(--dim);font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;background:var(--bg);text-align:left;padding:7px 8px 4px!important}}.squad-title td{{padding:8px 6px 4px!important;background:var(--bg);color:var(--dim);font-size:10px;font-weight:850;text-align:left;text-transform:uppercase;letter-spacing:.06em}}.squad-title span{{margin-left:6px;font-weight:500;text-transform:none;letter-spacing:0}}.sortable{{cursor:pointer;user-select:none}}.sortable::after{{content:" ↕";color:var(--dim);font-size:9px}}.sortable[data-dir="desc"]::after{{content:" ↓";color:var(--blue)}}.sortable[data-dir="asc"]::after{{content:" ↑";color:var(--blue)}}.eff{{font-weight:800;color:var(--blue)}}
-.meter{{display:inline-block;width:64px;height:6px;border-radius:3px;background:var(--soft);box-shadow:inset 0 0 0 1px var(--line);overflow:hidden;vertical-align:middle;flex:none}}.meter i{{display:block;height:100%;border-radius:3px;background:var(--blue)}}.mcell,.effcell{{display:inline-flex;align-items:center;gap:9px}}.mcell b{{min-width:44px;text-align:right}}.effcell .n{{min-width:34px;text-align:right}}
-table.tight th,table.tight td{{padding-left:11px;padding-right:11px}}table.tight th.grow,table.tight td.grow{{width:100%;padding-left:8px;max-width:none}}td.act{{padding-right:6px;text-align:right}}td.act form{{margin:0}}button.quiet{{min-height:26px;padding:0 10px;border-color:rgba(127,127,127,.16);background:rgba(0,0,0,.09);color:var(--dim);opacity:.55;font-weight:600}}tr:hover button.quiet,button.quiet:focus-visible{{opacity:.8}}tr:hover button.quiet:hover{{opacity:1;background:rgba(0,0,0,.14)}}.day-edit button.danger.wide{{width:auto;padding:0 9px}}.day-edit input[name^="v"]{{width:68px}}.period{{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:0 0 8px}}.period .seg{{margin:0;flex-wrap:wrap}}.period .seg a:hover{{color:var(--blue)}}.subtitle{{margin-top:2px;font-size:12px}}
-.vt td.nick,.vt th.nick{{position:sticky;left:0;min-width:130px;background:var(--panel);z-index:1}}.vt th.nick{{background:var(--soft);z-index:3}}.vt tr:hover td.nick{{background:var(--blue2)}}.vt td.vj{{font-weight:650}}
-@media(max-width:640px){{.hide-sm{{display:none}}.meter{{width:40px}}.mcell,.effcell{{gap:6px}}table.tight th,table.tight td{{padding-left:7px;padding-right:7px}}}}
-@media(max-width:760px){{.topin,.wrap{{width:calc(100% - 24px);max-width:none}}.topin{{height:48px}}.brand .txt{{display:none}}.wrap{{padding-top:16px}}.metrics{{grid-template-columns:repeat(2,1fr)}}h1{{font-size:22px}}.pagehead{{align-items:start;flex-direction:column}}th,td{{padding:9px 8px}}}}
-</style></head><body><header class="top"><div class="topin"><a class="brand" href="{home}"><span class="logo">CA</span><span class="txt">Clan Analytics</span></a><nav class="nav"><a class="{ov}" href="{home}">Обзор</a><a class="{pl}" href="{players}">Игроки</a><!--navx-->{logout}</nav></div></header><main class="wrap {layout}">{body}</main><script>document.addEventListener('click',function(e){{var b=e.target.closest('[data-confirm]');if(b&&b.tagName!=='FORM'&&!confirm(b.getAttribute('data-confirm')))e.preventDefault()}});document.addEventListener('submit',function(e){{var f=e.target;if(f.tagName==='FORM'&&f.hasAttribute('data-confirm')&&!confirm(f.getAttribute('data-confirm')))e.preventDefault()}});</script></body></html>"""
+LOGOUT_FORM = ('<form class="logout" method="post" action="/logout"><button type="submit" '
+               f'title="Выйти" aria-label="Выйти">{icon("logout")}</button></form>')
+
+# Меню и стили расширений (Отряды, Бафы, Шмот…) регистрируются здесь, а не подменой готовой страницы.
+NAV: list[dict[str, Any]] = []
+EXTRA_CSS: list[str] = []
 
 
-LOGOUT_FORM = '<form method="post" action="/logout" style="margin:0 0 0 8px"><button type="submit">Выйти</button></form>'
+def register_nav(label: str, endpoint: str, *, order: int, exact: tuple[str, ...] = (),
+                 prefixes: tuple[str, ...] = ()) -> None:
+    """Добавить пункт верхнего меню. order — позиция слева направо; exact/prefixes — когда пункт активен."""
+    NAV[:] = [item for item in NAV if item["endpoint"] != endpoint]
+    NAV.append({"label": label, "endpoint": endpoint, "order": order, "exact": exact, "prefixes": prefixes})
+    NAV.sort(key=lambda item: item["order"])
 
 
-def render(title: str, body: str) -> str:
-    path=request.path
-    layout = "layout-day" if path.startswith("/day/") else ("layout-players" if path.startswith(("/player", "/gear")) else "layout-overview")
-    return PAGE.format(title=html.escape(title),body=body,home=url_for("index"),players=url_for("players"),layout=layout,ov="active" if path=="/" or path.startswith("/day/") else "",pl="active" if path.startswith("/player") else "",logout=LOGOUT_FORM if _password() else "")
+def add_css(css: str) -> None:
+    """Подключить дополнительные стили страницы (один раз)."""
+    if css not in EXTRA_CSS:
+        EXTRA_CSS.append(css)
+
+
+register_nav("Обзор", "index", order=10, exact=("/",), prefixes=("/day/", "/archive"))
+register_nav("Игроки", "players", order=20, prefixes=("/player",))
+
+
+def _nav_html(path: str) -> str:
+    out = []
+    for item in NAV:
+        prefixes = tuple(item["prefixes"])
+        active = path in item["exact"] or (bool(prefixes) and path.startswith(prefixes))
+        attrs = ' class="active" aria-current="page"' if active else ""
+        href = url_for(item["endpoint"])
+        out.append(f'<a{attrs} href="{href}">{html.escape(item["label"])}</a>')
+    return "".join(out)
+
+
+def render(title: str, body: str, *, wide: bool = False) -> str:
+    home = url_for("index")
+    extra_css = "".join(EXTRA_CSS)
+    logout = LOGOUT_FORM if _password() else ""
+    body_class = "wide" if wide else ""
+    return (
+        '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta name="color-scheme" content="light dark">'
+        f"<title>{html.escape(title)} · Clan Analytics</title><style>{BASE_CSS}{extra_css}</style></head>"
+        f'<body class="{body_class}">{_sprite()}'
+        f'<header class="top"><div class="topin"><a class="brand" href="{home}">'
+        '<span class="logo">CA</span><span class="txt">Clan Analytics</span></a>'
+        f'<nav class="nav" aria-label="Разделы">{_nav_html(request.path)}</nav>'
+        f"{logout}</div></header>"
+        f'<main class="wrap">{body}</main><div id="toasts" aria-live="polite"></div>'
+        f"<script>{BASE_JS}</script></body></html>")
 
 
 _archive_ready: set[str] = set()
@@ -423,31 +477,35 @@ def index():
     total_grenades = sum(int(r["grenades"] or 0) for r in rows)
     total_voice = sum(int(r["voice"] or 0) for r in rows)
     latest = rows[0]["date"] if rows else None
-    summary = ("<div class='metrics'>"
-               f"<div class='metric'><label>Дней КВ</label><b>{len(rows)}</b></div>"
-               f"<div class='metric'><label>Табов</label><b>{total_tabs}</b></div>"
-               f"<div class='metric'><label>Гранат</label><b>{total_grenades}</b></div>"
-               f"<div class='metric'><label>Войс всего</label><b>{fmt_sec(total_voice)}</b></div></div>")
+    n_days = len(rows)
+    summary = ("<div class='stats'>"
+               f"<span><b>{n_days}</b> {_plural(n_days, 'день', 'дня', 'дней')} КВ</span>"
+               f"<span><b>{total_tabs}</b> {_plural(total_tabs, 'таб', 'таба', 'табов')}</span>"
+               f"<span><b>{_fmt_num(total_grenades)}</b> {_plural(total_grenades, 'граната', 'гранаты', 'гранат')}</span>"
+               f"<span><b>{fmt_sec(total_voice)}</b> в войсе</span></div>" if rows else
+               "<div class='stats'><span>Дней КВ пока нет</span></div>")
     banner = ""
     just = request.args.get("archived")
     if just:
         try:
             just = player_store.parse_match_date(just)
-            banner = ("<div class='banner'>🗄 День " + fmt_date_ru(just) + " убран в архив "
-                      f"<form method='post' action='{url_for('day_unarchive', date=just)}' "
-                      "style='display:inline;margin-left:10px'><button>↩ Вернуть</button></form></div>")
+            banner = (f"<div class='banner'>{icon('archive')}<span>День " + fmt_date_ru(just) + " убран в архив</span>"
+                      f"<form method='post' action='{url_for('day_unarchive', date=just)}'>"
+                      f"<button>{icon('undo')} Вернуть</button></form></div>")
         except ValueError:
             pass
-    archive_link = (f"<a class='button' href='{url_for('archive')}'>🗄 Архив ({archived_n})</a>"
+    archive_link = (f"<a class='button' href='{url_for('archive')}'>{icon('archive')} Архив ({archived_n})</a>"
                     if archived_n else "")
-    body = ("<div class='pagehead'><div><h1>Обзор</h1>"
-            "</div><div class='actions'>" + archive_link
+    body = ("<div class='pagehead'><div><h1>Обзор</h1>" + summary
+            + "</div><div class='actions'>" + archive_link
             + (f"<a class='button primary' href='{url_for('day',date=latest)}'>Последний КВ</a>" if latest else "")
-            + "</div></div>" + banner + summary
-            + "<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Дата</th>"
+            + "</div></div>" + banner
+            + "<div class='panel'><table><thead><tr><th class='nick grow'>Дата</th>"
             "<th class='hide-sm'>Табов</th><th class='hide-sm'>Игроков</th><th>Гранаты</th><th>Войс</th><th></th></tr></thead>"
             f"<tbody>{''.join(out)}</tbody></table></div>"
-            )
+            if rows else
+            "<div class='pagehead'><div><h1>Обзор</h1>" + summary + "</div></div>" + banner
+            + "<div class='empty'>Когда бот сохранит первый день КВ, он появится здесь.</div>")
     return render("Дни", body)
 
 
@@ -615,7 +673,7 @@ def average_player_efficiencies(con: Any, only_dates: Any = None) -> dict[int, f
 def _eff_cell(value: Any) -> str:
     """EFF числом и тонкая полоска справа (шкала 0–100); без данных — прочерк."""
     if value is None:
-        return "—"
+        return "<span class='na'>—</span>"
     return f"<span class='effcell'><span class='n'>{esc(value)}</span>{meter(value, 100)}</span>"
 
 
@@ -631,6 +689,10 @@ def _parse_period(raw: Any) -> int | None:
     return min(n, 3650) if n > 0 else None
 
 
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    return (many if 11 <= n % 100 <= 14 else one if n % 10 == 1 else few if 2 <= n % 10 <= 4 else many)
+
+
 def _ru_days(n: int) -> str:
     word = ("дней" if 11 <= n % 100 <= 14 else
             "день" if n % 10 == 1 else
@@ -638,15 +700,16 @@ def _ru_days(n: int) -> str:
     return f"{n} {word}"
 
 
-def _period_bar(current: int | None) -> str:
+def _period_bar(current: int | None, view: str = "squads") -> str:
+    extra = {"view": "all"} if view == "all" else {}
     options = sorted(set(PERIOD_CHOICES) | ({current} if current else set()))
     links = "".join(
         (f"<b>{n}</b>" if n == current else
-         f"<a href='{url_for('players', days=n)}' "
+         f"<a href='{url_for('players', days=n, **extra)}' "
          f"title='{'Последний день КВ' if n == 1 else 'Последние ' + _ru_days(n) + ' КВ'}'>{n}</a>")
         for n in options)
     everything = ("<b>Всё время</b>" if current is None else
-                  f"<a href='{url_for('players', days='all')}'>Всё время</a>")
+                  f"<a href='{url_for('players', days='all', **extra)}'>Всё время</a>")
     return ("<div class='period'><span class='dim'>Последние дни КВ</span>"
             f"<span class='seg'>{links}</span><span class='seg'>{everything}</span></div>")
 
@@ -693,6 +756,26 @@ FILTER_PLAYERS_JS = ("function filterPlayers(value){const q=value.toLowerCase();
                      "row.style.display=show?'':'none';if(show)n++});group.style.display=n?'':'none'})}")
 
 
+def _search_box() -> str:
+    return (f"<label class='search'>{icon('search')}"
+            "<input id='flt' type='search' placeholder='Поиск по нику…' aria-label='Поиск игрока' "
+            "oninput=\"filterPlayers(this.value)\"></label>")
+
+
+# Сортировка таблицы игроков по любому столбцу: внутри каждого отряда (или по всему списку в виде «Общий»).
+SORT_PLAYERS_JS = (
+    "function sortPlayerSquads(th){const dir=th.dataset.dir?(th.dataset.dir==='desc'?'asc':'desc'):"
+    "(th.dataset.sort==='text'?'asc':'desc');"
+    "th.closest('table').querySelectorAll('th.sortable').forEach(x=>delete x.dataset.dir);th.dataset.dir=dir;"
+    "const col=th.cellIndex,text=th.dataset.sort==='text';"
+    "const value=row=>{const raw=row.cells[col].textContent.trim().replace(',','.');if(!raw||raw==='—')return null;"
+    "if(text)return raw;const parsed=Number(raw);return Number.isFinite(parsed)?parsed:null};"
+    "document.querySelectorAll('.squad-group').forEach(group=>{const rows=[...group.querySelectorAll('.player-row')];"
+    "rows.sort((a,b)=>{const av=value(a),bv=value(b);if(av===null||bv===null)return av===bv?0:av===null?1:-1;"
+    "const c=text?av.localeCompare(bv,'ru',{numeric:true}):av-bv;return dir==='asc'?c:-c});"
+    "rows.forEach(row=>group.appendChild(row))})}")
+
+
 @app.get("/players")
 def players():
     period = _parse_period(request.args.get("days"))
@@ -719,42 +802,65 @@ def players():
             if r["match_date"] in date_set:
                 attendance.setdefault(int(r["player_id"]), {})[r["match_date"]] = int(r["grenades"] or 0)
         eff_by_player = average_player_efficiencies(con, date_set)
+    view = "all" if request.args.get("view") == "all" else "squads"
     groups: dict[int, list[dict[str, Any]]] = {99: [], **{i: [] for i in range(1, 7)}}
     for row in rows:
         groups[int(row["squad_id"])].append(row)
+
+    def player_row(r: dict[str, Any], squad: str = "") -> str:
+        pid = int(r["id"])
+        return (f"<tr class='player-row'><td class='nick grow'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
+                + (f"<td class='l dim'>{esc(squad)}</td>" if squad else "")
+                + f"<td>{len(attendance.get(pid, {}))}</td>"
+                f"<td class='total'>{sum(attendance.get(pid, {}).values())}</td>"
+                f"<td class='eff'>{_eff_cell(eff_by_player.get(pid))}</td></tr>")
+
     bodies = []
-    for squad_id in SQUAD_ORDER:
-        members = groups[squad_id]
-        if not members:
-            continue
-        label = squad_label(squad_id)
-        member_rows = "".join(
-            f"<tr class='player-row'><td class='nick grow'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
-            f"<td>{len(attendance.get(int(r['id']), {}))}</td>"
-            f"<td class='total'>{sum(attendance.get(int(r['id']), {}).values())}</td>"
-            f"<td class='eff'>{_eff_cell(eff_by_player.get(int(r['id'])))}</td>"
-            "</tr>"
-            for r in members)
-        bodies.append(
-            f"<tbody class='squad-group'><tr class='squad-title'><td colspan='4'>{label}</td></tr>"
-            f"{member_rows}</tbody>")
+    if view == "all":
+        everyone = [(squad_label(sid), r) for sid in SQUAD_ORDER for r in groups[sid]]
+        everyone.sort(key=lambda item: -(eff_by_player.get(int(item[1]["id"])) if eff_by_player.get(int(item[1]["id"])) is not None else -1))
+        if everyone:
+            bodies.append("<tbody class='squad-group'>" + "".join(player_row(r, label) for label, r in everyone) + "</tbody>")
+        ncols = 5
+    else:
+        for squad_id in SQUAD_ORDER:
+            members = groups[squad_id]
+            if not members:
+                continue
+            bodies.append(
+                f"<tbody class='squad-group'><tr class='squad-title'><td colspan='4'>{squad_label(squad_id)}</td></tr>"
+                f"{''.join(player_row(r) for r in members)}</tbody>")
+        ncols = 4
     tip = ("Среднее EFF за выбранные дни КВ. Каждый таб сравнивается отдельно: место среди игроков "
            "на этом табе по убийствам 30%, KDA 30%, счёту 25%; гранаты 15% (место по гранатам на таб). "
            "Нет гранат — считается только по табу.")
+    view_toggle = ("<span class='seg'>"
+                   + ("<b>По отрядам</b>" if view == "squads" else
+                      f"<a href='{url_for('players', **({'days': period} if period else {'days': 'all'}))}'>По отрядам</a>")
+                   + ("<b>Общий список</b>" if view == "all" else
+                      f"<a href='{url_for('players', view='all', **({'days': period} if period else {'days': 'all'}))}'>Общий список</a>")
+                   + "</span>")
+    squad_th = ("<th class='l sortable' data-sort='text' onclick='sortPlayerSquads(this)'>Отряд</th>" if view == "all" else "")
+    tbody_html = "".join(bodies) or (f"<tbody><tr><td colspan='{ncols}' class='empty'>"
+                                     "В отрядах пока никого нет.</td></tr></tbody>")
+    eff_dir = " data-dir='desc'" if view == "all" else ""
     body = ("<div class='pagehead'><div><h1>Игроки</h1>"
             f"<div class='subtitle'>{esc(_period_label(period, dates, len(available_dates)))}</div>"
             "</div><div class='actions'>"
             f"<a class='button' href='{url_for('players_voice')}' "
-            "title='Во сколько каждый зашёл в войс явки по дням КВ'>🎙 Заход войс</a>"
+            f"title='Во сколько каждый зашёл в войс явки по дням КВ'>{icon('mic')} Заход в войс</a>"
             "</div></div>"
-            + _period_bar(period) +
-            "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
-            "<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Ник</th>"
-            "<th title='Дни КВ из выбранных, где у игрока есть отчёт или таб'>Дни</th>"
-            "<th title='Сумма гранат за выбранные дни'>Грены</th>"
-            f"<th class='sortable' title='{esc(tip)}' onclick='sortPlayerSquads(this)'>EFF</th></tr></thead>"
-            f"{''.join(bodies)}</table></div>"
-            "<script>" + FILTER_PLAYERS_JS + "function sortPlayerSquads(th){const dir=th.dataset.dir==='desc'?'asc':'desc';th.dataset.dir=dir;document.querySelectorAll('.squad-group').forEach(group=>{const rows=[...group.querySelectorAll('.player-row')];const value=row=>{const raw=row.cells[3].textContent.trim().replace(',','.');if(!raw||raw==='—')return null;const parsed=Number(raw);return Number.isFinite(parsed)?parsed:null};rows.sort((a,b)=>{const av=value(a),bv=value(b);if(av===null||bv===null)return av===bv?0:av===null?1:-1;return dir==='asc'?av-bv:bv-av});rows.forEach(row=>group.appendChild(row))})}</script>")
+            "<div class='toolbar'>" + _period_bar(period, view) + view_toggle + _search_box() + "</div>"
+            "<div class='panel'><table><thead><tr>"
+            "<th class='nick grow sortable' data-sort='text' onclick='sortPlayerSquads(this)'>Ник</th>"
+            + squad_th +
+            "<th class='sortable' data-sort='number' onclick='sortPlayerSquads(this)' "
+            "title='Дни КВ из выбранных, где у игрока есть отчёт или таб'>Дни</th>"
+            "<th class='sortable' data-sort='number' onclick='sortPlayerSquads(this)' "
+            "title='Сумма гранат за выбранные дни'>Грены</th>"
+            f"<th class='sortable' data-sort='number'{eff_dir} title='{esc(tip)}' onclick='sortPlayerSquads(this)'>EFF</th>"
+            f"</tr></thead>{tbody_html}</table></div>"
+            "<script>" + FILTER_PLAYERS_JS + SORT_PLAYERS_JS + "</script>")
     return render("Игроки", body)
 
 
@@ -820,33 +926,12 @@ def players_voice():
     else:
         table = ("<div class='panel'><div class='scroll'><table class='tight vt'><thead><tr>"
                  f"<th class='nick'>Ник</th>{head}</tr></thead>{''.join(bodies)}</table></div></div>")
-    body = (f"<a class='back' href='{url_for('players')}'>← Игроки</a>"
+    body = (f"<a class='back' href='{url_for('players')}'>{icon('arrow-left')} Игроки</a>"
             "<div class='pagehead'><div><h1>Заход в войс</h1>"
-            "</div></div>"
-            "<input id='flt' placeholder='Поиск по нику…' aria-label='Поиск игрока' oninput=\"filterPlayers(this.value)\">"
+            "<div class='subtitle'>Время первого захода в войс явки, МСК</div></div></div>"
+            "<div class='toolbar'>" + _search_box() + "</div>"
             + table + f"<script>{FILTER_PLAYERS_JS}</script>")
-    return render("Заход в войс", body)
-
-
-PLAYER_CSS = """<style>
-.ph{--red-soft:#fef4f2;--red-pill:#fbdcd8;--red-ink:#b42318;--amb-soft:#fffaf0;--amb-pill:#fdeccc;--amb-ink:#945200;--gry-pill:#ececea}
-@media(prefers-color-scheme:dark){.ph{--red-soft:#2b2120;--red-pill:#5a2a26;--red-ink:#ffb4ab;--amb-soft:#2a2418;--amb-pill:#5a4318;--amb-ink:#ffd28a;--gry-pill:#303030}}
-.ph .metrics{grid-template-columns:repeat(5,1fr);margin:12px 0 14px}
-.ph .metric b .of{display:block;margin-top:1px;font-size:11px;font-weight:500;color:var(--dim);letter-spacing:0}
-@media(max-width:760px){.ph .metrics{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:460px){.ph .metrics{grid-template-columns:repeat(2,1fr)}.ph .metric:last-child{grid-column:1/-1}}
-.ph .gear{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
-.ph .gi{display:inline-flex;align-items:center;gap:7px;min-height:36px;padding:3px 11px 3px 4px;border:1px solid var(--line);border-radius:9px;background:var(--panel);font-weight:650}
-.ph .gi.txt{padding-left:11px}.ph .gi img{width:28px;height:28px;object-fit:contain;border:1.5px solid;border-radius:6px;background:#0f1419}.ph .gi .lv{margin-left:3px;color:var(--dim);font-weight:650}.ph .gi .gs{color:var(--dim);font-weight:500}
-.ph table th:first-child,.ph table td:first-child{text-align:left}
-.ph tr.absent td,.ph tr.absent:hover td{background:var(--red-soft)}.ph tr.came td,.ph tr.came:hover td{background:var(--amb-soft)}
-.ph tr.notab td{color:var(--dim)}.ph td.note{text-align:left;color:var(--dim);font-size:11px}
-.ph .pill{display:inline-flex;align-items:center;min-height:20px;padding:0 9px;border-radius:999px;background:var(--red-pill);color:var(--red-ink);font-size:11px;font-weight:750;white-space:nowrap}
-.ph .pill.amb{background:var(--amb-pill);color:var(--amb-ink)}.ph .pill.gry{background:var(--gry-pill);color:var(--dim)}
-.ph .yes{color:var(--green);font-weight:750}.ph .no{color:var(--red);font-weight:750}.ph .na,.ph .sub{color:var(--dim)}.ph .sub{font-size:11px;margin-left:4px}
-.ph .empty{padding:28px 0;text-align:center;color:var(--dim)}
-@media(max-width:560px){.ph .meter{display:none}.ph .mcell b{min-width:0}}
-</style>"""
+    return render("Заход в войс", body, wide=True)
 
 
 def _player_history(con: Any, player_id: int) -> dict[str, Any]:
@@ -1000,8 +1085,8 @@ def _tab_cells(tabs: list[dict[str, Any]]) -> tuple[str, str]:
 def _attendance_cell(row: dict[str, Any]) -> str:
     """Явка для строки, где игрок играл (на табе) или засветился в отчёте дня без таба."""
     if row["status"] == "played":
-        return "<td class='yes' title='Был на табе'>✓</td>"
-    return "<td class='yes' title='Таба у дня нет; приход виден по отчёту (явка, войс или гранаты)'>✓</td>"
+        return f"<td class='yes c' title='Был на табе'>{icon('check')}</td>"
+    return f"<td class='yes c' title='Таба у дня нет; приход виден по отчёту (явка, войс или гранаты)'>{icon('check')}</td>"
 
 
 def _voice_cell(row: dict[str, Any]) -> str:
@@ -1076,7 +1161,7 @@ def player(player_id: int):
             css, label, tip = marks[r["status"]]
             if r["note"]:                       # подробности — только во всплывающей подсказке, в строке текста нет
                 tip += f" — {r['note']}"
-            pill = f"<td title='{esc(tip)}'><span class='pill {css}'>{label}</span></td>"
+            pill = f"<td class='c' title='{esc(tip)}'><span class='pill {css}'>{label}</span></td>"
             if r["status"] == "came":           # пришёл: войс и заход видны, а игры (гранаты, таб, EFF) нет
                 trs.append(f"<tr class='came'>{link}{pill}<td class='na'></td>{_voice_cell(r)}"
                            f"{_join_cell(r) if show_join else ''}<td class='note' colspan='3'></td></tr>")
@@ -1086,7 +1171,7 @@ def player(player_id: int):
         if r["total"] is None:
             gren = "<td class='na'>—</td>"
         else:
-            flag = (" <span class='flag' title='Максимум и больше 150 — проверить на накрутку'>⚠</span>"
+            flag = (f" <span class='flag' title='Максимум и больше 150 — проверить на накрутку'>{icon('alert')}</span>"
                     if r["total"] == max_total and max_total > 150 else "")
             gren = (f"<td class='total'><span class='mcell'>{meter(r['total'], max_total)}"
                     f"<b>{r['total']}</b></span>{flag}</td>")
@@ -1101,7 +1186,7 @@ def player(player_id: int):
 
     if days:
         table = ("<div class='panel'><table class='tight'><thead><tr><th class='nick grow'>Дата</th>"
-                 "<th title='✓ — был на КВ; «Не играл» — пришёл, но на табе его нет; «Неявка» — не пришёл; «Не просканирован» — у дня нет таба'>Явка</th><th>Гранаты</th><th>Войс</th>"
+                 "<th class='c' title='Галочка — был на КВ; «Не играл» — пришёл, но на табе его нет; «Неявка» — не пришёл; «Не просканирован» — у дня нет таба'>Явка</th><th>Гранаты</th><th>Войс</th>"
                  + ("<th title='Во сколько зашёл в войс явки'>Зашёл</th>" if show_join else "") +
                  "<th title='Убийства / Смерти / Помощь за день (сумма по табам)'>У/С/П</th>"
                  "<th title='Сумма счёта по табам дня'>Счёт</th>"
@@ -1110,8 +1195,8 @@ def player(player_id: int):
     else:
         table = "<div class='empty'>По этому игроку пока нет дней КВ.</div>"
 
-    body = (PLAYER_CSS + "<div class='ph'>"
-            f"<a class='back' href='{url_for('players')}'>← Игроки</a>"
+    body = ("<div class='ph'>"
+            f"<a class='back' href='{url_for('players')}'>{icon('arrow-left')} Игроки</a>"
             f"<div class='pagehead'><h1>{esc(p['canonical_nick'])}</h1></div>"
             + summary + gear_html + table + "</div>")
     return render(p["canonical_nick"], body)
@@ -1238,21 +1323,21 @@ def day(date: str):
                        if t["d"] else float(t["k"] + t["a"]))
                 efficiency = day_eff.get(int(k["player_id"]))
                 eff_cell = (f"{efficiency:.1f}" if efficiency is not None else "—")
-                tab_cells = (f"<td class='sum' title='{tip}'>{t['k']}</td>"
-                             f"<td class='sum' title='{tip}'>{t['d']}</td>"
-                             f"<td class='sum' title='{tip}'>{t['a']}</td>"
-                             f"<td class='sum' title='{tip}'>{t['s']}</td>"
-                             f"<td class='sum'>{kda:.2f}</td><td class='eff'>{eff_cell}</td>")
+                tab_cells = (f"<td class='sum hide-sm' title='{tip}'>{t['k']}</td>"
+                             f"<td class='sum hide-sm' title='{tip}'>{t['d']}</td>"
+                             f"<td class='sum hide-sm' title='{tip}'>{t['a']}</td>"
+                             f"<td class='sum hide-sm' title='{tip}'>{t['s']}</td>"
+                             f"<td class='sum hide-sm'>{kda:.2f}</td><td class='eff'>{eff_cell}</td>")
             else:
-                tab_cells = ("<td class='dim'>—</td><td class='dim'>—</td>"
-                             "<td class='dim'>—</td><td class='dim'>—</td>"
-                             "<td class='dim'>—</td><td class='dim'>—</td>")
+                tab_cells = ("<td class='dim hide-sm'>—</td><td class='dim hide-sm'>—</td>"
+                             "<td class='dim hide-sm'>—</td><td class='dim hide-sm'>—</td>"
+                             "<td class='dim hide-sm'>—</td><td class='dim'>—</td>")
 
         if scan_only:
             gcells = "".join("<td class='dim'>—</td>" for _ in range(max_stage)) if mode == "stages" else ""
             total_cell = "<td class='dim'>—</td>"
             voice_cell = "<td class='dim'>—</td>"
-            action_cell = "<td></td>"
+            action_cell = "<td class='act'></td>"
             source_badge = " <span class='source-badge' title='Есть в табе, но нет в отчёте гранат/войса'>только таб</span>"
         else:
             row_no = int(k["row_no"])
@@ -1273,15 +1358,16 @@ def day(date: str):
                               f"title='гранат за день (всего); пусто — не отсканировано'></td>")
             voice_cell = (f"<td><input type='text' inputmode='numeric' name='v{row_no}' "
                           f"value='{fmt_sec(k['voice_seconds'] or 0)}' title='минуты:секунды'></td>")
-            action_cell = (f"<td><button class='danger' name='__del_row' value='{row_no}' "
+            action_cell = (f"<td class='act'><button class='danger rowdel' name='__del_row' value='{row_no}' "
                            f"formaction='{save_url}' data-confirm='Удалить гранаты и войс "
-                           f"{esc(nick)} за {fmt_date_ru(date)}?'>✕</button></td>")
+                           f"{esc(nick)} за {fmt_date_ru(date)}?' aria-label='Удалить строку' title='Удалить строку'>"
+                           f"{icon('x')}</button></td>")
             source_badge = ""
 
         link = (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(nick)}</a>"
                 if k["player_id"] else esc(nick))
         rows_html.append(
-            f"<tr><td class='dim rank'>{display_no}</td><td class='nick'>{link}{source_badge}</td>"
+            f"<tr><td class='dim rank hide-sm'>{display_no}</td><td class='nick'>{link}{source_badge}</td>"
             f"{tab_cells}{gcells}{total_cell}{voice_cell}{action_cell}</tr>")
 
     # ── исходные табы: правка У/С/П/СЧЁТ по каждому табу ──────────────────
@@ -1293,9 +1379,9 @@ def day(date: str):
             "<tr><td colspan='7' style='text-align:left'>"
             f"<button class='danger wide' name='__del_scan' value='{s['id']}' "
             f"formaction='{save_url}' data-confirm='Удалить весь таб?'"
-            ">✕ таб</button> "
+            f">{icon('trash')} Удалить таб</button> "
             f"<a class='button' href='{url_for('day_relink', date=date, scan=s['id'])}' "
-            "title='Перепривязать ники только этого таба к игрокам'>↻ ники</a> <span class='dim'>"
+            f"title='Перепривязать ники только этого таба к игрокам'>{icon('refresh')} Ники</a> <span class='dim'>"
             + " · ".join(filter(None, [
                 f"этап {stage_label(s['stage'])}" if s["stage"] else "без этапа",
                 esc(s["map"] or ""),
@@ -1318,12 +1404,7 @@ def day(date: str):
             "</tr>"
             for r in s["players"])
         scan_tables.append(head + rows)
-    relink_bar = (
-        "<p class='actions' style='margin:14px 0 4px'>"
-        f"<a class='button' href='{url_for('day_relink', date=date)}' "
-        "title='Заново сопоставить ники всех табов дня с игроками (сначала предпросмотр, можно вернуть)'>"
-        "↻ Перепривязать ники табов</a></p>" if scans else "")
-    tabs_details = relink_bar + (
+    tabs_details = (
         "<details" + (" open" if len(scans) == 1 else "") + ">"
         f"<summary>Исходные табы ({len(scans)}) · найдено {scan_player_count - unmatched_count}/{scan_player_count}"
         + (f" · не найдено {unmatched_count}" if unmatched_count else " · все ники найдены")
@@ -1338,10 +1419,10 @@ def day(date: str):
     if skipped_rows:
         notes = ""
         if report and len(scans) < int(report["stage_count"]):
-            notes += (f"<p class='hint flag'>⚠ Загружено табов: {len(scans)} из {report['stage_count']} этапов. "
+            notes += (f"<p class='hint flag'>{icon('alert')} Загружено табов: {len(scans)} из {report['stage_count']} этапов. "
                       "Кто не попал ни на один загруженный таб, считается не игравшим.</p>")
         if unmatched_count:
-            notes += (f"<p class='hint flag'>⚠ В табах {unmatched_count} ников не найдено в базе. Если кто-то из "
+            notes += (f"<p class='hint flag'>{icon('alert')} В табах {unmatched_count} ников не найдено в базе. Если кто-то из "
                       "списка ниже играл, добавьте его ник в алиасы — игрок сразу вернётся в день.</p>")
         skipped_trs = "".join(
             "<tr><td class='nick'>"
@@ -1363,45 +1444,48 @@ def day(date: str):
         f"<option value='{url_for('day', date=d)}'"
         + (" selected" if d == date else "") + f">{fmt_date_ru(d)}</option>"
         for d in dates)
-    nav = ("<nav class='days'>"
-           + (f"<button onclick=\"location='{url_for('day', date=prev_d)}'\">← старее</button>"
-              if prev_d else "<button disabled>← старее</button>")
-           + "<select onchange=\"if(this.value)location=this.value\">"
-           f"<option value=''>— выбери день —</option>{options}</select>"
-           + (f"<button onclick=\"location='{url_for('day', date=next_d)}'\">новее →</button>"
-              if next_d else "<button disabled>новее →</button>")
-           + f"<a href='{url_for('index')}'>все дни</a></nav>")
+    day_select = ("<select aria-label='Перейти к дню' style='margin-left:auto' "
+                  "onchange=\"if(this.value)location=this.value\">"
+                  f"<option value=''>Перейти к дню…</option>{options}</select>")
+    older = (f"<a class='button' href='{url_for('day', date=prev_d)}' title='Старее' aria-label='Предыдущий день'>{icon('left')}</a>"
+             if prev_d else f"<button disabled aria-label='Предыдущего дня нет'>{icon('left')}</button>")
+    newer = (f"<a class='button' href='{url_for('day', date=next_d)}' title='Новее' aria-label='Следующий день'>{icon('right')}</a>"
+             if next_d else f"<button disabled aria-label='Следующего дня нет'>{icon('right')}</button>")
 
     banner = ""
     if request.args.get("saved"):
-        banner = "<div class='banner ok-pill'>✅ Сохранено</div>"
+        banner = f"<div class='banner'>{icon('check')}<span>Сохранено</span></div>"
     elif request.args.get("deleted"):
-        banner = "<div class='banner ok-pill'>🗑 Удалено</div>"
+        banner = f"<div class='banner'>{icon('trash')}<span>Удалено</span></div>"
     elif request.args.get("restored"):
-        banner = "<div class='banner ok-pill'>↩ День возвращён из архива</div>"
+        banner = f"<div class='banner'>{icon('undo')}<span>День возвращён из архива</span></div>"
     elif request.args.get("relinked") is not None:
         moved = _to_int(request.args.get("relinked")) or 0
-        banner = (f"<div class='banner ok-pill'>↻ Перепривязано строк: {moved} · "
+        banner = (f"<div class='banner'>{icon('refresh')}<span>Перепривязано строк: {moved}</span> "
                   f"<a href='{url_for('day_relink', date=date)}'>история / вернуть</a></div>"
                   if moved else "<div class='banner' style='background:var(--soft);color:var(--dim)'>"
                                 "Ничего не выбрано — изменений нет</div>")
     elif request.args.get("unrelinked") is not None:
-        banner = (f"<div class='banner ok-pill'>↩ Возвращено строк: {_to_int(request.args.get('unrelinked')) or 0}"
+        banner = (f"<div class='banner'>{icon('undo')}<span>Возвращено строк: {_to_int(request.args.get('unrelinked')) or 0}"
                   + (f" · пропущено (с тех пор менялись): {_to_int(request.args.get('skipped'))}"
-                     if _to_int(request.args.get("skipped")) else "") + "</div>")
+                     if _to_int(request.args.get("skipped")) else "") + "</span></div>")
+    relink_item = (f"<a class='button menu-item' href='{url_for('day_relink', date=date)}' "
+                   "title='Заново сопоставить ники всех табов дня с игроками (сначала предпросмотр, можно вернуть)'>"
+                   f"{icon('refresh')} Перепривязать ники табов</a>" if scans else "")
     if archived:
-        banner += ("<div class='banner' style='background:var(--soft);color:var(--dim)'>"
-                   "🗄 День в архиве: не входит в список дней, итоги и EFF игроков</div>")
+        banner += (f"<div class='banner' style='background:var(--soft);color:var(--dim)'>{icon('archive')}"
+                   "<span>День в архиве: не входит в список дней, итоги и EFF игроков</span></div>")
         archive_ctl = (f"<form method='post' action='{url_for('day_unarchive', date=date)}'>"
-                       "<button class='primary'>↩ Вернуть из архива</button></form>")
+                       f"<button class='primary'>{icon('undo')} Вернуть из архива</button></form>")
     else:
         confirm_text = (f"Убрать день {fmt_date_ru(date)} в архив?\n\n"
                         "Он пропадёт из списка дней, суммарных гранат/дней и EFF игроков. "
                         "Вернуть можно в разделе «Архив».")
-        archive_ctl = (f"<form method='post' action='{url_for('day_archive', date=date)}' "
-                       f"data-confirm='{esc(confirm_text)}'>"
-                       "<button class='danger wide' style='min-height:32px;padding:0 12px'>"
-                       "🗑 Удалить день (в архив)</button></form>")
+        archive_ctl = (
+            "<details class='menu'><summary aria-label='Действия с днём' title='Действия с днём'>"
+            f"{icon('more')}</summary><div class='menu-pop'>{relink_item}"
+            f"<form method='post' action='{url_for('day_archive', date=date)}' data-confirm='{esc(confirm_text)}'>"
+            f"<button class='danger wide menu-item'>{icon('archive')} Удалить день (в архив)</button></form></div></details>")
 
     chips = ("<div class='chips'>"
              f"<span class='chip'>Игроков: {len(krows)}</span>"
@@ -1412,11 +1496,11 @@ def day(date: str):
              "<span class='chip'>Войс: "
              + fmt_sec(sum(k["voice_seconds"] or 0 for k in krows)) + "</span></div>")
 
-    tab_head = ("<th class='sortable' data-sort='number'>У</th>"
-                "<th class='sortable' data-sort='number'>С</th>"
-                "<th class='sortable' data-sort='number'>П</th>"
-                "<th class='sortable' data-sort='number'>Счёт</th>"
-                "<th class='sortable' data-sort='number'>KDA</th>"
+    tab_head = ("<th class='sortable hide-sm' data-sort='number'>У</th>"
+                "<th class='sortable hide-sm' data-sort='number'>С</th>"
+                "<th class='sortable hide-sm' data-sort='number'>П</th>"
+                "<th class='sortable hide-sm' data-sort='number'>Счёт</th>"
+                "<th class='sortable hide-sm' data-sort='number'>KDA</th>"
                 "<th class='sortable' data-sort='number' title='EFF дня: каждый таб сравнивается отдельно — убийства 30%, KDA 30%, счёт 25%; гранаты 15% (нет гранат — только по табу)'>EFF</th>"
                 if has_tabs else "")
     toggle = ("<div class='seg'>" + ("<b>Всего</b>" if mode == "total" else f"<a href='{url_for('day',date=date,mode='total')}'>Всего</a>") + (f"<a href='{url_for('day',date=date,mode='stages')}'>По этапам</a>" if mode == "total" else "<b>По этапам</b>") + "</div>")
@@ -1442,17 +1526,16 @@ document.addEventListener('click',e=>{const th=e.target.closest('#day-table th.s
     guard_script = """<script>
 (function(){var f=document.querySelector('form.day-edit');if(!f)return;var dirty=false;
 f.addEventListener('input',function(){dirty=true});
-f.addEventListener('submit',function(){dirty=false});
+f.addEventListener('submit',function(){dirty=false});f.addEventListener('reset',function(){dirty=false});
 window.addEventListener('beforeunload',function(e){if(dirty){e.preventDefault();e.returnValue=''}});
 document.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&'sSыЫ'.indexOf(e.key)>-1&&e.key.length===1){e.preventDefault();var b=f.querySelector('button.save');if(b)f.requestSubmit(b)}});
 })();
 </script>"""
 
     kv_block = (
-        toggle
-        + "<div class='scroll'><table id='day-table'><thead><tr>"
-        "<th class='sortable' data-sort='number'>#</th>"
-        "<th class='sortable' data-sort='text'>Ник</th>"
+        f"<div class='panel{' xscroll' if mode == 'stages' else ''}'><table id='day-table'><thead><tr>"
+        "<th class='sortable hide-sm' data-sort='number'>#</th>"
+        "<th class='nick sortable' data-sort='text'>Ник</th>"
         + tab_head + stage_cols
         + "<th class='sortable' data-sort='number'>Гранаты</th>"
         "<th class='sortable' data-sort='time'>Войс</th><th></th></tr></thead>"
@@ -1461,12 +1544,16 @@ document.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&'sSы
         "<p class='hint'>Дневной отчёт за эту дату не найден "
         "(гранаты за этот день не импортировались).</p>")
 
-    body = (f"<a class='back' href='{url_for('index')}'>← Обзор</a>"
-            f"<div class='pagehead'><div><h1>{fmt_date_ru(date)}</h1></div>{archive_ctl}</div>{nav}{chips}{banner}"
+    savebar = ("<div class='savebar' role='region' aria-label='Несохранённые изменения'><span class='cnt'></span>"
+               "<button type='button' data-cancel>Отмена</button>"
+               f"<button class='save' title='Ctrl+S'>{icon('check')} Сохранить</button></div>")
+    toolbar = f"<div class='toolbar'>{toggle}{day_select}</div>" if krows else ""
+    body = (f"<a class='back' href='{url_for('index')}'>{icon('arrow-left')} Обзор</a>"
+            f"<div class='pagehead start'><div><div class='day-title'>{older}<h1>{fmt_date_ru(date)}</h1>{newer}</div>{chips}</div>"
+            f"{archive_ctl}</div>{banner}{toolbar}"
             f"<form class='day-edit' method='post' action='{save_url}'>"
             f"<input type='hidden' name='mode' value='{mode}'>"
-            + kv_block + tabs_details
-            + "<button class='save float' title='Ctrl+S'>💾 Сохранить</button></form>"
+            + kv_block + tabs_details + savebar + "</form>"
             + skipped_block + guard_script)
     return render(date, body)
 
@@ -1518,10 +1605,10 @@ def day_relink(date: str):
 
     group_rows = "".join(
         "<tr>"
-        f"<td><input type='checkbox' name='pick' value='{esc(g['key'])}'{'' if g['conflict'] else ' checked'}></td>"
+        f"<td class='c'><input type='checkbox' name='pick' value='{esc(g['key'])}'{'' if g['conflict'] else ' checked'}></td>"
         f"<td class='nick'>{esc(g['nick'])}</td>"
-        f"<td>{esc(g['old_nick']) if g['old_nick'] else '<span class=dim>не привязан</span>'}</td>"
-        f"<td><b>→ {esc(g['new_nick'])}</b></td><td>{len(g['rows'])}</td>"
+        f"<td class='l'>{esc(g['old_nick']) if g['old_nick'] else '<span class=dim>не привязан</span>'}</td>"
+        f"<td class='l'><b>→ {esc(g['new_nick'])}</b></td><td>{len(g['rows'])}</td>"
         "<td class='nick dim'>"
         + (f"<span class='flag'>конфликт:</span> ник ещё записан алиасом у {esc(', '.join(g['also']))}; "
            "по основному нику отдаём игроку с таким именем. Галочка снята — включите, если это верно"
@@ -1534,14 +1621,14 @@ def day_relink(date: str):
         form = (
             f"<form method='post' action='{action}' data-confirm='Перепривязать выбранные ники? Это можно вернуть кнопкой «Вернуть».'>"
             + (f"<input type='hidden' name='scan' value='{scan_id}'>" if scan_id is not None else "")
-            + "<div class='scroll'><table><thead><tr><th></th><th class='nick'>Ник на табе</th><th>Сейчас</th>"
-              "<th>Станет</th><th>Строк</th><th class='nick'>Заметка</th></tr></thead>"
+            + "<div class='panel'><table><thead><tr><th class='c'></th><th class='nick'>Ник на табе</th><th class='l'>Сейчас</th>"
+              "<th class='l'>Станет</th><th>Строк</th><th class='nick'>Заметка</th></tr></thead>"
               f"<tbody>{group_rows}</tbody></table></div>"
-            "<p class='actions' style='margin-top:10px'><button class='save'>↻ Применить выбранное</button>"
+            f"<p class='actions' style='margin-top:12px'><button class='save'>{icon('refresh')} Применить выбранное</button>"
             f"<a class='button' href='{url_for('day', date=date)}'>Отмена</a></p></form>")
     else:
         form = ("<p class='hint'>Менять нечего: все ники, которые можно определить однозначно, "
-                f"уже привязаны правильно. <a href='{url_for('day', date=date)}'>← к дню</a></p>")
+                f"уже привязаны правильно. <a href='{url_for('day', date=date)}'>К дню</a></p>")
     kept_block = ""
     if plan["kept"]:
         kept_block = (
@@ -1555,18 +1642,18 @@ def day_relink(date: str):
     if history:
         undo = url_for("day_relink_undo", date=date)
         hist_block = (
-            "<h2>История перепривязок дня</h2><div class='scroll'><table><thead><tr><th>Когда (МСК)</th>"
+            "<h2>История перепривязок дня</h2><div class='panel'><table><thead><tr><th>Когда (МСК)</th>"
             "<th class='nick'>Ники</th><th>Строк</th><th></th></tr></thead><tbody>"
             + "".join(
                 f"<tr><td>{esc(h['at'])}</td><td class='nick'>{esc(h['nicks'])}</td><td>{h['rows']}</td><td>"
                 + ("<span class='dim'>возвращено</span>" if h["undone"] else
                    f"<form method='post' action='{undo}' data-confirm='Вернуть прежнюю привязку этих строк?' style='margin:0'>"
                    f"<input type='hidden' name='batch' value='{esc(h['batch'])}'>"
-                   "<button>↩ Вернуть</button></form>")
+                   f"<button>{icon('undo')} Вернуть</button></form>")
                 + "</td></tr>" for h in history)
             + "</tbody></table></div>")
     body = (
-        f"<a class='back' href='{url_for('day', date=date)}'>← {fmt_date_ru(date)}</a>"
+        f"<a class='back' href='{url_for('day', date=date)}'>{icon('arrow-left')} {fmt_date_ru(date)}</a>"
         f"<div class='pagehead'><div><h1>Перепривязка ников</h1>"
         f"<div class='subtitle'>{fmt_date_ru(date)} · {scope}</div></div></div>"
         "<p class='hint'>Меняется только то, к какому игроку привязана строка таба. Цифры, отчёты, войс и составы "
@@ -1619,17 +1706,17 @@ def archive():
         f"<td>{r['tabs'] or 0}</td><td>{r['players'] or 0}</td>"
         f"<td class='total'>{r['grenades'] or 0}</td><td>{fmt_sec(r['voice'])}</td>"
         f"<td class='dim'>{fmt_date_ru(str(r['archived_at'])[:10])}</td>"
-        f"<td><form method='post' action='{url_for('day_unarchive', date=r['date'])}' style='margin:0'>"
-        "<button>↩ Вернуть</button></form></td></tr>"
+        f"<td class='act'><form method='post' action='{url_for('day_unarchive', date=r['date'])}' style='margin:0'>"
+        f"<button>{icon('undo')} Вернуть</button></form></td></tr>"
         for r in rows)
     table = ("<div class='panel'><table><thead><tr><th>Дата</th><th>Табов</th><th>Игроков</th>"
              "<th>Гранаты</th><th>Войс</th><th>В архиве с</th><th></th></tr></thead>"
              f"<tbody>{trs}</tbody></table></div>" if rows else
              "<p class='hint'>Архив пуст. Сюда попадают дни, убранные кнопкой «Удалить день» на странице дня.</p>")
-    body = (f"<a class='back' href='{url_for('index')}'>← Обзор</a>"
+    body = (f"<a class='back' href='{url_for('index')}'>{icon('arrow-left')} Обзор</a>"
             "<div class='pagehead'><div><h1>Архив дней КВ</h1>"
-            "<p class='hint'>Эти дни не учитываются в списке дней, итогах и EFF игроков. "
-            "Данные не удалены, день можно вернуть.</p></div></div>" + table)
+            "<div class='subtitle'>Эти дни не учитываются в списке дней, итогах и EFF игроков. "
+            "Данные не удалены, день можно вернуть.</div></div></div>" + table)
     return render("Архив", body)
 
 

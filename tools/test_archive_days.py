@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -88,7 +89,7 @@ class ArchiveDayTests(unittest.TestCase):
         index = self.get("/").get_data(as_text=True)
         self.assertNotIn(f"href='/day/{D2}'", index)
         self.assertIn(f"href='/day/{D1}'", index)
-        self.assertIn("<label>Дней КВ</label><b>1</b>", index)
+        self.assertIn("<span><b>1</b> день КВ</span>", index)
         self.assertIn("Архив (1)", index)
         # данные не удалены — только спрятаны
         self.assertEqual(self.counts(), before)
@@ -106,7 +107,7 @@ class ArchiveDayTests(unittest.TestCase):
         self.assertIn("restored=1", r.headers["Location"])
         index = self.get("/").get_data(as_text=True)
         self.assertIn(f"href='/day/{D2}'", index)
-        self.assertIn("<label>Дней КВ</label><b>2</b>", index)
+        self.assertIn("<span><b>2</b> дня КВ</span>", index)
         self.assertNotIn("Архив (", index)
 
     def test_players_totals_and_eff_ignore_archived_day(self):
@@ -222,8 +223,10 @@ class ArchiveDayTests(unittest.TestCase):
 
     def test_navigation_order_and_squads_page_without_hint(self):
         index = self.get("/").get_data(as_text=True)
-        self.assertIn("Игроки</a><a class='' href='/squads'>Отряды</a><a class='' href='/buffs'>Бафы</a>"
-                      "<a class='' href='/gear'>Шмот</a></nav>", index)
+        nav = re.search(r"<nav class=\"nav\"[^>]*>(.*?)</nav>", index, re.S).group(1)
+        self.assertEqual(re.findall(r'href="([^"]+)">([^<]+)</a>', nav),
+                         [("/", "Обзор"), ("/players", "Игроки"), ("/squads", "Отряды"),
+                          ("/buffs", "Бафы"), ("/gear", "Шмот")])
         self.assertNotIn("<!--navx-->", index)
         squads = self.get("/squads").get_data(as_text=True)
         self.assertNotIn("Нажмите на ячейку", squads)
