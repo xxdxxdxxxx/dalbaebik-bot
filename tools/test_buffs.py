@@ -496,13 +496,65 @@ class IssueTests(BuffBase):
         self.assertEqual([r["total"] for r in self.history_rows()], [82])
         self.assertEqual(self.done_nicks(), [])
 
-    def test_edit_after_issue_is_a_new_request(self):
+    def edit_extanz_after_issue(self, text="Extanz\n10 убийц"):
         self.seed_clan()
-        self.toggle("Extanz", 1)
+        self.toggle("Extanz", 1)                                            # выдали 3 убийцы
+        self.rest_before = self.foot("brow-rest")
         self.now = msk(14, 20, 40)
-        buffs.ingest_messages(self.db, [rec(3, "Extanz\n10 убийц", when=msk(12, 19, 56), edited=msk(14, 20, 30))])
+        buffs.ingest_messages(self.db, [rec(3, text, when=msk(12, 19, 56), edited=msk(14, 20, 30))])
+
+    @staticmethod
+    def num(cell):
+        return int(cell) if cell.isdigit() else 0
+
+    def extanz_row(self):
+        return next(r for r in self.page().split("<tr class='brow")[1:] if "Extanz" in r)
+
+    def test_edit_after_issue_keeps_the_tick_and_flags_the_change(self):
+        self.edit_extanz_after_issue()
+        self.assertIn("Extanz", self.done_nicks())                          # галочка не слетела
+        row = self.extanz_row()
+        self.assertIn("class='source-badge chg'", row)
+        self.assertIn("Выдано: 3 убийц. Сейчас: 10 убийц.", row)
+        self.assertIn("data-x='7'", row)                                    # прибавка: 10 − 3 убийц
+        killers = lambda cells: self.num(cells[2])
+        self.assertEqual(killers(self.foot("brow-rest")), killers(self.rest_before) + 7)   # попала в «осталось выдать»
+        self.assertEqual([r["total"] for r in self.history_rows()], [3])    # история не менялась
+
+    def test_edit_that_changes_no_buffs_is_not_flagged(self):
+        self.edit_extanz_after_issue("extanz\n3 убийцы")
+        self.assertIn("Extanz", self.done_nicks())
+        self.assertNotIn("изменена", self.page())
+        self.assertEqual(self.foot("brow-rest"), self.rest_before)
+
+    def test_ticking_a_changed_request_confirms_it(self):
+        self.edit_extanz_after_issue()
+        resp = self.toggle("Extanz", 1)
+        self.assertTrue(resp.get_json()["ack"])
+        self.assertIn("Extanz", self.done_nicks())
+        self.assertNotIn("изменена", self.page())
+        self.assertEqual(self.foot("brow-rest"), self.rest_before)          # прибавка выдана
+        self.assertEqual([r["total"] for r in self.history_rows()], [3, 10])
+        self.assertFalse(self.toggle("Extanz", 1).get_json()["ack"])         # повторный клик ничего не меняет
+        self.assertEqual(len(self.history_rows()), 2)
+
+    def test_untick_clears_every_tick_of_the_current_message_for_good(self):
+        self.edit_extanz_after_issue()
+        self.toggle("Extanz", 1)                                            # подтвердили правку: две отметки к одному сообщению
+        self.toggle("Extanz", 0)
         self.assertNotIn("Extanz", self.done_nicks())
-        self.assertEqual(self.history_rows()[0]["total"], 3)   # прежняя выдача в истории не меняется
+        self.assertEqual(self.history_rows(), [])
+        self.assertNotIn("уже выдавали", self.page())                       # старая отметка не «всплыла»
+
+    def test_untick_works_straight_from_a_changed_row(self):
+        self.edit_extanz_after_issue()
+        self.toggle("Extanz", 0)
+        self.assertNotIn("Extanz", self.done_nicks())
+        self.assertEqual(self.history_rows(), [])
+
+    def test_hide_done_keeps_changed_rows_visible(self):
+        self.edit_extanz_after_issue()
+        self.assertIn(".bt.hide-done tr.done:not(.chg){display:none}", self.page())
 
     def test_tick_sticks_even_if_server_clock_is_behind_discord(self):
         buffs.ingest_messages(self.db, [rec(1, "Extanz\n3 убийцы", when=self.now + timedelta(minutes=2))])
@@ -592,6 +644,62 @@ class HistoryTests(BuffBase):
         self.assertEqual(len(self.history_rows()), before - 1)
         self.assertEqual(self.rows(), ["DinGOBY", "Extanz", "KROWA_DASHA", "MLoveX", "TergosX", "Пельмешек"])
         self.assertEqual(self.done_nicks(), ["Пельмешек"])  # MLoveX снова без галочки, никто не пропал
+
+    def reissue_same_day(self):
+        """Игрока отметили, он написал заявку заново — отметили ещё раз (как Treizy_ 20.11)."""
+        self.seed_clan()
+        self.toggle("KROWA_DASHA", 1)                                       # 70 топотов + 12 убийц = 82
+        self.now = msk(14, 21, 5)
+        buffs.ingest_messages(self.db, [rec(7, "KROWA_DASHA\n5 мин", when=msk(14, 21))])
+        self.toggle("KROWA_DASHA", 1)
+        self.assertEqual([r["total"] for r in self.history_rows()], [82, 5])   # в базе обе отметки
+
+    def test_player_is_issued_once_a_day_so_history_counts_the_latest_tick_only(self):
+        self.reissue_same_day()
+        history = self.page("/buffs/history")
+        self.assertIn("<label>Выдач</label><b>1</b>", history)
+        self.assertIn("<label>Топоты</label><b>0</b>", history)             # 70 топотов первой отметки не суммируются
+        self.assertIn("<label>Мины</label><b>5</b>", history)
+        row = history.split("KROWA_DASHA")[1].split("</tr>")[0]
+        self.assertIn("<td class='total'>5</td>", row)
+        by_days = self.page("/buffs/history?view=days")
+        self.assertIn("1 выдач · 5 бафов", by_days)
+        self.assertIn("title='В этот день отметок было 2: засчитана последняя'", by_days)
+
+    def test_edit_of_the_same_message_after_a_tick_also_counts_once(self):
+        """Игрок не писал второго сообщения, а поправил своё (Discord: «изменено»): тоже одна выдача."""
+        self.seed_clan()
+        self.toggle("Extanz", 1)                                            # 3 убийцы
+        self.now = msk(14, 20, 40)
+        buffs.ingest_messages(self.db, [rec(3, "Extanz\n10 убийц", when=msk(12, 19, 56), edited=msk(14, 20, 30))])
+        self.toggle("Extanz", 1)
+        self.assertEqual([r["total"] for r in self.history_rows()], [3, 10])   # в базе две отметки
+        history = self.page("/buffs/history")
+        self.assertIn("<label>Выдач</label><b>1</b>", history)
+        self.assertIn("<label>Убийцы</label><b>10</b>", history)            # 3 + 10 = 13 не получается
+
+    def test_deleting_a_day_entry_removes_every_tick_of_that_player_and_day(self):
+        self.reissue_same_day()
+        by_days = self.page("/buffs/history?view=days")
+        import re
+        also = re.search(r"name='also' value='([\d,]+)'", by_days).group(1)
+        last_id = max(int(x) for x in also.split(","))
+        self.assertEqual(len(also.split(",")), 2)
+        resp = self.client.post(f"/buffs/issued/{last_id}/delete", data={"also": also})
+        self.assertEqual(resp.status_code, 303)
+        self.assertEqual(self.history_rows(), [])                           # прежняя отметка не «всплыла»
+
+    def test_unrecognized_is_a_quiet_icon_next_to_the_nick_and_no_request_time(self):
+        self.seed_clan()
+        buffs.ingest_messages(self.db, [rec(9, "Extanz\n10 убийц\n5 пушек", when=msk(14, 19, 40))])
+        html = self.page()
+        row = html.split("<tr class='brow")[1:]
+        extanz = next(r for r in row if "Extanz" in r)
+        self.assertIn("class='unk'", extanz)
+        self.assertIn("data-tip='Не распознано: 5 пушек'", extanz)
+        self.assertLess(extanz.index("Extanz"), extanz.index("class='unk'"))   # знак стоит справа от ника
+        self.assertNotIn("class='when'", html)
+        self.assertNotIn("class='bnote", html)
 
     def test_history_follows_player_rename_via_alias(self):
         pid = self.add_player("Старый")

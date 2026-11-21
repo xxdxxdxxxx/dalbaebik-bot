@@ -522,6 +522,19 @@ def _identity(admin: Any, con: sqlite3.Connection, cache: dict[str, tuple], nick
     return result
 
 
+def _positive(counts: dict[str, Any]) -> dict[str, int]:
+    return {k: int(v) for k, v in counts.items() if int(v) > 0}
+
+
+def _remaining(row: dict[str, Any]) -> dict[str, int]:
+    """Что ещё осталось выдать по строке: вся заявка, а у изменённой после выдачи — прибавка."""
+    if not row["issued"]:
+        return {k: int(v) for k, v in row["counts"].items()}
+    if row["changed"]:
+        return {k: max(0, int(v) - int(row["issued_counts"].get(k) or 0)) for k, v in row["counts"].items()}
+    return {}
+
+
 def _sum_counts(items: Iterable[dict[str, int]]) -> dict[str, int]:
     out: dict[str, int] = {}
     for counts in items:
@@ -541,10 +554,13 @@ def _collect(admin: Any, con: sqlite3.Connection, now: datetime):
     """Доска — статичная таблица: у каждого игрока его последняя заявка. Она висит, пока сообщение
     есть в канале; удалили сообщение в Discord — заявки нет (история выдачи при этом остаётся).
 
-    Галочка относится только к текущему дню выдачи: заявка «выдана», если после неё (и после её
-    правки) сегодня была выдача. Со сменой дня (05:00 МСК) галочки сами сбрасываются, а игроки
-    остаются на доске — в следующий КВ их можно отметить снова. Сообщение после выдачи — новая
-    заявка, она снова без галочки. Читаются только сообщения текущего канала бафов."""
+    Галочка относится только к текущему дню выдачи: заявка «выдана», если после того, как сообщение
+    написали, сегодня была выдача. Со сменой дня (05:00 МСК) галочки сами сбрасываются, а игроки
+    остаются на доске — в следующий КВ их можно отметить снова. Новое сообщение после выдачи — новая
+    заявка, она снова без галочки. Правка того же сообщения галочку не снимает: если после выдачи
+    в заявке поменялись бафы, строка помечается «изменена» (`changed`), а разница попадает в
+    «Осталось выдать»; повторная галочка подтверждает изменение. Читаются только сообщения
+    текущего канала бафов."""
     today = issue_day_for(now)
     in_channel = "channel_id IN (SELECT channel_id FROM buff_settings)"
     cache: dict[str, tuple] = {}
@@ -558,8 +574,10 @@ def _collect(admin: Any, con: sqlite3.Connection, now: datetime):
         requests[key] = {
             "key": key, "pid": pid, "nick": display, "typed": m["nick"],
             "counts": json.loads(m["counts_json"]), "unrecognized": m["unrecognized"],
-            "created_at": m["created_at"], "requested_at": max(m["created_at"], m["edited_at"] or ""),
-            "author": m["author_name"], "issued": False, "issue_id": None, "issued_at": None, "earlier": {},
+            "created_at": m["created_at"], "edited_at": m["edited_at"] or "",
+            "requested_at": max(m["created_at"], m["edited_at"] or ""),
+            "author": m["author_name"], "issued": False, "issue_id": None, "issue_ids": [], "issued_at": None,
+            "earlier": {}, "changed": False, "issued_counts": {},
         }
     # выдачи только сегодняшнего дня: вчерашние — уже история и галочку не держат
     today_events: dict[str, list[dict[str, Any]]] = {}
@@ -572,12 +590,15 @@ def _collect(admin: Any, con: sqlite3.Connection, now: datetime):
     rows: list[dict[str, Any]] = []
     for key, req in requests.items():
         events = today_events.get(key, [])
-        last = events[-1] if events else None
-        done = last is not None and last["at"] > req["requested_at"]
-        if done:
-            req.update(issued=True, issue_id=last["id"], issued_at=last["at"])
-            events = events[:-1]
-        req["earlier"] = _sum_counts(e["counts"] for e in events)
+        mine = [e for e in events if e["at"] > req["created_at"]]       # отметки к этому сообщению
+        before = [e for e in events if e["at"] <= req["created_at"]]    # выдачи по прежним сообщениям
+        if mine:
+            last = mine[-1]
+            changed = bool(req["edited_at"]) and req["edited_at"] > last["at"] and (
+                _positive(req["counts"]) != _positive(last["counts"]))
+            req.update(issued=True, issue_id=last["id"], issue_ids=[e["id"] for e in mine],
+                       issued_at=last["at"], changed=changed, issued_counts=last["counts"])
+        req["earlier"] = _sum_counts(e["counts"] for e in before)
         rows.append(req)
     rows.sort(key=lambda r: (r["nick"].casefold(), r["key"]))
 
@@ -606,18 +627,26 @@ CSS = r"""
 .bt tfoot td{border-top:1px solid var(--line);border-bottom:0;background:var(--soft);font-weight:700}
 .bt tfoot tr.rest td{background:transparent;border-top:0;color:var(--dim);font-weight:650}
 .bt tfoot tr.totals td{border-top:1px solid var(--line);border-bottom:0;background:var(--soft);font-weight:700}
-.bt td.nick{max-width:420px;white-space:normal}
+.bt td.nick{max-width:420px;white-space:normal;overflow:visible}
+.bt td.nick .source-badge{white-space:nowrap}
 .bt td.nick .who{font-weight:650}
-.bt td.nick .typed,.bt td.nick .when{color:var(--dim);font-size:12px;margin-left:8px;font-weight:400}
-.bt td.nick .bnote{display:block;margin-top:2px;font-size:12px;font-weight:400;line-height:1.35}
-.bt td.nick .bnote .ic{width:13px;height:13px;margin-right:4px}
+.bt td.nick .typed{color:var(--dim);font-size:12px;margin-left:8px;font-weight:400}
+[data-tip]{position:relative;cursor:help}
+[data-tip]:focus{outline:none}
+[data-tip]:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px}
+.unk{display:inline-flex;margin-left:7px;vertical-align:-2px;color:var(--red);opacity:.55;border-radius:4px}
+.unk:hover,.unk:focus{opacity:1}
+[data-tip]::after{content:attr(data-tip);position:absolute;left:0;top:calc(100% + 8px);z-index:20;display:none;width:max-content;max-width:min(300px,60vw);padding:7px 11px;border-radius:var(--r);background:var(--text);color:var(--bg);font-size:12px;font-weight:500;line-height:1.35;white-space:normal;text-align:left;box-shadow:var(--shadow)}
+[data-tip]:hover::after,[data-tip]:focus::after{display:block}
 .bt td.tk,.bt th.tk{width:56px;text-align:center;position:sticky;right:0;background:var(--panel);border-left:1px solid var(--line)}
 .bt th.tk{z-index:3}
 .bt tfoot td.tk{background:var(--soft)}
 .bt tfoot tr.rest td.tk{background:var(--panel)}
 .bt tbody tr:hover td.tk{background:var(--blue2)}
 .bt tr.done td:not(.tk){color:var(--dim)}
-.bt.hide-done tr.done{display:none}
+.bt.hide-done tr.done:not(.chg){display:none}
+.source-badge.chg{color:var(--amber);background:var(--amber2);border-color:transparent;font-weight:600}
+tr.chg button.tick.on{background:var(--amber2);border-color:var(--amber);color:var(--amber)}
 button.tick{width:30px;min-height:28px;height:28px;padding:0;border-radius:var(--r);color:var(--dim);background:transparent}
 button.tick:hover{border-color:var(--green);color:var(--green);background:transparent}
 button.tick.on{background:var(--green);border-color:var(--green);color:var(--panel)}
@@ -652,7 +681,7 @@ function cell(sel){return document.querySelectorAll(sel)}
 function recalc(){
   var tot=[],rest=[],i,done=0,all=0;for(i=0;i<N;i++){tot.push(0);rest.push(0)}
   cell('tr.brow').forEach(function(r){var d=r.classList.contains('done');all++;if(d)done++;
-    r.querySelectorAll('td.bc').forEach(function(c,k){var n=+c.getAttribute('data-n')||0;tot[k]+=n;if(!d)rest[k]+=n})});
+    r.querySelectorAll('td.bc').forEach(function(c,k){var n=+c.getAttribute('data-n')||0;tot[k]+=n;rest[k]+=d?(+c.getAttribute('data-x')||0):n})});
   cell('#brow-tot td.bc').forEach(function(c,k){c.textContent=tot[k]||'·'});
   cell('#brow-rest td.bc').forEach(function(c,k){c.textContent=rest[k]||'·'});
   var chip=document.getElementById('chip-done');if(chip)chip.textContent=done+' из '+all;
@@ -680,7 +709,7 @@ document.addEventListener('submit',function(e){
   .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})})
   .then(function(x){
     if(!x.ok||!x.j.ok)throw new Error((x.j&&x.j.error)||'Не удалось сохранить');
-    if(x.j.before!==cur){return refresh()}   // пока смотрели, что-то поменялось — перечитаем
+    if(x.j.before!==cur||x.j.ack){return refresh()}   // пока смотрели, что-то поменялось (или подтвердили правку) — перечитаем
     cur=x.j.after;var tr=f.closest('tr');
     tr.classList.toggle('done',x.j.issued);b.classList.toggle('on',x.j.issued);b.setAttribute('aria-pressed',x.j.issued?'true':'false');
     f.querySelector('[name=issued]').value=x.j.issued?'0':'1';
@@ -707,11 +736,12 @@ setInterval(poll,6000);document.addEventListener('visibilitychange',function(){i
 </script>"""
 
 
-def _buff_cells(counts: dict[str, int]) -> str:
+def _buff_cells(counts: dict[str, int], extra: dict[str, int] | None = None) -> str:
     out = []
     for key in BUFF_KEYS:
         n = int(counts.get(key) or 0)
-        out.append(f"<td class='bc' data-n='{n}'>{n if n else '<span class=z>·</span>'}</td>")
+        x = f" data-x='{int(extra.get(key) or 0)}'" if extra is not None else ""
+        out.append(f"<td class='bc' data-n='{n}'{x}>{n if n else '<span class=z>·</span>'}</td>")
     return "".join(out)
 
 
@@ -737,24 +767,33 @@ def _row_html(admin: Any, row: dict[str, Any]) -> str:
     if row["earlier"]:
         notes += (f" <span class='source-badge' title='Сегодня уже выдано: {esc(_counts_text(row['earlier']))}'>"
                   "уже выдавали</span>")
-    notes_block = ""
-    if row["unrecognized"]:     # видно сразу, а не только во всплывающей подсказке
-        notes_block = (f"<span class='bnote flag'>{admin.icon('alert')}Не распознано: "
-                       f"{esc(row['unrecognized'])}</span>")
-    when = f"<span class='when'>{esc(_fmt_time(row['created_at']))}</span>"
+    flag = ""
+    if row["unrecognized"]:     # знак справа от ника; что именно не разобрали — в подсказке при наведении
+        text = esc(f"Не распознано: {row['unrecognized']}")
+        flag = (f"<span class='unk' tabindex='0' role='img' data-tip='{text}' aria-label='{text}'>"
+                f"{admin.icon('alert')}</span>")
     tip = " · ".join(filter(None, [f"{_fmt_dm(row['created_at'])} {_fmt_time(row['created_at'])}".strip(), row["author"]]))
-    if row["issued"]:
+    changed = ""
+    if row["changed"]:
+        was = _counts_text(row["issued_counts"]) or "ничего"
+        now_ = _counts_text(row["counts"]) or "ничего"
+        tip_changed = esc(f"Заявку изменили после выдачи. Выдано: {was}. Сейчас: {now_}. "
+                          "Нажмите галочку, чтобы подтвердить.")
+        changed = f" <span class='source-badge chg' tabindex='0' data-tip='{tip_changed}'>изменена</span>"
+        title = "Заявка изменена после выдачи · нажмите, чтобы отметить заново"
+    elif row["issued"]:
         title = f"Выдано {_fmt_time(row['issued_at'])} · нажмите, чтобы снять отметку"
     else:
         title = "Отметить: бафы выданы"
     button = (f"<form class='tickform' method='post' action='{url_for('buffs_toggle')}'>"
               f"<input type='hidden' name='key' value='{esc(row['key'])}'>"
-              f"<input type='hidden' name='issued' value='{0 if row['issued'] else 1}'>"
+              f"<input type='hidden' name='issued' value='{0 if row['issued'] and not row['changed'] else 1}'>"
               f"<button class='tick{' on' if row['issued'] else ''}' title='{esc(title)}' "
               f"aria-label='Бафы выданы' aria-pressed='{'true' if row['issued'] else 'false'}'>{admin.icon('check')}</button></form>")
-    return (f"<tr class='brow{' done' if row['issued'] else ''}'>"
-            f"<td class='nick' title='{esc(tip)}'><span class='who'>{name}</span>{when}{notes}{notes_block}</td>"
-            f"{_buff_cells(row['counts'])}<td class='tk'>{button}</td></tr>")
+    extra = _remaining(row) if row["changed"] else None
+    return (f"<tr class='brow{' done' if row['issued'] else ''}{' chg' if row['changed'] else ''}'>"
+            f"<td class='nick' title='{esc(tip)}'><span class='who'>{name}</span>{flag}{changed}{notes}</td>"
+            f"{_buff_cells(row['counts'], extra)}<td class='tk'>{button}</td></tr>")
 
 
 def _render_board(admin: Any) -> str:
@@ -768,7 +807,7 @@ def _render_board(admin: Any) -> str:
 
     done = sum(1 for r in rows if r["issued"])
     totals = {k: sum(int(r["counts"].get(k) or 0) for r in rows) for k in BUFF_KEYS}
-    rest = {k: sum(int(r["counts"].get(k) or 0) for r in rows if not r["issued"]) for k in BUFF_KEYS}
+    rest = {k: sum(_remaining(r).get(k, 0) for r in rows) for k in BUFF_KEYS}
 
     def foot(row_id: str, label: str, values: dict[str, int], css: str = "") -> str:
         cells = "".join(f"<td class='bc'>{values[k] or '·'}</td>" for k in BUFF_KEYS)
@@ -825,7 +864,21 @@ def _history_data(admin: Any, con: sqlite3.Connection):
                 pid, display, key = int(r["player_id"]), str(row[0]), f"p{int(r['player_id'])}"
         entries.append({"id": int(r["id"]), "day": r["buff_day"], "key": key, "pid": pid, "nick": display,
                         "counts": json.loads(r["counts_json"]), "at": r["issued_at"]})
-    return entries
+    # Бафы игроку выдают один раз за день. Если после галочки он написал заявку заново и отметку
+    # поставили ещё раз, в историю идёт последняя (она и есть актуальная заявка), а прежние
+    # отметки остаются в базе и в историю не суммируются.
+    ids_by_player_day: dict[tuple[str, str], list[int]] = {}
+    last_by_player_day: dict[tuple[str, str], dict[str, Any]] = {}
+    for e in entries:                     # внутри дня записи идут по времени выдачи
+        slot = (e["day"], e["key"])
+        ids_by_player_day.setdefault(slot, []).append(e["id"])
+        last_by_player_day[slot] = e
+    result = []
+    for e in entries:
+        slot = (e["day"], e["key"])
+        if last_by_player_day[slot] is e:
+            result.append({**e, "ids": ids_by_player_day[slot]})
+    return result
 
 
 def _render_history(admin: Any, view: str) -> str:
@@ -878,12 +931,16 @@ def _render_history(admin: Any, view: str) -> str:
                          f"<span>{len(todays)} выдач · {sum(_total(e['counts']) for e in todays)} бафов</span></td></tr>")
             for e in todays:
                 confirm = f"Убрать из истории выдачу «{e['nick']}» за {admin.fmt_date_ru(d)}?"
+                several = (f"<span class='typed dim' style='font-size:11px;margin-left:6px' "
+                           f"title='В этот день отметок было {len(e['ids'])}: засчитана последняя'>×{len(e['ids'])}</span>"
+                           if len(e["ids"]) > 1 else "")
                 parts.append(
                     f"<tr><td class='nick grow'>{name(e['pid'], e['nick'])}"
-                    f"<span class='typed dim' style='font-size:11px;margin-left:6px'>{esc(_fmt_time(e['at']))}</span></td>"
+                    f"<span class='typed dim' style='font-size:11px;margin-left:6px'>{esc(_fmt_time(e['at']))}</span>{several}</td>"
                     f"{counts_cells(e['counts'])}<td class='total'>{_total(e['counts'])}</td>"
                     f"<td class='act'><form method='post' action='{url_for('buffs_issue_delete', issued_id=e['id'])}' "
-                    f"data-confirm='{esc(confirm)}'><button class='quiet' title='Убрать эту выдачу из истории' aria-label='Убрать выдачу'>{admin.icon('x')}</button>"
+                    f"data-confirm='{esc(confirm)}'><input type='hidden' name='also' value='{','.join(str(i) for i in e['ids'])}'>"
+                    f"<button class='quiet' title='Убрать эту выдачу из истории' aria-label='Убрать выдачу'>{admin.icon('x')}</button>"
                     "</form></td></tr>")
         table = ("<div class='panel'><table><thead><tr><th class='nick grow'>Ник</th>" + th
                  + "<th>Всего</th><th></th></tr></thead><tbody>" + "".join(parts) + "</tbody><tfoot>"
@@ -929,7 +986,8 @@ def install(admin: Any) -> None:
     @admin.app.post("/buffs/toggle")
     def buffs_toggle():
         """Поставить (issued=1) или снять (issued=0) отметку «выдано». Действие задаёт состояние, а
-        не переключает: устаревшая страница у второго человека не снимет чужую галочку."""
+        не переключает: устаревшая страница у второго человека не снимет чужую галочку. Если заявку
+        изменили после выдачи, issued=1 подтверждает изменение (новая отметка с актуальными бафами)."""
         key = request.form.get("key", "")
         want = request.form.get("issued", "1") != "0"
         wants_json = "application/json" in request.headers.get("Accept", "")
@@ -950,7 +1008,8 @@ def install(admin: Any) -> None:
                 if row is None:
                     con.execute("ROLLBACK")
                     return fail("Заявки уже нет — обновите страницу", 404)
-                if want and not row["issued"]:
+                ack = bool(want and row["issued"] and row["changed"])
+                if want and (not row["issued"] or ack):
                     counts = {k: int(v) for k, v in row["counts"].items() if int(v) > 0}
                     if not counts:
                         con.execute("ROLLBACK")
@@ -961,8 +1020,8 @@ def install(admin: Any) -> None:
                         VALUES(?,?,?,?,?,?,?)""",
                                 (today, key, row["pid"], row["nick"],
                                  json.dumps(counts, ensure_ascii=False, sort_keys=True), _total(counts), _iso(at)))
-                elif not want and row["issued"]:
-                    con.execute("DELETE FROM buff_issued WHERE id=?", (row["issue_id"],))
+                elif not want and row["issued"]:       # снимаем все отметки к этому сообщению
+                    con.executemany("DELETE FROM buff_issued WHERE id=?", [(i,) for i in row["issue_ids"]])
                 after = _version(con, now)
                 con.execute("COMMIT")
             except Exception:
@@ -972,7 +1031,7 @@ def install(admin: Any) -> None:
                     pass
                 raise
         if wants_json:
-            return jsonify(ok=True, issued=want, before=before, after=after)
+            return jsonify(ok=True, issued=want, before=before, after=after, ack=ack)
         return redirect(url_for("buffs"), code=303)
 
     @admin.app.get("/buffs/history")
@@ -982,9 +1041,15 @@ def install(admin: Any) -> None:
 
     @admin.app.post("/buffs/issued/<int:issued_id>/delete")
     def buffs_issue_delete(issued_id: int):
+        # строка истории — это игрок за день: убираем и прежние отметки того же дня, иначе из-под
+        # удалённой «всплыла» бы предыдущая
+        ids = {issued_id}
+        for part in request.form.get("also", "").split(",")[:50]:
+            if part.strip().isdigit():
+                ids.add(int(part))
         with closing(admin.player_store.connect(admin.DB_PATH)) as con:
             _schema(con)
-            con.execute("DELETE FROM buff_issued WHERE id=?", (issued_id,))
+            con.executemany("DELETE FROM buff_issued WHERE id=?", [(i,) for i in sorted(ids)])
         return redirect(url_for("buffs_history", view="days"), code=303)
 
 
