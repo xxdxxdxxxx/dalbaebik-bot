@@ -247,7 +247,7 @@ class TabFilterTests(unittest.TestCase):
         stages_before = self.count("kv_daily_grenade_stages")
         self.get(f"/day/{D1}")
         r = self.post(f"/day/{D1}/save", data={"mode": "total", "w1": "11"})   # правим Alpha (row 1)
-        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.status_code, 303)
         self.assertEqual(self.count("kv_daily_players"), players_before)
         # панель сама стирает этапы правленой строки (Alpha); у остальных, в том числе скрытых, они на месте
         self.assertEqual(self.count("kv_daily_grenade_stages"), stages_before - 1)

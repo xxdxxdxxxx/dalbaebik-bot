@@ -138,7 +138,7 @@ class StoreTests(unittest.TestCase):
                 f"g{a}_1": "", f"g{a}_2": "", f"g{a}_3": "10", f"v{a}": "",
                 f"w{b}": "0",
             })
-            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.status_code, 303)
             self.assertEqual(self.report_rows()["Alpha"]["total_grenades"], 40)
             self.assertIsNone(self.report_rows()["Alpha"]["voice_seconds"])
             self.assertEqual(self.report_rows()["Beta"]["total_grenades"], 0)

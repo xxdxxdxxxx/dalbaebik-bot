@@ -212,17 +212,27 @@ def _login_page(next_url: str, error: str = "", status: int = 200) -> Response:
     return Response(body, status=status, mimetype="text/html")
 
 
+def _cross_site_write() -> bool:
+    """Изменяющий запрос пришёл не с самой панели. Браузер всегда присылает Origin (или Referer):
+    если он указывает на другой сайт или порт, чужая страница просит панель что-то изменить от
+    вашего имени. Запросы без этих заголовков (curl, тесты) не из браузера и под проверку не попадают."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return False
+    if request.headers.get("Sec-Fetch-Site") == "cross-site":
+        return True
+    origin = request.headers.get("Origin") or request.headers.get("Referer")
+    return bool(origin) and urlsplit(origin).netloc != request.host
+
+
 @app.before_request
 def _guard():
+    if _cross_site_write():     # и с паролем, и локально без него (раньше проверка была только с паролем)
+        return Response("Forbidden\n", status=403, mimetype="text/plain")
     if not _password():
         if _is_local_request():
             return None
         return Response("Панель доступна только локально. Чтобы открыть её в интернете, "
                         "задайте ADMIN_PASSWORD в .env бота.\n", status=403, mimetype="text/plain")
-    if request.method not in ("GET", "HEAD", "OPTIONS"):  # защита от CSRF поверх SameSite=Lax
-        origin = request.headers.get("Origin") or request.headers.get("Referer")
-        if origin and urlsplit(origin).netloc != request.host:
-            return Response("Forbidden\n", status=403, mimetype="text/plain")
     if request.endpoint == "login":
         return None
     if _cookie_valid(request.cookies.get(AUTH_COOKIE)):
@@ -1257,7 +1267,7 @@ def _tab_totals(scans: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
 
 @app.get("/day/<date>")
 def day(date: str):
-    date = player_store.parse_match_date(date)
+    date = _valid_day(date, 404)
     mode = request.args.get("mode", "total")
     if mode not in {"total", "stages"}:
         mode = "total"
@@ -1357,7 +1367,8 @@ def day(date: str):
                               f"value='{'' if k['total_grenades'] is None else k['total_grenades']}' "
                               f"title='гранат за день (всего); пусто — не отсканировано'></td>")
             voice_cell = (f"<td><input type='text' inputmode='numeric' name='v{row_no}' "
-                          f"value='{fmt_sec(k['voice_seconds'] or 0)}' title='минуты:секунды'></td>")
+                          f"value='{'' if k['voice_seconds'] is None else fmt_sec(k['voice_seconds'])}' placeholder='—' "
+                          "title='минуты:секунды; пусто — не отсканировано'></td>")
             action_cell = (f"<td class='act'><button class='danger rowdel' name='__del_row' value='{row_no}' "
                            f"formaction='{save_url}' data-confirm='Удалить гранаты и войс "
                            f"{esc(nick)} за {fmt_date_ru(date)}?' aria-label='Удалить строку' title='Удалить строку'>"
@@ -1428,7 +1439,8 @@ def day(date: str):
             "<tr><td class='nick'>"
             + (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(k['canonical_nick'] or k['raw_nick'])}</a>"
                if k["player_id"] else esc(k["canonical_nick"] or k["raw_nick"] or "—"))
-            + f"</td><td>{k['total_grenades'] or 0}</td><td>{fmt_sec(k['voice_seconds'] or 0)}</td></tr>"
+            + f"</td><td>{'—' if k['total_grenades'] is None else k['total_grenades']}</td>"
+            f"<td>{'—' if k['voice_seconds'] is None else fmt_sec(k['voice_seconds'])}</td></tr>"
             for k in sorted(skipped_rows, key=lambda k: str(k["canonical_nick"] or k["raw_nick"] or "").casefold()))
         skipped_block = (
             f"<details class='skipped'><summary>Не в табе ({len(skipped_rows)}) · не играли, "
@@ -1558,11 +1570,11 @@ document.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&'sSы
     return render(date, body)
 
 
-def _valid_day(date: str) -> str:
+def _valid_day(date: str, status: int = 400) -> str:
     try:
         return player_store.parse_match_date(date)
     except ValueError:
-        abort(400)
+        abort(status)
 
 
 @app.post("/day/<date>/archive")
@@ -1755,7 +1767,7 @@ def _to_seconds(value: str | None) -> int | None:
 
 @app.post("/day/<date>/save")
 def day_save(date: str):
-    date = player_store.parse_match_date(date)
+    date = _valid_day(date)
     form = request.form
     mode = form.get("mode", "total")
     if mode not in {"total", "stages"}:
@@ -1768,9 +1780,10 @@ def day_save(date: str):
         del_scan = _to_int(form.get("__del_scan"))
         if del_scan is not None:
             con.execute("DELETE FROM scan_players WHERE scan_id=?", (del_scan,))
-            con.execute("DELETE FROM scans WHERE id=?", (del_scan,))
+            removed = con.execute("DELETE FROM scans WHERE id=?", (del_scan,)).rowcount
             con.execute("COMMIT")
-            return redirect(url_for("day", date=date, deleted=1, mode=mode))
+            flash = {"deleted": 1} if removed else {}      # такого таба нет: нечего подтверждать
+            return redirect(url_for("day", date=date, mode=mode, **flash), code=303)
 
         report = one(con, """SELECT id,stage_count FROM kv_daily_reports WHERE match_date=?
                              ORDER BY id DESC LIMIT 1""", (date,))
@@ -1778,9 +1791,12 @@ def day_save(date: str):
         # удаление строки игрока (гранаты+войс за день)
         del_row = _to_int(form.get("__del_row"))
         if del_row is not None and report:
-            pid = one(con, """SELECT player_id FROM kv_daily_players
-                              WHERE report_id=? AND row_no=?""",
-                      (report["id"], del_row))["player_id"]
+            gone = one(con, """SELECT player_id FROM kv_daily_players
+                               WHERE report_id=? AND row_no=?""", (report["id"], del_row))
+            if gone is None:                                # строку уже убрали (устаревшая страница)
+                con.execute("ROLLBACK")
+                return redirect(url_for("day", date=date, mode=mode), code=303)
+            pid = gone["player_id"]
             con.execute("DELETE FROM kv_daily_grenade_stages WHERE report_id=? AND row_no=?",
                         (report["id"], del_row))
             con.execute("DELETE FROM kv_daily_players WHERE report_id=? AND row_no=?",
@@ -1789,7 +1805,7 @@ def day_save(date: str):
                 con.execute("""DELETE FROM grenade_session_stats
                                WHERE player_id=? AND match_date=?""", (pid, date))
             con.execute("COMMIT")
-            return redirect(url_for("day", date=date, deleted=1, mode=mode))
+            return redirect(url_for("day", date=date, deleted=1, mode=mode), code=303)
 
         # правка табов
         for key, value in form.items():
@@ -1820,9 +1836,12 @@ def day_save(date: str):
             for key, value in form.items():
                 if not (key.startswith("w") and key[1:].isdigit()):
                     continue
-                num = _to_int(value)
-                if num is None or num < 0:
-                    continue
+                if str(value).strip():
+                    num = _to_int(value)
+                    if num is None or num < 0:
+                        continue
+                else:
+                    num = None              # очистили поле: вернуть «не отсканировано», а не оставить старый 0
                 row_no = int(key[1:])
                 cur = one(con, """SELECT total_grenades FROM kv_daily_players
                                   WHERE report_id=? AND row_no=?""", (rid, row_no))
@@ -1870,7 +1889,7 @@ def day_save(date: str):
                 con.execute("""UPDATE kv_daily_players SET total_grenades=?
                                WHERE report_id=? AND row_no=?""", (total, rid, row_no))
         con.execute("COMMIT")
-    return redirect(url_for("day", date=date, saved=1, mode=mode))
+    return redirect(url_for("day", date=date, saved=1, mode=mode), code=303)
 
 
 def main() -> None:

@@ -2168,10 +2168,9 @@ _voice_scan: dict[str, Any] = {
     "calibration_windows": {}, # discord_id str -> агрегаты VOICE_CAL текущего окна
     "calibration_last_flush": None,
     "eligible_ids": set(),  # discord_id str -> кого считаем
-    "manual": False,    # True = ручной /voice_scan_start (все в войсе, без persist в БД)
+    "manual": False,    # True = ручной режим (все в войсе, без persist в БД); команды для него больше нет
     "started_at": None,
     "last_packet_at": None,  # monotonic последнего RTP/RTCP от voice UDP
-    "report_channel_id": None,
     "match_date": None,  # ручной режим: канал, где вызвали /voice_scan_start
     "report_message_id": None,  # ручной режим: live-табличка (редактируется каждые ~10с)
 }
@@ -2572,7 +2571,6 @@ async def _voice_scan_poll_loop() -> None:
     """
     vc = _voice_scan.get("vc")
     save_counter = 0.0
-    report_counter = 0.0
     last_tick = time.monotonic()
     last_udp_keepalive = 0.0
     udp_keepalive_failures = 0
@@ -2745,10 +2743,6 @@ async def _voice_scan_poll_loop() -> None:
             if save_counter >= 15.0:
                 save_counter = 0.0
                 await _persist_voice_totals_async()
-            report_counter += tick_seconds
-            if _voice_scan.get("manual") and _voice_scan.get("report_channel_id") and report_counter >= 10.0:
-                report_counter = 0.0
-                await _update_manual_voice_scan_report(vc)
             await asyncio.sleep(VOICE_SCAN_POLL_SECONDS)
     except asyncio.CancelledError:
         pass
@@ -2778,7 +2772,6 @@ async def start_voice_scan(
     *,
     channel: discord.VoiceChannel | None = None,
     manual: bool = False,
-    report_channel_id: int | None = None,
     match_date: str | None = None,
 ) -> tuple[bool, str]:
     """Подключиться к войсу и начать скан speaking.
@@ -2787,9 +2780,10 @@ async def start_voice_scan(
     · авто (manual=False, из расписания КВ) — заходит в самый населённый
       настроенный войс, считает только отряды 1-6 + Чемпионы, сохраняет
       SQLite checkpoints для колонки ВРЕМЯ в таблице ГРАНАТЫ и restart-resume.
-    · ручной (manual=True, /voice_scan_start) — заходит в конкретный войс
-      (обычно тот, где сидит вызвавший команду), считает ВСЕХ в этом войсе,
+    · ручной (manual=True) — заходит в конкретный войс, считает ВСЕХ в этом войсе,
       результат только в памяти на время скана — таблицу ГРАНАТЫ не трогает.
+      Команды `/voice_scan_start` и живой таблички с результатом больше нет, режим
+      вызывается только из кода.
     """
     if not VOICE_RECV_AVAILABLE:
         return False, "Библиотека `discord-ext-voice-recv` не установлена на сервере бота."
@@ -2841,7 +2835,6 @@ async def start_voice_scan(
     _voice_scan["eligible_ids"] = eligible
     _voice_scan["manual"] = manual
     _voice_scan["totals"] = existing  # продолжаем сессию грен, если рестартовали mid-KV
-    _voice_scan["report_channel_id"] = report_channel_id
     _voice_scan["match_date"] = match_date if manual else data.get("session_date")
     _voice_scan["report_message_id"] = None
     with _voice_loud_lock:
@@ -2902,7 +2895,6 @@ async def stop_voice_scan() -> dict[str, float]:
     _voice_scan["totals"] = {}
     _voice_scan["eligible_ids"] = set()
     _voice_scan["manual"] = False
-    _voice_scan["report_channel_id"] = None
     _voice_scan["report_message_id"] = None
     _flush_voice_calibration(time.monotonic(), force=True)
     with _voice_loud_lock:
@@ -4371,12 +4363,36 @@ GEMINI_SCAN_PROMPT = (
 
 
 class GeminiScanError(RuntimeError):
-    """Безопасная для логирования ошибка распознавания Gemini."""
+    """Безопасная для логирования ошибка распознавания Gemini.
+
+    attempts — сколько запросов к Gemini сделано до отказа (для сообщения пользователю)."""
+
+    def __init__(self, message: str, *, attempts: int = 1) -> None:
+        super().__init__(message)
+        self.attempts = attempts
 
 
-GEMINI_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+GEMINI_RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})   # плюс любой 5xx, см. ниже
 GEMINI_RETRY_BASE_SECONDS = 1.0
-GEMINI_RETRY_MAX_SECONDS = 30.0
+GEMINI_RETRY_MAX_SECONDS = 15.0
+GEMINI_DEFAULT_ATTEMPTS = 12          # столько раз /scan повторяет запрос к Gemini, прежде чем сдаться
+GEMINI_MAX_ATTEMPTS = 30              # потолок для GEMINI_SCAN_ATTEMPTS в .env
+GEMINI_EMPTY_ATTEMPTS = 3             # пустой результат чаще означает «не таблица», чем сбой: не гоняем зря
+GEMINI_SCAN_DEADLINE_SECONDS = 600.0  # общий потолок на скан: ответ на команду в Discord живёт 15 минут
+GEMINI_REQUEST_TIMEOUT_SECONDS = 60
+
+
+def _gemini_attempts() -> int:
+    """Сколько попыток делать: GEMINI_SCAN_ATTEMPTS из .env (1..30), по умолчанию 12."""
+    try:
+        wanted = int(os.getenv("GEMINI_SCAN_ATTEMPTS", "").strip())
+    except ValueError:
+        wanted = GEMINI_DEFAULT_ATTEMPTS
+    return max(1, min(GEMINI_MAX_ATTEMPTS, wanted))
+
+
+def _gemini_status_retryable(status: int) -> bool:
+    return status in GEMINI_RETRYABLE_STATUSES or 500 <= status <= 599
 
 
 def _gemini_retry_delay(response: requests.Response | None, attempt: int) -> float:
@@ -4400,8 +4416,53 @@ def _gemini_retry_delay(response: requests.Response | None, attempt: int) -> flo
     return min(GEMINI_RETRY_MAX_SECONDS, delay)
 
 
-def scan_image_bytes(image_bytes: bytes, mime_type: str, max_retries: int = 3) -> list[dict[str, Any]]:
-    """Синхронно распознать игровую таблицу из байтов изображения."""
+def _gemini_pause(attempt: int, attempts: int, deadline: float, reason: str,
+                  response: requests.Response | None = None) -> bool:
+    """Подождать перед следующей попыткой. False — попыток или времени больше нет."""
+    delay = _gemini_retry_delay(response, attempt)
+    if attempt >= attempts or time.monotonic() + delay > deadline:
+        return False
+    log(f"Gemini: {reason}; повтор {attempt + 1}/{attempts} через {delay:.0f} с", "warn")
+    time.sleep(delay)
+    return True
+
+
+def _parse_gemini_rows(response: requests.Response) -> list[dict[str, Any]]:
+    """Строки таблицы из ответа Gemini. Битый ответ — GeminiScanError (это сбой модели, его повторяем)."""
+    try:
+        envelope = response.json()
+        text = envelope["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = json.loads(text)
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise GeminiScanError("некорректный JSON-ответ Gemini") from exc
+    if not isinstance(parsed, list):
+        raise GeminiScanError("Gemini вернул JSON не в виде списка")
+
+    rows: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        try:
+            rows.append({
+                "place": int(item["place"]),
+                "nickname": str(item["nickname"]).strip(),
+                "kills": int(item["kills"]),
+                "deaths": int(item["deaths"]),
+                "assists": int(item["assists"]),
+                "score": None if item.get("score") is None else int(item["score"]),
+            })
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sorted(rows, key=lambda row: row["place"])
+
+
+def scan_image_bytes(image_bytes: bytes, mime_type: str, max_retries: int | None = None) -> list[dict[str, Any]]:
+    """Синхронно распознать игровую таблицу из байтов изображения.
+
+    Запрос повторяется по кругу (по умолчанию 12 раз, см. GEMINI_SCAN_ATTEMPTS), если Gemini
+    перегружен или недоступен (429, 408, любой 5xx), оборвалась сеть или пришёл битый ответ.
+    Паузы растут от 1 до 15 секунд. Постоянные отказы (400, 401, 403, 404: неверный ключ или
+    запрос) не повторяются: от повтора они не пройдут. Пустой результат пробуем ещё до 3 раз."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise GeminiScanError("GEMINI_API_KEY не задан")
@@ -4429,53 +4490,38 @@ def scan_image_bytes(image_bytes: bytes, mime_type: str, max_retries: int = 3) -
     )
     headers = {"Content-Type": "application/json", "X-goog-api-key": api_key}
 
-    attempts = max(1, max_retries)
+    attempts = max(1, max_retries if max_retries is not None else _gemini_attempts())
+    deadline = time.monotonic() + GEMINI_SCAN_DEADLINE_SECONDS
+    empty_results = 0
     for attempt in range(1, attempts + 1):
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            if attempt == attempts:
-                raise GeminiScanError("сетевая ошибка Gemini после повторных попыток") from exc
-            time.sleep(_gemini_retry_delay(None, attempt))
-            continue
+            response = requests.post(url, headers=headers, json=payload, timeout=GEMINI_REQUEST_TIMEOUT_SECONDS)
         except requests.RequestException as exc:
-            raise GeminiScanError("сетевая ошибка Gemini") from exc
-
-        if response.status_code in GEMINI_RETRYABLE_STATUSES:
-            if attempt == attempts:
-                raise GeminiScanError(
-                    f"Gemini временно недоступен (HTTP {response.status_code}) после повторных попыток"
-                )
-            time.sleep(_gemini_retry_delay(response, attempt))
+            if not _gemini_pause(attempt, attempts, deadline, f"сетевая ошибка {type(exc).__name__}"):
+                raise GeminiScanError("сетевая ошибка Gemini после повторных попыток", attempts=attempt) from exc
             continue
-        if response.status_code != 200:
-            raise GeminiScanError(f"Gemini отклонил запрос (HTTP {response.status_code})")
+
+        status = response.status_code
+        if _gemini_status_retryable(status):
+            if not _gemini_pause(attempt, attempts, deadline, f"HTTP {status}", response):
+                raise GeminiScanError(
+                    f"Gemini временно недоступен (HTTP {status}) после повторных попыток", attempts=attempt)
+            continue
+        if status != 200:
+            raise GeminiScanError(f"Gemini отклонил запрос (HTTP {status})", attempts=attempt)
 
         try:
-            envelope = response.json()
-            text = envelope["candidates"][0]["content"]["parts"][0]["text"]
-            parsed = json.loads(text)
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise GeminiScanError("некорректный JSON-ответ Gemini") from exc
-        if not isinstance(parsed, list):
-            raise GeminiScanError("Gemini вернул JSON не в виде списка")
-
-        rows: list[dict[str, Any]] = []
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            try:
-                rows.append({
-                    "place": int(item["place"]),
-                    "nickname": str(item["nickname"]).strip(),
-                    "kills": int(item["kills"]),
-                    "deaths": int(item["deaths"]),
-                    "assists": int(item["assists"]),
-                    "score": None if item.get("score") is None else int(item["score"]),
-                })
-            except (KeyError, TypeError, ValueError):
-                continue
-        return sorted(rows, key=lambda row: row["place"])
+            rows = _parse_gemini_rows(response)
+        except GeminiScanError as exc:
+            if not _gemini_pause(attempt, attempts, deadline, str(exc)):
+                raise GeminiScanError(f"{exc} после повторных попыток", attempts=attempt) from exc
+            continue
+        if rows:
+            return rows
+        empty_results += 1
+        if empty_results >= GEMINI_EMPTY_ATTEMPTS or not _gemini_pause(
+                attempt, attempts, deadline, "Gemini вернул пустую таблицу"):
+            return []
 
     return []
 
@@ -4554,7 +4600,11 @@ async def cmd_scan(interaction: discord.Interaction, match_date: str, map_name: 
             await interaction.followup.send(chunk, ephemeral=True)
     except (GeminiScanError, json.JSONDecodeError, requests.RequestException, sqlite3.Error) as exc:
         log(f"/scan: {type(exc).__name__}: {exc}", "err")
-        await interaction.followup.send("Не удалось обработать скриншот. Попробуйте ещё раз позже.", ephemeral=True)
+        tried = getattr(exc, "attempts", 1)
+        await interaction.followup.send(
+            "Не удалось обработать скриншот. Попробуйте ещё раз позже." if tried <= 1 else
+            f"Не удалось обработать скриншот: Gemini не ответил после {tried} попыток. Попробуйте ещё раз позже.",
+            ephemeral=True)
 
 
 
