@@ -812,6 +812,73 @@ def relink_history(con: sqlite3.Connection, match_date: str, limit: int = 10) ->
         (parse_match_date(match_date), int(limit)))]
 
 
+def bind_scan_nick(db_path: Path | str, match_date: str, scan_player_id: int,
+                   new_player_id: int) -> tuple[str, int, str]:
+    """Ручная привязка ника с таба к игроку: строка `scan_player_id` и все строки этого дня с тем же ником.
+
+    Нужна, когда человек играл под другим ником и бот его не опознал («не найден») или опознал не того:
+    в составе он «chibrick», а на табе «Houfuku». Ник сверяется как в остальной панели (без учёта регистра).
+    Привязываются все табы дня с таким ником, чтобы не повторять это для каждого этапа.
+
+    Меняется только scan_players.player_id: цифры таба, отчёты, войс, составы и алиасы не трогаются.
+    Смена пишется в scan_relink_log той же пачкой, что и обычная перепривязка, — её можно вернуть («↩ Вернуть»).
+
+    Возвращает (пачка, сколько строк привязано, ошибка). При ошибке ничего не меняется:
+      · "gone"   — строки (или дня) уже нет: страница устарела;
+      · "player" — такого игрока нет;
+      · "dup"    — в затронутом табе этот игрок уже есть отдельной строкой: его цифры задвоились бы.
+    """
+    day = parse_match_date(match_date)
+    ensure_schema(db_path)
+    with closing(connect(db_path)) as con:
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            _ensure_relink_log(con)
+            clicked = con.execute("""SELECT sp.id, sp.nick FROM scan_players sp JOIN scans s ON s.id=sp.scan_id
+                                     WHERE sp.id=? AND s.match_date=?""", (int(scan_player_id), day)).fetchone()
+            if clicked is None:
+                con.rollback()
+                return "", 0, "gone"
+            if con.execute("SELECT 1 FROM players WHERE id=?", (int(new_player_id),)).fetchone() is None:
+                con.rollback()
+                return "", 0, "player"
+            target = int(new_player_id)
+            key = _norm(str(clicked["nick"]))
+            day_rows = con.execute("""SELECT sp.id, sp.scan_id, sp.nick, sp.player_id FROM scan_players sp
+                                      JOIN scans s ON s.id=sp.scan_id WHERE s.match_date=?""", (day,)).fetchall()
+            same = [r for r in day_rows if _norm(str(r["nick"])) == key]
+            same_ids = {int(r["id"]) for r in same}
+            hit_scans = [int(r["scan_id"]) for r in same]
+            dup = len(hit_scans) != len(set(hit_scans))        # один ник дважды в одном табе: не склеиваем
+            for r in day_rows:
+                if dup or int(r["id"]) in same_ids or int(r["scan_id"]) not in hit_scans:
+                    continue
+                owner = r["player_id"]
+                if owner is None:                               # строка без привязки на странице дня опознаётся по нику
+                    owner = resolve_player_id_in_connection(con, str(r["nick"]))
+                dup = owner is not None and int(owner) == target
+            if dup:
+                con.rollback()
+                return "", 0, "dup"
+            batch, at, moved = uuid.uuid4().hex[:12], _now_msk(), 0
+            for r in same:
+                old = r["player_id"]
+                if old is not None and int(old) == target:
+                    continue
+                cur = con.execute("UPDATE scan_players SET player_id=? WHERE id=? AND player_id IS ?",
+                                  (target, r["id"], old))
+                if cur.rowcount:
+                    con.execute("""INSERT INTO scan_relink_log(batch,scan_player_id,old_player_id,new_player_id,
+                                   match_date,nick,created_at) VALUES(?,?,?,?,?,?,?)""",
+                                (batch, r["id"], old, target, day, str(r["nick"]), at))
+                    moved += 1
+            con.commit()
+            return (batch if moved else ""), moved, ""
+        except Exception:
+            con.rollback()
+            raise
+
+
 def connect(db_path: Path | str) -> sqlite3.Connection:
     con = sqlite3.connect(str(db_path), timeout=10, isolation_level=None)
     con.row_factory = sqlite3.Row

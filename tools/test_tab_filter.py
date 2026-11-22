@@ -215,9 +215,11 @@ class TabFilterTests(unittest.TestCase):
 
     def test_players_page_counts_days_and_grenades_only_when_player_was_on_tab(self):
         page = self.get("/players").get_data(as_text=True)
-        # Alpha: 3 дня, 10+10+10 | Delta: D1 не считается → 2 дня, 40+40
-        self.assertIn("<td>3</td><td class='total'>30</td>", self.player_row(page, "Alpha"))
-        self.assertIn("<td>2</td><td class='total'>80</td>", self.player_row(page, "Delta"))
+        # Alpha: 3 дня, 10+10+10 → в среднем 10 | Delta: D1 не считается → 2 дня, 40+40 → в среднем 40
+        self.assertIn("<td>3</td><td class='gavg total'", self.player_row(page, "Alpha"))
+        self.assertIn(">10</td>", self.player_row(page, "Alpha"))
+        self.assertIn("<td>2</td><td class='gavg total'", self.player_row(page, "Delta"))
+        self.assertIn(">40</td>", self.player_row(page, "Delta"))
 
     def test_player_page_shows_day_where_player_was_not_on_tab_as_absence(self):
         def day_row(page, day):

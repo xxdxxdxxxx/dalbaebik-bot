@@ -116,14 +116,16 @@ class ArchiveDayTests(unittest.TestCase):
             return line
 
         full = self.get("/players").get_data(as_text=True)
-        self.assertIn("<td>2</td><td class='total'>105</td>", alpha_row(full))   # 100 + 5 гранат, 2 дня
+        self.assertIn("<td>2</td><td class='gavg total'", alpha_row(full))        # 2 дня
+        self.assertIn(">53</td>", alpha_row(full))                                # (100 + 5) / 2 = 52.5 гранат за КВ в среднем
         with closing(player_store.connect(self.db)) as con:
             eff_full = admin_ui.average_player_efficiencies(con)
         self.assertEqual((eff_full[self.alpha], eff_full[self.beta]), (50.0, 50.0))
 
         self.post(f"/day/{D2}/archive")
         part = self.get("/players").get_data(as_text=True)
-        self.assertIn("<td>1</td><td class='total'>100</td>", alpha_row(part))
+        self.assertIn("<td>1</td><td class='gavg total'", alpha_row(part))
+        self.assertIn(">100</td>", alpha_row(part))                               # D2 в архиве: остался только D1
         with closing(player_store.connect(self.db)) as con:
             eff_part = admin_ui.average_player_efficiencies(con)
         self.assertEqual((eff_part[self.alpha], eff_part[self.beta]), (100.0, 0.0))
@@ -226,7 +228,7 @@ class ArchiveDayTests(unittest.TestCase):
         nav = re.search(r"<nav class=\"nav\"[^>]*>(.*?)</nav>", index, re.S).group(1)
         self.assertEqual(re.findall(r'href="([^"]+)">([^<]+)</a>', nav),
                          [("/", "Обзор"), ("/players", "Игроки"), ("/squads", "Отряды"),
-                          ("/buffs", "Бафы"), ("/gear", "Шмот")])
+                          ("/buffs", "Бафы"), ("/gear", "Шмот"), ("/chats", "Чаты")])
         self.assertNotIn("<!--navx-->", index)
         squads = self.get("/squads").get_data(as_text=True)
         self.assertNotIn("Нажмите на ячейку", squads)

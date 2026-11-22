@@ -28,6 +28,7 @@ import sqlite3
 import sys
 import threading
 import time
+from collections import Counter
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -38,7 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import player_store  # noqa: E402
-from flask import Flask, Response, abort, redirect, request, url_for  # noqa: E402
+from flask import Flask, Response, abort, jsonify, redirect, request, url_for  # noqa: E402
 
 app = Flask(__name__)
 
@@ -49,10 +50,14 @@ DB_PATH = ROOT / "scan_stats.sqlite3"
 #   ADMIN_PASSWORD=...    включает вход по паролю — панель можно открывать из интернета;
 #   ADMIN_TRUST_PROXY=1   панель стоит за reverse-proxy с HTTPS (Caddy / Cloudflare / Tailscale):
 #                         берём IP клиента из X-Forwarded-For, cookie ставится с флагом Secure;
-#   ADMIN_SESSION_DAYS=7  сколько дней живёт вход (по умолчанию 7).
+#   ADMIN_SESSION_DAYS=7  сколько дней живёт вход (по умолчанию 7);
+#   ADMIN_SUPER_PASSWORD  пароль мега-админа (по умолчанию admin1; пустое значение отключает роль).
+#                         Тот же экран входа: обычный пароль открывает панель, пароль мега-админа — ещё и «Чаты».
 # Без ADMIN_PASSWORD панель отвечает только на localhost (SSH-туннель), всё остальное — 403.
 # ---------------------------------------------------------------------------
 AUTH_COOKIE = "admin_auth"
+SUPER_COOKIE = "admin_super"     # ставится вместе с AUTH_COOKIE только при входе паролем мега-админа
+SUPER_ROLE = "super"
 LOGIN_MAX_FAILS = 5          # неверных паролей с одного IP ...
 LOGIN_WINDOW = 15 * 60       # ... за это число секунд → блокировка до конца окна
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -65,6 +70,12 @@ _secret_cache: bytes | None = None
 
 def _password() -> str:
     return os.getenv("ADMIN_PASSWORD", "").strip()
+
+
+def _super_password() -> str:
+    """Пароль мега-админа: admin1, если ADMIN_SUPER_PASSWORD не задан; пустое значение отключает роль."""
+    value = os.getenv("ADMIN_SUPER_PASSWORD")
+    return "admin1" if value is None else value.strip()
 
 
 def _trust_proxy() -> bool:
@@ -116,23 +127,43 @@ def _signing_key() -> bytes:
     return hashlib.sha256(_secret_cache + b"|" + _password().encode("utf-8")).digest()
 
 
-def _sign(expires: int) -> str:
-    mac = hmac.new(_signing_key(), f"v1|{expires}".encode(), hashlib.sha256).hexdigest()
+def _sign(expires: int, role: str = "") -> str:
+    """Подпись входа. Для роли в ключ подмешан пароль мега-админа: его смена сбрасывает только эту роль."""
+    if role:
+        key = hashlib.sha256(_signing_key() + b"|" + role.encode() + b"|" + _super_password().encode("utf-8")).digest()
+        message = f"v1|{role}|{expires}"
+    else:
+        key, message = _signing_key(), f"v1|{expires}"
+    mac = hmac.new(key, message.encode(), hashlib.sha256).hexdigest()
     return f"{expires}.{mac}"
 
 
-def _cookie_valid(value: str | None) -> bool:
+def _cookie_valid(value: str | None, role: str = "") -> bool:
     try:
         expires_s, mac = (value or "").split(".", 1)
         expires = int(expires_s)
     except ValueError:
         return False
-    return expires > time.time() and hmac.compare_digest(_sign(expires), f"{expires}.{mac}")
+    return expires > time.time() and hmac.compare_digest(_sign(expires, role), f"{expires}.{mac}")
+
+
+def _is_super() -> bool:
+    """Мега-админ: вошёл паролем мега-админа. Без ADMIN_PASSWORD панель открыта только на localhost
+    (владелец сервера, SSH-туннель), там ограничивать некого — это тоже мега-админ."""
+    if not _password():
+        return True
+    return bool(_super_password()) and _cookie_valid(request.cookies.get(SUPER_COOKIE), SUPER_ROLE)
 
 
 def _password_ok(given: str) -> bool:
     return hmac.compare_digest(hashlib.sha256(given.encode("utf-8")).digest(),
                                hashlib.sha256(_password().encode("utf-8")).digest())
+
+
+def _super_password_ok(given: str) -> bool:
+    expected = _super_password()
+    return bool(expected) and hmac.compare_digest(hashlib.sha256(given.encode("utf-8")).digest(),
+                                                  hashlib.sha256(expected.encode("utf-8")).digest())
 
 
 def _retry_after(ip: str) -> int:
@@ -182,6 +213,7 @@ ICON_PATHS = {
     "more": "<circle cx='5' cy='12' r='1.4' fill='currentColor' stroke='none'/><circle cx='12' cy='12' r='1.4' fill='currentColor' stroke='none'/><circle cx='19' cy='12' r='1.4' fill='currentColor' stroke='none'/>",
     "search": "<circle cx='11' cy='11' r='6.5'/><path d='M16 16l4 4'/>",
     "alert": "<path d='M12 4l9 16H3z'/><path d='M12 10v4'/><path d='M12 17.2v.1'/>",
+    "pencil": "<path d='M4 20h4L19 9l-4-4L4 16z'/><path d='M13.5 6.5l4 4'/>",
     "logout": "<path d='M10 4H5v16h5'/><path d='M15 8l4 4-4 4'/><path d='M19 12H9'/>",
 }
 
@@ -243,6 +275,25 @@ def _guard():
     return Response("Нужен вход\n", status=401, mimetype="text/plain")
 
 
+SUPER_ONLY: list[str] = []     # пути (разделы), доступные только мега-админу
+
+
+def register_super_only(*prefixes: str) -> None:
+    """Закрыть раздел (путь и всё, что под ним) от обычных админов: для них он выглядит как несуществующий."""
+    for prefix in prefixes:
+        prefix = "/" + prefix.strip("/")
+        if prefix not in SUPER_ONLY:
+            SUPER_ONLY.append(prefix)
+
+
+@app.before_request
+def _guard_super_only():
+    path = request.path
+    if any(path == p or path.startswith(p + "/") for p in SUPER_ONLY) and not _is_super():
+        return Response("Not Found\n", status=404, mimetype="text/plain")
+    return None
+
+
 @app.after_request
 def _secure_headers(resp):
     resp.headers.setdefault("X-Frame-Options", "DENY")
@@ -269,16 +320,24 @@ def login():
         resp = _login_page(next_url, f"Слишком много попыток. Подождите {wait // 60 + 1} мин.", 429)
         resp.headers["Retry-After"] = str(wait)
         return resp
-    if not _password_ok(request.form.get("password", "")):
+    given = request.form.get("password", "")
+    is_super = _super_password_ok(given)
+    is_admin = _password_ok(given)     # обе сверки считаются всегда, чтобы время ответа не выдавало, какой пароль подошёл
+    if not (is_super or is_admin):
         with _fails_lock:
             _fails.setdefault(ip, []).append(time.time())
         time.sleep(0.7)
         return _login_page(next_url, "Неверный пароль.", 401)
     with _fails_lock:
         _fails.pop(ip, None)
+    expires = int(time.time()) + _session_seconds()
     resp = redirect(next_url, code=303)
-    resp.set_cookie(AUTH_COOKIE, _sign(int(time.time()) + _session_seconds()), max_age=_session_seconds(),
-                    httponly=True, secure=_is_https(), samesite="Lax", path="/")
+    cookie = dict(max_age=_session_seconds(), httponly=True, secure=_is_https(), samesite="Lax", path="/")
+    resp.set_cookie(AUTH_COOKIE, _sign(expires), **cookie)
+    if is_super:
+        resp.set_cookie(SUPER_COOKIE, _sign(expires, SUPER_ROLE), **cookie)
+    else:     # вход обычным паролем в том же браузере снимает права мега-админа
+        resp.delete_cookie(SUPER_COOKIE, path="/")
     return resp
 
 
@@ -286,6 +345,7 @@ def login():
 def logout():
     resp = redirect(url_for("login") if _password() else "/", code=303)
     resp.delete_cookie(AUTH_COOKIE, path="/")
+    resp.delete_cookie(SUPER_COOKIE, path="/")
     return resp
 
 
@@ -361,10 +421,12 @@ EXTRA_CSS: list[str] = []
 
 
 def register_nav(label: str, endpoint: str, *, order: int, exact: tuple[str, ...] = (),
-                 prefixes: tuple[str, ...] = ()) -> None:
-    """Добавить пункт верхнего меню. order — позиция слева направо; exact/prefixes — когда пункт активен."""
+                 prefixes: tuple[str, ...] = (), super_only: bool = False) -> None:
+    """Добавить пункт верхнего меню. order — позиция слева направо; exact/prefixes — когда пункт активен;
+    super_only — пункт виден только мега-админу (сам раздел закрывается через register_super_only)."""
     NAV[:] = [item for item in NAV if item["endpoint"] != endpoint]
-    NAV.append({"label": label, "endpoint": endpoint, "order": order, "exact": exact, "prefixes": prefixes})
+    NAV.append({"label": label, "endpoint": endpoint, "order": order, "exact": exact, "prefixes": prefixes,
+                "super_only": super_only})
     NAV.sort(key=lambda item: item["order"])
 
 
@@ -380,7 +442,10 @@ register_nav("Игроки", "players", order=20, prefixes=("/player",))
 
 def _nav_html(path: str) -> str:
     out = []
+    is_super = _is_super()
     for item in NAV:
+        if item.get("super_only") and not is_super:
+            continue
         prefixes = tuple(item["prefixes"])
         active = path in item["exact"] or (bool(prefixes) and path.startswith(prefixes))
         attrs = ' class="active" aria-current="page"' if active else ""
@@ -687,6 +752,21 @@ def _eff_cell(value: Any) -> str:
     return f"<span class='effcell'><span class='n'>{esc(value)}</span>{meter(value, 100)}</span>"
 
 
+def _grenade_avg_cell(info: dict[str, Any] | None, days_present: int) -> str:
+    """«Гр. ср.»: целое число; «—», если за выбранные дни нет ни одного отсканированного дня.
+    В подсказке — из чего сложилось; * — гранаты пересчитаны на полный КВ (игрок был не на всех этапах)."""
+    if info is None:
+        return "<td class='gavg dim' title='Гранаты за выбранные дни не отсканированы'>—</td>"
+    tip = f"Всего {info['total']} за {_ru_days(info['days'])}"
+    if info["days"] < days_present:
+        tip += f"; ещё {_ru_days(days_present - info['days'])} без отсканированных гранат не учтены"
+    if info["partial"]:
+        tip += (f". Этапов сыграно {info['played']} из {info['full']}: гранаты на этап × этапов в КВ "
+                f"(без пересчёта было бы {info['total'] / info['days']:.1f})")
+    return (f"<td class='gavg total{' partial' if info['partial'] else ''}' title='{esc(tip)}'>"
+            f"{int(info['avg'] + 0.5)}</td>")
+
+
 PERIOD_CHOICES = (1, 2, 3, 5, 7, 14, 30)
 
 
@@ -710,7 +790,7 @@ def _ru_days(n: int) -> str:
     return f"{n} {word}"
 
 
-def _period_bar(current: int | None, view: str = "squads") -> str:
+def _period_bar(current: int | None, view: str = "squads", label: str = "") -> str:
     extra = {"view": "all"} if view == "all" else {}
     options = sorted(set(PERIOD_CHOICES) | ({current} if current else set()))
     links = "".join(
@@ -720,7 +800,8 @@ def _period_bar(current: int | None, view: str = "squads") -> str:
         for n in options)
     everything = ("<b>Всё время</b>" if current is None else
                   f"<a href='{url_for('players', days='all', **extra)}'>Всё время</a>")
-    return ("<div class='period'><span class='dim'>Последние дни КВ</span>"
+    tip = f" title='{esc(label)}'" if label else ""
+    return (f"<div class='period'{tip}><span class='dim'>Последние дни КВ</span>"
             f"<span class='seg'>{links}</span><span class='seg'>{everything}</span></div>")
 
 
@@ -735,6 +816,67 @@ def _period_label(period: int | None, dates: list[str], available: int) -> str:
     note = f" (в базе только {available})" if available < period else ""
     head = "Последний день КВ" if len(dates) == 1 else f"Последние {_ru_days(len(dates))} КВ"
     return f"{head}{note}: {span}"
+
+
+def _stage_key(stage: Any, scan_id: Any) -> tuple[str, int]:
+    """Этап таба: номер этапа; у таба без этапа каждый таб считается отдельным этапом."""
+    return ("stage", int(stage)) if stage is not None else ("scan", int(scan_id))
+
+
+def player_grenade_averages(con: Any, grenades: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """Гранаты в среднем за полный КВ (все этапы дня) по каждому игроку.
+
+    grenades — player_id → {дата: гранат за день | None}; None — гранаты не отсканированы, такой день
+    в среднее не входит (это не ноль). Настоящий 0 в среднее входит.
+
+    Если игрок сыграл не все этапы дня, простое «сумма ÷ дни» занижало бы его: гранат за день меньше
+    просто потому, что он был на меньшем числе этапов. Поэтому считаем гранаты на сыгранный этап
+    и умножаем на число этапов в КВ:
+
+        среднее = Σ гранат ÷ Σ сыгранных этапов × (Σ этапов КВ ÷ число дней)
+
+    Если игрок всегда играл все этапы, это обычное «сумма ÷ дни». Сыгранные этапы берутся по табам, и только
+    в дне, где загружены табы всех этапов (иначе «не был на табе» не значит «не играл этап»); в дне без табов
+    или с неполным набором табов все этапы считаются сыгранными.
+
+    Результат: player_id → {avg, days, total, played, full, partial}.
+    """
+    dates = {day for per_day in grenades.values() for day in per_day}
+    if not dates:
+        return {}
+    stage_count: dict[str, int] = {}
+    for r in con.execute("SELECT match_date, stage_count FROM kv_daily_reports ORDER BY id"):
+        stage_count[str(r["match_date"])] = int(r["stage_count"])         # у дня несколько отчётов — берём последний, как страница дня
+    loaded: dict[str, set[tuple[str, int]]] = {}
+    played: dict[tuple[int, str], set[tuple[str, int]]] = {}
+    for r in con.execute("""SELECT s.match_date date, s.id scan_id, s.stage stage, sp.player_id pid
+                            FROM scans s LEFT JOIN scan_players sp ON sp.scan_id=s.id
+                            WHERE s.match_date IS NOT NULL"""):
+        day = str(r["date"])
+        if day not in dates:
+            continue
+        key = _stage_key(r["stage"], r["scan_id"])
+        loaded.setdefault(day, set()).add(key)
+        if r["pid"] is not None:
+            played.setdefault((int(r["pid"]), day), set()).add(key)
+
+    out: dict[int, dict[str, Any]] = {}
+    for pid, per_day in grenades.items():
+        total = full = seen = days = 0
+        for day, value in per_day.items():
+            if value is None:
+                continue
+            stages = stage_count.get(day) or 1
+            mine = played.get((pid, day), set())
+            complete = len(loaded.get(day, set())) >= stages           # табы всех этапов дня загружены
+            seen += min(len(mine), stages) if complete and mine else stages
+            full += stages
+            total += int(value)
+            days += 1
+        if days and seen:
+            out[pid] = {"avg": total / seen * (full / days), "days": days, "total": total,
+                        "played": seen, "full": full, "partial": seen < full}
+    return out
 
 
 SQUAD_ORDER = (1, 2, 3, 4, 5, 6, 99)
@@ -797,7 +939,7 @@ def players():
         # игрок × день: гранаты (максимум за день) и факт участия (отчёт или таб);
         # в дне с табом отчёт считается только у игроков с таба
         player_store.prepare_tab_filter(con)
-        attendance: dict[int, dict[str, int]] = {}
+        attendance: dict[int, dict[str, int | None]] = {}      # None — гранаты за день не отсканированы
         for r in q(con, f"""
                 SELECT player_id, match_date, MAX(g) grenades FROM (
                     SELECT k.player_id player_id, r.match_date match_date, k.total_grenades g
@@ -810,8 +952,10 @@ def players():
                     WHERE sp.player_id IS NOT NULL AND s.match_date IS NOT NULL)
                 GROUP BY player_id, match_date"""):
             if r["match_date"] in date_set:
-                attendance.setdefault(int(r["player_id"]), {})[r["match_date"]] = int(r["grenades"] or 0)
+                attendance.setdefault(int(r["player_id"]), {})[r["match_date"]] = (
+                    None if r["grenades"] is None else int(r["grenades"]))
         eff_by_player = average_player_efficiencies(con, date_set)
+        grenade_avg = player_grenade_averages(con, attendance)
     view = "all" if request.args.get("view") == "all" else "squads"
     groups: dict[int, list[dict[str, Any]]] = {99: [], **{i: [] for i in range(1, 7)}}
     for row in rows:
@@ -822,8 +966,8 @@ def players():
         return (f"<tr class='player-row'><td class='nick grow'><a href='{url_for('player', player_id=r['id'])}'>{esc(r['canonical_nick'])}</a></td>"
                 + (f"<td class='l dim'>{esc(squad)}</td>" if squad else "")
                 + f"<td>{len(attendance.get(pid, {}))}</td>"
-                f"<td class='total'>{sum(attendance.get(pid, {}).values())}</td>"
-                f"<td class='eff'>{_eff_cell(eff_by_player.get(pid))}</td></tr>")
+                + _grenade_avg_cell(grenade_avg.get(pid), len(attendance.get(pid, {})))
+                + f"<td class='eff'>{_eff_cell(eff_by_player.get(pid))}</td></tr>")
 
     bodies = []
     if view == "all":
@@ -854,20 +998,21 @@ def players():
     tbody_html = "".join(bodies) or (f"<tbody><tr><td colspan='{ncols}' class='empty'>"
                                      "В отрядах пока никого нет.</td></tr></tbody>")
     eff_dir = " data-dir='desc'" if view == "all" else ""
-    body = ("<div class='pagehead'><div><h1>Игроки</h1>"
-            f"<div class='subtitle'>{esc(_period_label(period, dates, len(available_dates)))}</div>"
-            "</div><div class='actions'>"
+    body = ("<div class='pagehead'><div><h1>Игроки</h1></div><div class='actions'>"
             f"<a class='button' href='{url_for('players_voice')}' "
             f"title='Во сколько каждый зашёл в войс явки по дням КВ'>{icon('mic')} Заход в войс</a>"
             "</div></div>"
-            "<div class='toolbar'>" + _period_bar(period, view) + view_toggle + _search_box() + "</div>"
+            "<div class='toolbar'>" + _period_bar(period, view, _period_label(period, dates, len(available_dates)))
+            + view_toggle + _search_box() + "</div>"
             "<div class='panel'><table><thead><tr>"
             "<th class='nick grow sortable' data-sort='text' onclick='sortPlayerSquads(this)'>Ник</th>"
             + squad_th +
             "<th class='sortable' data-sort='number' onclick='sortPlayerSquads(this)' "
             "title='Дни КВ из выбранных, где у игрока есть отчёт или таб'>Дни</th>"
             "<th class='sortable' data-sort='number' onclick='sortPlayerSquads(this)' "
-            "title='Сумма гранат за выбранные дни'>Грены</th>"
+            "title='Среднее гранат за КВ (за все этапы дня) по выбранным дням. Дни, где гранаты не отсканированы, "
+            "не считаются. Если игрок был не на всех этапах, гранаты пересчитываются на полный КВ: "
+            "гранаты на сыгранный этап × число этапов (такие игроки помечены *).'>Гр. ср.</th>"
             f"<th class='sortable' data-sort='number'{eff_dir} title='{esc(tip)}' onclick='sortPlayerSquads(this)'>EFF</th>"
             f"</tr></thead>{tbody_html}</table></div>"
             "<script>" + FILTER_PLAYERS_JS + SORT_PLAYERS_JS + "</script>")
@@ -934,11 +1079,10 @@ def players_voice():
     elif not bodies:
         table = "<p class='hint'>В отрядах пока никого нет.</p>"
     else:
-        table = ("<div class='panel'><div class='scroll'><table class='tight vt'><thead><tr>"
+        table = ("<div class='panel'><div class='scroll vt-scroll'><table class='tight vt'><thead><tr>"
                  f"<th class='nick'>Ник</th>{head}</tr></thead>{''.join(bodies)}</table></div></div>")
     body = (f"<a class='back' href='{url_for('players')}'>{icon('arrow-left')} Игроки</a>"
-            "<div class='pagehead'><div><h1>Заход в войс</h1>"
-            "<div class='subtitle'>Время первого захода в войс явки, МСК</div></div></div>"
+            "<div class='pagehead'><div><h1>Заход в войс</h1></div></div>"
             "<div class='toolbar'>" + _search_box() + "</div>"
             + table + f"<script>{FILTER_PLAYERS_JS}</script>")
     return render("Заход в войс", body, wide=True)
@@ -1247,6 +1391,26 @@ def _day_data(con: Any, date: str):
     return scans, report, krows
 
 
+def _match_button(r: dict[str, Any], same: int) -> str:
+    """«найден» / «не найден» — кнопка: открывает окно выбора игрока для этого ника на табе."""
+    found = r["player_id"] is not None
+    return (f"<button type='button' class='match {'ok' if found else 'bad'}' data-row='{r['row_id']}' "
+            f"data-nick='{esc(r['nick'])}' data-pid='{r['player_id'] if found else ''}' data-same='{same}' "
+            f"title='Выбрать, какой игрок это был'>{'найден' if found else 'не найден'}{icon('pencil')}</button>")
+
+
+def _pick_players(con: Any) -> list[dict[str, Any]]:
+    """Кого можно выбрать у строки таба: сначала состав (по отрядам), затем остальные игроки базы."""
+    roster = squad_roster(con)
+    in_roster = {int(r["id"]) for r in roster}
+    items = [{"id": int(r["id"]), "nick": r["canonical_nick"], "group": squad_label(int(r["squad_id"]))}
+             for r in roster]
+    items += [{"id": int(r["id"]), "nick": r["canonical_nick"], "group": "Не в составе"}
+              for r in q(con, "SELECT id, canonical_nick FROM players ORDER BY canonical_nick COLLATE NOCASE")
+              if int(r["id"]) not in in_roster]
+    return items
+
+
 def _tab_totals(scans: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     """Суммы табов дня по игроку: pid → {k,d,a,s,n,rows}."""
     out: dict[int, dict[str, Any]] = {}
@@ -1385,6 +1549,7 @@ def day(date: str):
     scan_tables = []
     scan_player_count = sum(len(s["players"]) for s in scans)
     unmatched_count = sum(1 for s in scans for r in s["players"] if r["player_id"] is None)
+    same_nick = Counter(player_store._norm(str(r["nick"])) for s in scans for r in s["players"])   # строк с таким ником за день
     for s in scans:
         head = (
             "<tr><td colspan='7' style='text-align:left'>"
@@ -1406,8 +1571,7 @@ def day(date: str):
             + (f" <span class='dim'>({esc(r['canonical_nick'])})</span>"
                if r["canonical_nick"] and r["canonical_nick"] != r["nick"] else "")
             + "</td>"
-            + ("<td class='ok-match'>найден</td>" if r["player_id"] is not None
-               else "<td class='flag'>не найден</td>")
+            + "<td class='l'>" + _match_button(r, same_nick[player_store._norm(str(r["nick"]))]) + "</td>"
             + f"<td><input type='number' min='0' name='t{r['row_id']}_k' value='{r['kills']}'></td>"
             f"<td><input type='number' min='0' name='t{r['row_id']}_d' value='{r['deaths']}'></td>"
             f"<td><input type='number' min='0' name='t{r['row_id']}_a' value='{r['assists']}'></td>"
@@ -1416,11 +1580,13 @@ def day(date: str):
             for r in s["players"])
         scan_tables.append(head + rows)
     tabs_details = (
-        "<details" + (" open" if len(scans) == 1 else "") + ">"
+        "<details" + (" open" if len(scans) == 1 else "") + f" data-bind-url='{url_for('day_bind', date=date)}' "
+        f"data-players-url='{url_for('day_players', date=date)}'>"
         f"<summary>Исходные табы ({len(scans)}) · найдено {scan_player_count - unmatched_count}/{scan_player_count}"
         + (f" · не найдено {unmatched_count}" if unmatched_count else " · все ники найдены")
         + "</summary>"
-        "<div class='scroll'><table><thead><tr><th>#</th><th>Ник</th><th>Совпадение</th>"
+        "<div class='scroll'><table><thead><tr><th>#</th><th class='nick'>Ник</th>"
+        "<th class='l' title='Нажмите, чтобы выбрать другого игрока для этого ника'>Совпадение</th>"
         "<th>У</th><th>С</th><th>П</th><th>Счёт</th></tr></thead>"
         f"<tbody>{''.join(scan_tables)}</tbody></table></div></details>"
         if scans else "<p class='hint'>Табов за этот день нет.</p>")
@@ -1434,7 +1600,7 @@ def day(date: str):
                       "Кто не попал ни на один загруженный таб, считается не игравшим.</p>")
         if unmatched_count:
             notes += (f"<p class='hint flag'>{icon('alert')} В табах {unmatched_count} ников не найдено в базе. Если кто-то из "
-                      "списка ниже играл, добавьте его ник в алиасы — игрок сразу вернётся в день.</p>")
+                      "списка ниже играл, в «Исходных табах» нажмите «не найден» у его ника и выберите игрока — он сразу вернётся в день.</p>")
         skipped_trs = "".join(
             "<tr><td class='nick'>"
             + (f"<a href='{url_for('player', player_id=k['player_id'])}'>{esc(k['canonical_nick'] or k['raw_nick'])}</a>"
@@ -1477,6 +1643,12 @@ def day(date: str):
                   f"<a href='{url_for('day_relink', date=date)}'>история / вернуть</a></div>"
                   if moved else "<div class='banner' style='background:var(--soft);color:var(--dim)'>"
                                 "Ничего не выбрано — изменений нет</div>")
+    elif request.args.get("bindfail"):
+        reason = {"dup": "в этом табе игрок уже есть отдельной строкой — цифры задвоились бы",
+                  "gone": "строка таба уже изменилась — обновите страницу",
+                  "player": "такого игрока нет"}.get(request.args.get("bindfail", ""), "ошибка")
+        banner = (f"<div class='banner' style='background:var(--red2);color:var(--red)'>{icon('alert')}"
+                  f"<span>Ник не привязан: {reason}</span></div>")
     elif request.args.get("unrelinked") is not None:
         banner = (f"<div class='banner'>{icon('undo')}<span>Возвращено строк: {_to_int(request.args.get('unrelinked')) or 0}"
                   + (f" · пропущено (с тех пор менялись): {_to_int(request.args.get('skipped'))}"
@@ -1684,6 +1856,27 @@ def day_relink_apply(date: str):
     date = _valid_day(date)
     scan_id = _to_int(request.form.get("scan"))
     _batch, moved = player_store.apply_scan_relink(DB_PATH, date, set(request.form.getlist("pick")), scan_id)
+    return redirect(url_for("day", date=date, relinked=moved), code=303)
+
+
+@app.get("/day/<date>/players.json")
+def day_players(date: str):
+    """Игроки для окна «Кто это на табе?»: состав по отрядам, затем остальные. Грузится при открытии окна."""
+    _valid_day(date, 404)
+    with closing(player_store.connect(DB_PATH)) as con:
+        return jsonify(_pick_players(con))
+
+
+@app.post("/day/<date>/bind")
+def day_bind(date: str):
+    """Ручная смена игрока у ника на табе: «Houfuku» на табе — это chibrick из состава."""
+    date = _valid_day(date)
+    row, player = _to_int(request.form.get("row")), _to_int(request.form.get("player"))
+    if row is None or player is None:
+        return redirect(url_for("day", date=date, bindfail="gone"), code=303)
+    _batch, moved, error = player_store.bind_scan_nick(DB_PATH, date, row, player)
+    if error:
+        return redirect(url_for("day", date=date, bindfail=error), code=303)
     return redirect(url_for("day", date=date, relinked=moved), code=303)
 
 

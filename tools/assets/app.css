@@ -112,8 +112,14 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .panel.xscroll{overflow:auto}
 .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--panel)}
 .panel .scroll{border:0;border-radius:0}
-@media (max-width:900px){.panel{overflow-x:auto}}
+@media (max-width:900px){.panel{overflow-x:auto}.panel th{top:0}}
 .scroll,.panel{scrollbar-width:thin;scrollbar-color:rgba(127,127,127,.45) transparent}
+/* Шапка таблицы липнет к верху страницы (под меню) только пока таблица не лежит в прокручиваемой обёртке.
+   Внутри .scroll / .panel.xscroll «верх» — это верх самой обёртки: со сдвигом на высоту меню шапка уезжала вниз
+   и закрывала первые строки, поэтому там она липнет к нулю. */
+.scroll th,.panel.xscroll th{top:0}
+/* Таблица с датами (Заход в войс): листается внутри своей рамки, шапка и колонка с ником остаются на месте. */
+.vt-scroll{max-height:calc(100vh - var(--head) - 28px);overflow:auto}
 
 table{width:100%;border-collapse:separate;border-spacing:0}
 th,td{padding:9px 14px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
@@ -133,6 +139,9 @@ td.act form{margin:0}
 .squad-title td span{margin-left:8px;font-weight:500}
 tbody tr.squad-title:hover{background:transparent}
 .ok-match{color:var(--green);font-weight:650}
+/* «Гр. ср.»: звёздочка у игроков, чьи гранаты пересчитаны на полный КВ (был не на всех этапах). Текст ячейки не меняет — сортировка цела. */
+td.gavg::after{content:"\00a0";display:inline-block;width:.7em}
+td.gavg.partial::after{content:"*";color:var(--dim)}
 .source-badge{display:inline-block;margin-left:6px;padding:1px 5px;border:1px solid var(--line);border-radius:5px;color:var(--dim);font-size:11px;vertical-align:1px}
 .sortable{cursor:pointer;user-select:none}
 .sortable:hover{color:var(--text)}
@@ -185,6 +194,28 @@ dialog.confirm::backdrop{background:rgba(0,0,0,.4)}
 dialog.confirm p{margin:0 0 18px;white-space:pre-line;line-height:1.5}
 dialog.confirm .row{display:flex;gap:8px;justify-content:flex-end}
 dialog.confirm button.go{background:var(--danger);border-color:var(--danger);color:#fff}
+/* смена ника у строки таба (день КВ): кнопка в колонке «Совпадение» и окно выбора игрока */
+button.match{min-height:26px;padding:0 8px;gap:5px;border:1px solid transparent;border-radius:var(--r-sm);background:transparent;font-weight:650}
+button.match .ic{width:13px;height:13px;opacity:.45}
+button.match:hover,button.match:focus-visible{background:var(--soft)}
+button.match:hover .ic,button.match:focus-visible .ic{opacity:1}
+button.match.ok{color:var(--green)}
+button.match.bad{color:var(--red);border-color:var(--red);background:var(--red2)}
+button.match.bad:hover{background:var(--red2);filter:brightness(1.12)}
+dialog.pick{width:min(440px,calc(100% - 32px));max-height:min(620px,calc(100vh - 48px));padding:0;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--panel);color:var(--text);box-shadow:var(--shadow);overflow:hidden}
+dialog.pick[open]{display:flex;flex-direction:column}
+dialog.pick::backdrop{background:rgba(0,0,0,.4)}
+.pick-head{padding:16px 18px 10px}
+.pick-head h3{margin:0 0 4px;font-size:16px}
+.pick-head p{margin:0 0 10px;color:var(--dim);font-size:13px}
+.pick-head input{width:100%}
+.pick-list{flex:1;min-height:120px;overflow:auto;padding:0 8px 8px}
+.pick-grp{padding:10px 10px 4px;color:var(--dim);font-size:12px;font-weight:650}
+.pick-item{width:100%;justify-content:flex-start;min-height:34px;padding:0 10px;border:0;border-radius:var(--r-sm);background:transparent;font-weight:550}
+.pick-item:hover,.pick-item:focus-visible,.pick-item.first{background:var(--blue2)}
+.pick-item.cur{color:var(--green)}
+.pick-empty{padding:18px;text-align:center;color:var(--dim)}
+.pick-foot{display:flex;justify-content:flex-end;padding:10px 14px;border-top:1px solid var(--line)}
 #toasts{position:fixed;left:50%;bottom:20px;z-index:60;display:flex;flex-direction:column;gap:8px;align-items:center;transform:translateX(-50%);pointer-events:none}
 .toast{padding:10px 16px;border-radius:var(--r);background:var(--text);color:var(--bg);font-weight:600;box-shadow:var(--shadow);animation:toast-in .18s ease-out}
 .toast.err{background:var(--danger);color:#fff}

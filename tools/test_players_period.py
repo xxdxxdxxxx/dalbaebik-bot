@@ -104,33 +104,35 @@ class PlayersPeriodTests(unittest.TestCase):
         return self.client.get(path, base_url=self.local, **kw)
 
     def table(self, query=""):
-        """{ник: (дни, грены, eff|None)} со страницы Игроки."""
+        """{ник: (дни, гр. ср.|None, eff|None)} со страницы Игроки."""
         html = self.get("/players" + query).get_data(as_text=True)
         out = {}
         for row in re.findall(r"<tr class='player-row'>(.*?)</tr>", html, flags=re.S):
             cells = [re.sub(r"<[^>]+>", "", c).strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", row, flags=re.S)]
             eff = None if cells[3] in ("", "—") else float(cells[3])
-            out[cells[0]] = (int(cells[1]), int(cells[2]), eff)
+            avg = None if cells[2] in ("", "—") else int(cells[2])
+            out[cells[0]] = (int(cells[1]), avg, eff)
         return out, html
 
     # ------------------------------------------------------------------------------------
     def test_all_time_is_the_default(self):
         table, html = self.table()
         self.assertEqual(table, {
-            "Alpha": (3, 145, 66.7),
-            "Beta": (3, 110, 33.3),      # D3: в отчёте нет, но таб есть → день засчитан
-            "Gamma": (1, 0, 50.0),       # только таб, без гранат — EFF всё равно есть
+            "Alpha": (3, 48, 66.7),      # (100 + 5 + 40) / 3
+            "Beta": (3, 55, 33.3),       # D3: в отчёте нет, но таб есть → день засчитан, а в среднее гранат не входит: (20 + 90) / 2
+            "Gamma": (1, None, 50.0),    # только таб, без гранат — «—», а EFF всё равно есть
         })
         self.assertEqual(self.table("?days=all")[0], table)
         self.assertIn("<b>Всё время</b>", html)
-        self.assertIn("За всё время: 3 дня КВ", html)
+        self.assertIn("За всё время: 3 дня КВ", html)          # подпись осталась только подсказкой у выбора периода
+        self.assertNotIn("<div class='subtitle'>", html)
 
     def test_last_one_day(self):
         table, html = self.table("?days=1")
         self.assertEqual(table, {
             "Alpha": (1, 40, 100.0),
-            "Beta": (1, 0, 0.0),
-            "Gamma": (1, 0, 50.0),
+            "Beta": (1, None, 0.0),      # гранаты не отсканированы — это не 0
+            "Gamma": (1, None, 50.0),
         })
         self.assertIn("<b>1</b>", html)
         self.assertIn("Последний день КВ: 05.11.26", html)
@@ -138,9 +140,9 @@ class PlayersPeriodTests(unittest.TestCase):
     def test_last_two_days_ignore_older_ones(self):
         table, html = self.table("?days=2")
         self.assertEqual(table, {
-            "Alpha": (2, 45, 50.0),      # D1 (100 гранат) в период не входит
+            "Alpha": (2, 23, 50.0),      # D1 (100 гранат) в период не входит: (5 + 40) / 2 = 22.5
             "Beta": (2, 90, 50.0),
-            "Gamma": (1, 0, 50.0),
+            "Gamma": (1, None, 50.0),
         })
         self.assertIn("<b>2</b>", html)
         self.assertIn("Последние 2 дня КВ", html)
@@ -174,7 +176,7 @@ class PlayersPeriodTests(unittest.TestCase):
         table, html = self.table("?days=1")
         self.assertEqual(table["Alpha"], (1, 5, 0.0))          # теперь «последний» — D2
         self.assertEqual(table["Beta"], (1, 90, 100.0))
-        self.assertEqual(table["Gamma"], (0, 0, None))         # в D2 Gamma не было
+        self.assertEqual(table["Gamma"], (0, None, None))      # в D2 Gamma не было
         self.assertIn("Последний день КВ: 02.11.26", html)
 
     def test_player_without_tabs_in_period_has_no_eff_but_row_stays(self):

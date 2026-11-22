@@ -158,6 +158,13 @@ class VoiceJoinPageTests(unittest.TestCase):
         self.assertIn("href='/players/voice'", html)
         self.assertIn("Заход в войс", html)
 
+    def test_page_has_no_caption_and_the_table_scrolls_in_its_own_frame(self):
+        html = self.page()
+        self.assertNotIn("Время первого захода", html)             # подпись под заголовком убрана
+        self.assertNotIn("<div class='subtitle'>", html)
+        # шапка и колонка с ником держатся внутри рамки таблицы, а не уезжают под меню и не закрывают первую строку
+        self.assertIn("<div class='scroll vt-scroll'>", html)
+
     def test_table_has_nick_and_non_archived_dates_newest_first(self):
         html = self.page()
         # LIVE-день виден сразу, хотя у него ещё нет отчёта; все остальные — дни КВ
