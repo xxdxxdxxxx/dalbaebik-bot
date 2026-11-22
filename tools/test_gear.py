@@ -70,15 +70,36 @@ class GearPageTests(unittest.TestCase):
     def slot_tag(self, html, player, col):
         return re.search(rf"<button[^>]*data-player='{player}' data-col='{col}'.*?</button>", html, flags=re.S).group(0)
 
+    def board_rows(self, html):
+        """Места доски: {(отряд, место): (id игрока или '', html строки)}."""
+        found = re.findall(r"<div class='g-row(?: filled)?' data-squad='(\d+)' data-slot='(\d+)' data-player='(\d*)'[^>]*>(.*?)(?=<div class='g-row|<div class='gb-h|</div></div>)",
+                           html, flags=re.S)
+        return {(int(s), int(n)): (pid, body.removesuffix("</div>")) for s, n, pid, body in found}   # без закрывающего тега самой строки
+
+    def row_pos(self, html, player):
+        """(отряд, место), где игрок стоит на доске «Шмот»."""
+        for pos, (pid, _) in self.board_rows(html).items():
+            if pid == str(player):
+                return pos
+        return None
+
+    def board_nicks(self, html):
+        return {pos: re.search(r"<a [^>]*>([^<]*)</a>", body).group(1)
+                for pos, (pid, body) in self.board_rows(html).items() if pid}
+
     # ------------------------------------------------------------------ страница
     def test_page_lists_squad_players_with_empty_slots_and_nav_link(self):
         html = self.page()
         self.assertIn(">Шмот</a>", html)
         self.assertRegex(html, r'class="active" aria-current="page" href="/gear"')
-        heads = re.findall(r"<th class='g-c[^']*'>([^<]+)</th>", html)
-        self.assertEqual(heads, ["Снайпы", "Кувалда", "Био", "Тяж", "Огнемёт", "Скорость"])   # порядок слева направо
-        self.assertIn("Отряд 1", html)
-        self.assertIn("Чемпионы", html)
+        heads = re.findall(r"<div class='gb-h'><span class='gb-t'>[^<]*</span>((?:<span class='gb-l'[^>]*>[^<]*</span>)+)", html)
+        self.assertEqual(len(heads), 7)                                          # 6 отрядов + «Замены»
+        titles = re.findall(r"title='([^']+)'>[^<]+</span>", heads[0])
+        self.assertEqual(titles, ["Снайпы", "Кувалда", "Био", "Тяж", "Огнемёт", "Скорость"])   # порядок слева направо
+        self.assertEqual(re.findall(r">([^<]+)</span>", heads[0]), ["Снайп", "Кувал", "Био", "Тяж", "Огнем", "Скор"])   # подписи короткие
+        for title in ("Отряд 1", "Отряд 6", "Замены"):
+            self.assertIn(f"<span class='gb-t'>{title}</span>", html)
+        self.assertNotIn("Чемпионы", html)                                        # справа «Замены», как на странице «Отряды»
         for nick in ("Alpha", "Bravo", "Subby"):
             self.assertIn(f">{nick}</a>", html)
         # 3 игрока × 5 слотов с предметами, все пустые, и 3 поля скорости
@@ -87,7 +108,7 @@ class GearPageTests(unittest.TestCase):
         self.assertEqual(self.stored(), {})
 
     def test_cells_follow_header_order_in_every_row(self):
-        row = re.search(r"<tr class='player-row'>.*?</tr>", self.page(), flags=re.S).group(0)
+        row = next(body for pid, body in self.board_rows(self.page()).values() if pid)
         cols = re.findall(r"data-col='(\w+)'|class='g-sp[^']*' data-player='\d+'", row)
         order = [c or "speed" for c in cols]
         self.assertEqual(order, ["gauss", "hammer", "bio", "heavy", "flamer", "speed"])
@@ -331,7 +352,7 @@ class GearPageTests(unittest.TestCase):
         html = self.page()
         self.assertIn("border-color:#CC9933", self.slot_tag(html, self.alpha, "gauss"))
         self.assertEqual(self.speed_value(html, self.alpha), "39")
-        self.assertIn("Отряд 2", html)
+        self.assertEqual(self.row_pos(html, self.alpha), (2, 3))
 
     def swap(self, a, b):
         r = self.client.post("/squads/cells/swap", base_url=LOCAL,
@@ -358,13 +379,13 @@ class GearPageTests(unittest.TestCase):
         self.assertEqual(self.speed_value(html, self.alpha), "39")      # скорость тоже едет с игроком
         self.assertEqual(self.speed_value(html, self.bravo), "25")
         self.assertEqual(self.speed_value(html, self.subby), "")
+        self.assertEqual((self.row_pos(html, self.alpha), self.row_pos(html, self.bravo)), ((1, 2), (1, 1)))
 
-        self.swap((1, 1), (99, 1))                             # Bravo ↔ Subby: между отрядом 1 и Чемпионами
+        self.swap((1, 1), (99, 1))                             # Bravo ↔ Subby: между отрядом 1 и «Заменами»
         self.assertEqual(self.stored(), before)
         html = self.page()
-        champions = html.index("Чемпионы")
-        self.assertGreater(html.index(f"data-player='{self.bravo}' data-col='hammer'"), champions)
-        self.assertLess(html.index(f"data-player='{self.subby}' data-col='heavy'"), champions)
+        self.assertEqual(self.row_pos(html, self.bravo), (99, 1))
+        self.assertEqual(self.row_pos(html, self.subby), (1, 1))
         self.assertIn(">+9</span>", self.slot_tag(html, self.subby, "heavy"))
         self.assertIn(">+3</span>", self.slot_tag(html, self.bravo, "hammer"))
         self.assertEqual(self.speed_value(html, self.bravo), "25")
@@ -375,7 +396,8 @@ class GearPageTests(unittest.TestCase):
         self.swap((1, 1), (4, 3))                              # Alpha уехал в пустую ячейку отряда 4
         self.assertEqual(self.stored(), before)
         html = self.page()
-        self.assertIn("Отряд 4", html)
+        self.assertEqual(self.row_pos(html, self.alpha), (4, 3))
+        self.assertEqual(self.board_rows(html)[(1, 1)][0], "")
         self.assertIn("Снайпы: Гаусс +15", self.slot_tag(html, self.alpha, "gauss"))
 
     def test_gear_survives_remove_command_and_adding_back(self):
@@ -389,28 +411,24 @@ class GearPageTests(unittest.TestCase):
         html = self.page()
         self.assertIn("Снайпы: Гаусс +15", self.slot_tag(html, self.alpha, "gauss"))
         self.assertEqual(self.speed_value(html, self.alpha), "39")
-        self.assertIn("Отряд 3", html)
+        self.assertEqual(self.row_pos(html, self.alpha), (3, 1))
 
-    def test_table_is_stretched_like_players_with_sticky_header(self):
+    def test_board_is_sized_to_fit_the_screen_without_scrolling(self):
         html = self.page()
         self.assertIn("class='panel g-panel'", html)
-        self.assertNotRegex(html, r"\.g-panel\{width:fit-content")          # раньше таблица сжималась по содержимому
-        self.assertRegex(html, r"\.gt\{width:100%;table-layout:fixed\}")    # фиксированная раскладка: ширины колонок заданы
-        self.assertRegex(html, r"\.gt td\.g-f,\.gt th\.g-f\{width:25%")      # пустая колонка справа уже ников → блок категорий правее центра
+        self.assertIn('<body class="g-wide">', html)                         # страница шире остальных: четыре колонки со слотами
+        self.assertRegex(html, r"body\.g-wide\{--w:\d+px\}")
+        self.assertIn('<main class="wrap">', html)
+        self.assertRegex(html, r"#gear-root\{container-type:inline-size;--row:clamp\([^;]*100vh")   # высота строки — от высоты окна
+        self.assertRegex(html, r"--gs:clamp\([^;]*25cqw")                      # размер слота — от ширины колонки
+        self.assertRegex(html, r"\.g-panel\{margin:0;overflow-x:auto;overflow-y:hidden\}")   # вертикальной прокрутки нет
+        self.assertNotIn("<table", html)                                     # таблицы и её залипающей шапки больше нет
         self.assertRegex(html, r"\.g-slot:not\(\.empty\)\{border-width:1\.5px\}")   # рамка заполненных слотов тоньше пустых
-        self.assertNotRegex(html, r"\.gt td\.nick,\.gt th\.nick\{[^}]*width:")   # у ника нет своей ширины
-        self.assertRegex(html, r"\.panel\{[^}]*overflow:clip")                # clip, а не hidden/auto: шапка залипает
-        self.assertNotRegex(html, r"\.g-panel\{overflow:(hidden|auto)")
-        self.assertRegex(html, r"th\{position:sticky;top:var\(--head\)")      # под верхней панелью, как в «Бафах»
-        self.assertNotIn("class='scroll'", html)                            # обёртка со своим скроллом ломала бы sticky
-        self.assertIn('<main class="wrap">', html)                           # та же ширина, что у «Игроков»: один контейнер
-        self.assertEqual(html.count("<th class='g-f'></th>"), 1)           # пустая колонка справа
-        self.assertEqual(html.count("<td class='g-f'></td>"), 3)           # по одной на игрока
 
-    def test_speed_is_centered_under_its_header(self):
+    def test_speed_input_is_centered_in_its_column(self):
         html = self.page()
-        self.assertRegex(html, r"\.gt td\.g-w,\.gt th\.g-w\{[^}]*text-align:center")
-        self.assertRegex(html, r"\.g-sp\{[^}]*margin:0 auto[^}]*text-align:center")
+        self.assertRegex(html, r"\.g-sp\{[^}]*margin:0;[^}]*text-align:center")
+        self.assertRegex(html, r"\.gb-l\{[^}]*text-align:center")             # и подпись над ним тоже по центру
 
     def test_item_names_are_renamed(self):
         self.assertEqual(gear.ITEMS["assault"].name, "Штурма")
@@ -443,31 +461,92 @@ class GearPageTests(unittest.TestCase):
         key = lambda pos: (7 if pos[0] == 99 else pos[0], pos[1])
         return [by_pos[pos] for pos in sorted(by_pos, key=key)]
 
-    def test_players_inside_squads_follow_the_squads_page_order_not_alphabet(self):
+    def squads_page_positions(self):
+        """Места ников на странице «Отряды»: {(отряд, место): ник}."""
+        r = self.client.get("/squads", base_url=LOCAL)
+        cells = re.findall(r"data-squad='(\d+)' data-slot='(\d+)' value='([^']*)'", r.get_data(as_text=True))
+        return {(int(s), int(n)): v for s, n, v in cells if v}
+
+    def test_every_player_stands_on_the_same_place_as_on_the_squads_page(self):
         self.place(1, 1, "Zed")                                # в отряде 1 на первом месте — «Z», не «A»
         self.place(1, 2, "Mike")
         self.place(1, 3, "Alpha")
-        self.place(1, 5, "Bravo")                              # пустые места пропускаются
+        self.place(1, 5, "Bravo")                              # пустые места остаются пустыми
         self.place(2, 1, "yankee")
         self.place(2, 4, "Xray")
         self.place(2, 2, "Charlie")
         self.place(99, 3, "Tango")
-        self.place(99, 1, "Subby")
-        expected = self.squad_order_on_squads_page()
-        self.assertEqual(expected, ["Zed", "Mike", "Alpha", "Bravo", "yankee", "Charlie", "Xray", "Subby", "Tango"])
-        html = self.page()
-        shown = re.findall(r"<tr class='player-row'><td class='nick'><a [^>]*>([^<]*)</a>", html)
-        self.assertEqual(shown, expected)                       # Шмот = Отряды, до последнего игрока
-        self.assertLess(html.index("Отряд 1"), html.index(">Zed</a>"))
-        self.assertLess(html.index("Отряд 2"), html.index(">yankee</a>"))
-        self.assertLess(html.index("Чемпионы"), html.index(">Subby</a>"))
+        self.place(99, 11, "Subby")                            # последнее место «Замен»
+        expected = self.squads_page_positions()
+        self.assertEqual(expected[(1, 1)], "Zed")
+        self.assertEqual(expected[(99, 11)], "Subby")
+        shown = self.board_nicks(self.page())
+        self.assertEqual(shown, expected)                       # Шмот = Отряды: те же ники на тех же местах
+        self.assertNotIn("Без места на доске", self.page())
 
     def test_order_follows_a_swap_on_the_squads_page(self):
         self.place(1, 3, "Charlie")
         self.swap((1, 1), (1, 3))                               # Alpha ↔ Charlie
-        shown = re.findall(r"<tr class='player-row'><td class='nick'><a [^>]*>([^<]*)</a>", self.page())
-        self.assertEqual(shown, self.squad_order_on_squads_page())
-        self.assertEqual(shown[:3], ["Charlie", "Bravo", "Alpha"])
+        shown = self.board_nicks(self.page())
+        self.assertEqual(shown, self.squads_page_positions())
+        self.assertEqual([shown[(1, n)] for n in (1, 2, 3)], ["Charlie", "Bravo", "Alpha"])
+
+    # ------------------------------------------------------------- раскладка доски
+    def test_board_has_the_squads_page_layout(self):
+        html = self.page()
+        rows = self.board_rows(html)
+        expected = {(sq, n) for sq in range(1, 7) for n in range(1, 6)} | {(99, n) for n in range(1, 12)}
+        self.assertEqual(set(rows), expected)                   # 6 отрядов по 5 мест и 11 мест «Замен», ничего лишнего
+        self.assertEqual(html.count("class='gb-h'"), 7)
+        # колонки слева направо: 1 над 4, 2 над 5, 3 над 6, «Замены»; внутри колонки — 12 ячеек сверху вниз
+        board = re.search(r"<div id='gear-board' class='gb'>(.*?)</div></div><div id='gear-pop'", html, flags=re.S).group(1)
+        order = re.findall(r"<div class='gb-h'><span class='gb-t'>([^<]*)</span>|<div class='g-row(?: filled)?' data-squad='(\d+)' data-slot='(\d+)'", board)
+        self.assertEqual(len(order), 4 * 12)
+        flat = [t or f"{s}:{n}" for t, s, n in order]
+        self.assertEqual(flat[:12], ["Отряд 1", "1:1", "1:2", "1:3", "1:4", "1:5", "Отряд 4", "4:1", "4:2", "4:3", "4:4", "4:5"])
+        self.assertEqual(flat[36:], ["Замены"] + [f"99:{n}" for n in range(1, 12)])
+        self.assertIn("grid-template-rows:repeat(12,var(--row))", html)
+        self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", html)
+        self.assertIn("grid-auto-flow:column", html)
+
+    def test_player_row_is_nick_then_slots_then_speed(self):
+        html = self.page()
+        body = self.board_rows(html)[(1, 1)][1]
+        self.assertTrue(body.startswith("<div class='g-nick' draggable='true'"))     # ручка перетаскивания — ник
+        self.assertIn(f"<a href='/player/{self.alpha}' draggable='false'>Alpha</a>", body)   # ссылка на игрока по-прежнему есть
+        self.assertEqual(len(re.findall(r"class='g-slot", body)), 5)
+        self.assertEqual(len(re.findall(r"class='g-sp", body)), 1)
+        self.assertLess(body.index("g-nick"), body.index("g-slot"))
+        self.assertLess(body.rindex("g-slot"), body.index("g-sp"))                  # скорость — последней
+
+    def test_empty_places_are_plain_drop_targets(self):
+        html = self.page()
+        pid, body = self.board_rows(html)[(2, 3)]
+        self.assertEqual((pid, body), ("", ""))                                     # пусто: ни ника, ни слотов
+        self.assertIn("<div class='g-row' data-squad='2' data-slot='3' data-player=''", html)
+        self.assertNotIn("draggable='true'", self.board_rows(html)[(2, 3)][1])
+
+    def test_script_moves_nicks_with_the_squads_swap_endpoint(self):
+        html = self.page()
+        self.assertIn("fetch('/squads/cells/swap'", html)                           # тот же запрос, что на странице «Отряды»
+        for part in ("a_squad:a.dataset.squad", "a_slot:a.dataset.slot", "b_squad:b.dataset.squad", "b_slot:b.dataset.slot"):
+            self.assertIn(part, html)
+        self.assertIn("function swapRows(a,b)", html)                               # строка целиком (ник, слоты, скорость) едет к новому месту
+        self.assertIn("addEventListener('dragstart'", html)
+        self.assertIn("addEventListener('drop'", html)
+
+    def test_players_without_a_place_are_still_listed_below_the_board(self):
+        with closing(player_store.connect(self.db)) as con:
+            con.execute("UPDATE roster_memberships SET slot=NULL WHERE player_id=?", (self.bravo,))
+            con.commit()
+        self.put(self.bravo, "hammer", item="hammer", level=7)
+        html = self.page()
+        self.assertIn("Без места на доске", html)
+        self.assertIsNone(self.row_pos(html, self.bravo))                           # на доске его нет
+        extra = html[html.index("Без места на доске"):]
+        self.assertIn(f"data-player='{self.bravo}' data-col='hammer'", extra)       # но шмот редактируется
+        self.assertIn(">+7</span>", self.slot_tag(extra, self.bravo, "hammer"))
+        self.assertEqual(self.board_nicks(html)[(1, 1)], "Alpha")
 
     def test_nick_is_html_escaped(self):
         self.place(3, 1, "<b>x</b>")

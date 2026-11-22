@@ -389,11 +389,11 @@ def _nav_html(path: str) -> str:
     return "".join(out)
 
 
-def render(title: str, body: str, *, wide: bool = False) -> str:
+def render(title: str, body: str, *, wide: bool = False, body_class: str = "") -> str:
     home = url_for("index")
     extra_css = "".join(EXTRA_CSS)
     logout = LOGOUT_FORM if _password() else ""
-    body_class = "wide" if wide else ""
+    body_class = " ".join(part for part in ("wide" if wide else "", body_class) if part)
     return (
         '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
